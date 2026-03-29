@@ -49,7 +49,7 @@ Trace (trace_id = hash(run_id, attempt))
 | Attribute | Value |
 |---|---|
 | `service.name` | `github-actions` |
-| `service.version` | otel-explorer version |
+| `service.version` | ote version |
 | `cicd.pipeline.name` | workflow name |
 | `vcs.repository.url.full` | repo URL |
 

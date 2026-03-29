@@ -2,7 +2,7 @@
 set -e
 
 REPO="stefanpenner/otel-explorer"
-BINARY="otel-explorer"
+BINARY="ote"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 
 # Detect OS
@@ -39,13 +39,16 @@ trap 'rm -rf "$TMPDIR"' EXIT
 curl -fsSL "$URL" -o "${TMPDIR}/${TARBALL}"
 tar -xzf "${TMPDIR}/${TARBALL}" -C "$TMPDIR"
 
-# Install binary
+# Install binary and create backward-compat symlink
 if [ -w "$INSTALL_DIR" ]; then
   mv "${TMPDIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
+  ln -sf "${BINARY}" "${INSTALL_DIR}/otel-explorer"
 else
   echo "Installing to ${INSTALL_DIR} (requires sudo)..."
   sudo mv "${TMPDIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
+  sudo ln -sf "${BINARY}" "${INSTALL_DIR}/otel-explorer"
 fi
 
 chmod +x "${INSTALL_DIR}/${BINARY}"
 echo "Installed ${BINARY} ${VERSION} to ${INSTALL_DIR}/${BINARY}"
+echo "Symlink: otel-explorer -> ${BINARY}"

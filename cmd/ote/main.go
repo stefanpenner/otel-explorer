@@ -356,7 +356,7 @@ func main() {
 	// Handle trends mode
 	if cfg.trendsMode {
 		if cfg.trendsRepo == "" {
-			printErrorMsg("Trends mode requires a repository in format 'owner/repo'\n\n  Usage: otel-explorer trends owner/repo [--days=30] [--format=terminal|json]\n\n  Run 'otel-explorer --help' for more information.")
+			printErrorMsg("Trends mode requires a repository in format 'owner/repo'\n\n  Usage: ote trends owner/repo [--days=30] [--format=terminal|json]\n\n  Run 'ote --help' for more information.")
 			os.Exit(1)
 		}
 
@@ -574,7 +574,7 @@ func main() {
 	}
 
 	if len(args) == 0 && len(cfg.traceFiles) == 0 && !hasTraceBackend {
-		printErrorMsg("No GitHub URLs or trace files provided.\n\n  Usage: otel-explorer <github_url> [flags]\n         otel-explorer <trace_file.json> [flags]\n         otel-explorer --tempo=<url> --trace-id=<id> [flags]\n         otel-explorer --listen[=<addr>] [flags]\n\n  Run 'otel-explorer --help' for more information.")
+		printErrorMsg("No GitHub URLs or trace files provided.\n\n  Usage: ote <github_url> [flags]\n         ote <trace_file.json> [flags]\n         ote --tempo=<url> --trace-id=<id> [flags]\n         ote --listen[=<addr>] [flags]\n\n  Run 'ote --help' for more information.")
 		os.Exit(1)
 	}
 
@@ -938,10 +938,10 @@ func tagSpansWithIndex(spans []sdktrace.ReadOnlySpan, urlIndex int) []sdktrace.R
 func printUsage() {
 	fmt.Println("OTel Analyzer")
 	fmt.Println("\nUsage:")
-	fmt.Println("  otel-explorer <github_url1> [github_url2...] [token] [flags]")
-	fmt.Println("  otel-explorer <trace_file.json> [flags]")
-	fmt.Println("  otel-explorer convert <file1> [file2...] [flags]")
-	fmt.Println("  otel-explorer trends <owner/repo> [flags]")
+	fmt.Println("  ote <github_url1> [github_url2...] [token] [flags]")
+	fmt.Println("  ote <trace_file.json> [flags]")
+	fmt.Println("  ote convert <file1> [file2...] [flags]")
+	fmt.Println("  ote trends <owner/repo> [flags]")
 	fmt.Println("\nFlags:")
 	fmt.Println("  --tui                     Force interactive TUI mode (default when terminal is available)")
 	fmt.Println("  --no-tui                  Disable interactive TUI, use CLI output instead")
@@ -979,30 +979,30 @@ func printUsage() {
 	fmt.Println("\nEnvironment Variables:")
 	fmt.Println("  GITHUB_TOKEN              GitHub PAT (alternatively pass as argument)")
 	fmt.Println("\nExamples:")
-	fmt.Println("  otel-explorer https://github.com/owner/repo/pull/123")
-	fmt.Println("  otel-explorer https://github.com/owner/repo/actions/runs/12345")
-	fmt.Println("  otel-explorer https://github.com/owner/repo/commit/sha --perfetto=trace.pftrace")
-	fmt.Println("  otel-explorer https://github.com/owner/repo/pull/123 --no-tui")
-	fmt.Println("  otel-explorer https://github.com/owner/repo/pull/123 --output=stdout")
-	fmt.Println("  otel-explorer https://github.com/owner/repo/pull/123 --output=markdown > report.md")
-	fmt.Println("  otel-explorer trends owner/repo")
-	fmt.Println("  otel-explorer trends owner/repo --days=7 --format=json")
-	fmt.Println("  otel-explorer trends owner/repo --branch=main --workflow=post-merge.yaml")
-	fmt.Println("  otel-explorer trace.json                      # auto-detects OTel or Chrome Tracing format")
-	fmt.Println("  otel-explorer chrome-profile.json spans.json   # multiple trace files as args")
-	fmt.Println("  otel-explorer --trace=spans.json https://github.com/owner/repo/pull/123")
-	fmt.Println("  otel-explorer --tempo=http://localhost:3200 --trace-id=abc123def456")
-	fmt.Println("  otel-explorer --jaeger=http://localhost:16686 --trace-id=abc123def456")
-	fmt.Println("  otel-explorer --listen                       # accept OTLP traces on :4318")
-	fmt.Println("  otel-explorer trace.json --filter=service.name=checkout")
-	fmt.Println("  otel-explorer trace.json --errors-only       # only show error spans")
-	fmt.Println("  otel-explorer trace.json --lint              # check semconv compliance")
-	fmt.Println("  otel-explorer trace.json --enrichment=rules.json")
-	fmt.Println("  otel-explorer convert chrome-profile.json      # Chrome Tracing → OTel JSON")
-	fmt.Println("  otel-explorer convert spans.json                # any format → OTel JSON")
-	fmt.Println("  otel-explorer convert file1.json file2.json     # multiple files")
-	fmt.Println("  cat trace.json | otel-explorer convert          # stdin → OTel JSON")
-	fmt.Println("  otel-explorer --clear-cache")
+	fmt.Println("  ote https://github.com/owner/repo/pull/123")
+	fmt.Println("  ote https://github.com/owner/repo/actions/runs/12345")
+	fmt.Println("  ote https://github.com/owner/repo/commit/sha --perfetto=trace.pftrace")
+	fmt.Println("  ote https://github.com/owner/repo/pull/123 --no-tui")
+	fmt.Println("  ote https://github.com/owner/repo/pull/123 --output=stdout")
+	fmt.Println("  ote https://github.com/owner/repo/pull/123 --output=markdown > report.md")
+	fmt.Println("  ote trends owner/repo")
+	fmt.Println("  ote trends owner/repo --days=7 --format=json")
+	fmt.Println("  ote trends owner/repo --branch=main --workflow=post-merge.yaml")
+	fmt.Println("  ote trace.json                      # auto-detects OTel or Chrome Tracing format")
+	fmt.Println("  ote chrome-profile.json spans.json   # multiple trace files as args")
+	fmt.Println("  ote --trace=spans.json https://github.com/owner/repo/pull/123")
+	fmt.Println("  ote --tempo=http://localhost:3200 --trace-id=abc123def456")
+	fmt.Println("  ote --jaeger=http://localhost:16686 --trace-id=abc123def456")
+	fmt.Println("  ote --listen                       # accept OTLP traces on :4318")
+	fmt.Println("  ote trace.json --filter=service.name=checkout")
+	fmt.Println("  ote trace.json --errors-only       # only show error spans")
+	fmt.Println("  ote trace.json --lint              # check semconv compliance")
+	fmt.Println("  ote trace.json --enrichment=rules.json")
+	fmt.Println("  ote convert chrome-profile.json      # Chrome Tracing → OTel JSON")
+	fmt.Println("  ote convert spans.json                # any format → OTel JSON")
+	fmt.Println("  ote convert file1.json file2.json     # multiple files")
+	fmt.Println("  cat trace.json | ote convert          # stdin → OTel JSON")
+	fmt.Println("  ote --clear-cache")
 }
 
 // resolveGitHubToken returns a GitHub token from GITHUB_TOKEN env var or gh CLI.

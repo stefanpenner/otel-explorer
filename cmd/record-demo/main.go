@@ -1,5 +1,5 @@
 // Command record-demo records an asciinema v2 .cast file by driving
-// otel-explorer on a properly-sized pty with scripted keystrokes.
+// ote on a properly-sized pty with scripted keystrokes.
 //
 // Usage:
 //
@@ -135,8 +135,8 @@ func main() {
 	hdrBytes, _ := json.Marshal(hdr)
 	fmt.Fprintln(f, string(hdrBytes))
 
-	// Spawn otel-explorer on a pty at the correct size
-	cmd := exec.Command("otel-explorer", url)
+	// Spawn ote on a pty at the correct size
+	cmd := exec.Command("ote", url)
 	cmd.Env = append(os.Environ(),
 		"TERM=xterm-256color",
 		fmt.Sprintf("COLUMNS=%d", cols),

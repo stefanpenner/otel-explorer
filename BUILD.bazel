@@ -11,8 +11,8 @@ bazel_env(
     },
 )
 
-# Convenience alias so `bazel run //:otel-explorer` works from the repo root.
+# Convenience alias so `bazel run //:ote` works from the repo root.
 alias(
-    name = "otel-explorer",
-    actual = "//cmd/otel-explorer",
+    name = "ote",
+    actual = "//cmd/ote",
 )

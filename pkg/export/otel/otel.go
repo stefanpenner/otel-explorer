@@ -61,7 +61,7 @@ func (e *Exporter) Finish(ctx context.Context) error {
 func GetResource(ctx context.Context) (*resource.Resource, error) {
 	return resource.New(ctx,
 		resource.WithAttributes(
-			semconv.ServiceNameKey.String("otel-explorer"),
+			semconv.ServiceNameKey.String("ote"),
 		),
 	)
 }

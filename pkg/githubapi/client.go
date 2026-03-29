@@ -39,14 +39,14 @@ type Context struct {
 	CacheDir    string
 }
 
-// DefaultCacheDir returns the OS-appropriate cache directory for otel-explorer.
+// DefaultCacheDir returns the OS-appropriate cache directory for ote.
 func DefaultCacheDir() string {
 	cacheDir, err := os.UserCacheDir()
 	if err != nil {
 		// Fallback to current directory
 		return ".gha-cache"
 	}
-	return filepath.Join(cacheDir, "otel-explorer")
+	return filepath.Join(cacheDir, "ote")
 }
 
 func NewContext(token string) Context {

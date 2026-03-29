@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>otel-explorer</strong><br>
+  <strong>ote</strong> (otel-explorer)<br>
   See where your CI/CD time actually goes.
 </p>
 
@@ -20,7 +20,7 @@ An interactive terminal tool that turns OpenTelemetry traces and CI/CD runs into
 ## Install
 
 ```bash
-brew install stefanpenner/tap/otel-explorer
+brew install stefanpenner/tap/ote
 ```
 
 Or install the latest binary with `curl` (macOS and Linux):
@@ -32,7 +32,7 @@ curl -fsSL https://raw.githubusercontent.com/stefanpenner/otel-explorer/main/ins
 Or with Go:
 
 ```bash
-go install github.com/stefanpenner/otel-explorer/cmd/otel-explorer@latest
+go install github.com/stefanpenner/otel-explorer/cmd/ote@latest
 ```
 
 ## Quick Start
@@ -40,7 +40,7 @@ go install github.com/stefanpenner/otel-explorer/cmd/otel-explorer@latest
 Point it at any PR or commit:
 
 ```bash
-otel-explorer nodejs/node/pull/60369
+ote nodejs/node/pull/60369
 ```
 
 That's it. If you have [GitHub CLI](https://cli.github.com/) installed and authenticated, the token is picked up automatically. Otherwise:
@@ -60,7 +60,7 @@ The default view is a full-screen terminal UI with a tree of workflows, jobs, an
 Export any analysis as a [Perfetto](https://ui.perfetto.dev) trace for deep-dive visualization with full zoom, search, and flame-chart views:
 
 ```bash
-otel-explorer <url> --perfetto=trace.pftrace --open-in-perfetto
+ote <url> --perfetto=trace.pftrace --open-in-perfetto
 ```
 
 ### Trace Backend Integration
@@ -68,8 +68,8 @@ otel-explorer <url> --perfetto=trace.pftrace --open-in-perfetto
 Pull traces directly from Grafana Tempo or Jaeger:
 
 ```bash
-otel-explorer --tempo=http://localhost:3200 --trace-id=abc123
-otel-explorer --jaeger=http://localhost:16686 --trace-id=abc123
+ote --tempo=http://localhost:3200 --trace-id=abc123
+ote --jaeger=http://localhost:16686 --trace-id=abc123
 ```
 
 ### Webhook Input
@@ -78,7 +78,7 @@ Pipe a GitHub Actions webhook payload to analyze the associated commit — usefu
 
 ```bash
 echo '{"workflow_run":{"head_sha":"abc123"},"repository":{"full_name":"owner/repo"}}' \
-  | otel-explorer --otel
+  | ote --otel
 ```
 
 ### Enrichment
@@ -97,9 +97,9 @@ Beyond raw timings, the analyzer enriches spans with:
 Analyze workflow performance over time to spot regressions, flaky jobs, and slow-downs:
 
 ```bash
-otel-explorer trends owner/repo                          # last 30 days
-otel-explorer trends owner/repo --days=7 --branch=main   # scoped
-otel-explorer trends owner/repo --format=json             # machine-readable
+ote trends owner/repo                          # last 30 days
+ote trends owner/repo --days=7 --branch=main   # scoped
+ote trends owner/repo --format=json             # machine-readable
 ```
 
 ```
@@ -120,8 +120,8 @@ Flaky Jobs Detected                          1
 Trend analysis covers success rates, duration percentiles, per-job breakdowns, flaky detection (>10% failure rate), and trend direction. For large repos, it uses stratified temporal sampling to keep API usage reasonable — run-level metrics are always exact, job-level analysis is sampled at 95% confidence / ±10% margin by default.
 
 ```bash
-otel-explorer trends owner/repo --no-sample               # exact, more API calls
-otel-explorer trends owner/repo --confidence=0.99 --margin=0.05  # tune sampling
+ote trends owner/repo --no-sample               # exact, more API calls
+ote trends owner/repo --confidence=0.99 --margin=0.05  # tune sampling
 ```
 
 ## OpenTelemetry
@@ -130,19 +130,19 @@ Export analysis data as OpenTelemetry spans — feed them into any observability
 
 ```bash
 # JSON spans to stdout
-otel-explorer <url> --otel
+ote <url> --otel
 
 # OTLP/HTTP
-otel-explorer <url> --otel=localhost:4318
+ote <url> --otel=localhost:4318
 
 # OTLP/gRPC
-otel-explorer <url> --otel-grpc=localhost:4317
+ote <url> --otel-grpc=localhost:4317
 ```
 
 You can also **ingest** OTel trace files from any CI/CD system — Jenkins, GitLab CI, Buildkite, Dagger, and anything else that emits traces following the [OTel CI/CD semantic conventions](https://opentelemetry.io/docs/specs/semconv/cicd/):
 
 ```bash
-otel-explorer --trace=spans.json
+ote --trace=spans.json
 ```
 
 ## Development
@@ -150,7 +150,7 @@ otel-explorer --trace=spans.json
 Built with [Bazel](https://bazel.build/) for hermetic, reproducible builds.
 
 ```bash
-bazel run //:otel-explorer -- <url>   # run
+bazel run //:ote -- <url>             # run
 bazel build //...                     # build all
 bazel test //...                      # test all
 bazel run //:gazelle                  # regenerate BUILD files
