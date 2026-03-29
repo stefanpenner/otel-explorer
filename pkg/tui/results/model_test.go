@@ -109,7 +109,7 @@ func TestModelView(t *testing.T) {
 		view := m.View()
 
 		assert.NotEmpty(t, view)
-		assert.Contains(t, view, "ote")
+		assert.Contains(t, view, "otel-explorer")
 	})
 
 	t.Run("renders URL group in tree", func(t *testing.T) {
@@ -583,7 +583,7 @@ func TestRenderHeader(t *testing.T) {
 		m := createTestModel()
 		header := m.renderHeader()
 
-		assert.Contains(t, header, "ote")
+		assert.Contains(t, header, "otel-explorer")
 	})
 
 	t.Run("header does not contain URLs (URLs are in tree)", func(t *testing.T) {

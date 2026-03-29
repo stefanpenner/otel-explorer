@@ -148,7 +148,7 @@ func (m Model) renderHeader() string {
 	sep := HeaderCountStyle.Render(" • ")
 
 	// Build top border with embedded title badge
-	titleBadge := ModalFloatingTitle.Render(" ote ")
+	titleBadge := ModalFloatingTitle.Render(" otel-explorer ")
 	titleBadgeWidth := lipgloss.Width(titleBadge)
 	leftPad := 2 // chars after "╭"
 	rightPad := max(1, totalWidth-2-leftPad-titleBadgeWidth)
