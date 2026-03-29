@@ -552,6 +552,11 @@ func (m Model) renderItem(item TreeItem, isSelected bool, itemIdx int) string {
 		name = fmt.Sprintf("%s by %s", name, item.Hints.User)
 	}
 
+	// Inline log fetch spinner
+	if phase := m.logFetchPhase(item.ID); phase != "" {
+		name = fmt.Sprintf("%s %s %s", name, m.spinner.View(), phase)
+	}
+
 	// Build duration string separately (styled in gray)
 	durationStr := ""
 	durationWidth := 0

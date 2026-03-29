@@ -8,7 +8,7 @@ type GHAEnricher struct{}
 // Returns empty hints (Category=="") if the span is not a GHA span.
 func (e *GHAEnricher) Enrich(name string, attrs map[string]string, isZeroDuration bool) SpanHints {
 	spanType := attrs["type"]
-	if spanType != "workflow" && spanType != "job" && spanType != "step" && spanType != "marker" {
+	if spanType != "workflow" && spanType != "job" && spanType != "step" && spanType != "marker" && spanType != "log_span" {
 		return SpanHints{}
 	}
 
@@ -52,6 +52,16 @@ func (e *GHAEnricher) Enrich(name string, attrs map[string]string, isZeroDuratio
 		h.IsLeaf = true
 		h.Icon = "↳"
 		h.BarChar = "▒"
+	case "log_span":
+		h.IsLeaf = true
+		h.Icon = "░"
+		h.BarChar = "░"
+		// Log spans are derived from completed step logs; inherit success
+		// appearance so tree connectors and bars match the parent step.
+		if h.Color == "gray" && conclusion == "" {
+			h.Color = "green"
+			h.Outcome = "success"
+		}
 	case "marker":
 		h.IsMarker = true
 		h.SortPriority = -1

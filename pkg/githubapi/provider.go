@@ -21,5 +21,6 @@ type GitHubProvider interface {
 	FetchAnnotations(ctx context.Context, owner, repo string, checkRunID int64) ([]Annotation, error)
 	ListArtifacts(ctx context.Context, owner, repo string, runID int64) ([]Artifact, error)
 	DownloadArtifact(ctx context.Context, url string) ([]byte, error)
+	FetchJobLog(ctx context.Context, owner, repo string, jobID int64) ([]byte, error)
 	FetchWorkflowRun(ctx context.Context, owner, repo string, runID int64) (*WorkflowRun, error)
 }

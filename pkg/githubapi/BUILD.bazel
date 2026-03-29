@@ -6,6 +6,7 @@ go_library(
         "cache.go",
         "client.go",
         "ids.go",
+        "logs.go",
         "provider.go",
     ],
     importpath = "github.com/stefanpenner/otel-explorer/pkg/githubapi",

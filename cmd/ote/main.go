@@ -19,6 +19,7 @@ import (
 	"github.com/stefanpenner/otel-explorer/pkg/export/terminal"
 	"github.com/stefanpenner/otel-explorer/pkg/githubapi"
 	"github.com/stefanpenner/otel-explorer/pkg/ingest/filter"
+	"github.com/stefanpenner/otel-explorer/pkg/logparse"
 	"github.com/stefanpenner/otel-explorer/pkg/ingest/otlpfile"
 	"github.com/stefanpenner/otel-explorer/pkg/ingest/polling"
 	"github.com/stefanpenner/otel-explorer/pkg/ingest/receiver"
@@ -119,6 +120,7 @@ type config struct {
 	listenAddr     string // --listen=<addr>
 	enrichmentFile string // --enrichment=<file>
 	lintMode       bool   // --lint
+	fetchLogs      bool   // --logs: fetch and parse step logs for sub-step spans
 }
 
 func parseArgs(args []string, terminal bool) (config, error) {
@@ -232,6 +234,10 @@ func parseArgs(args []string, terminal bool) (config, error) {
 		}
 		if arg == "--no-artifacts" {
 			cfg.noArtifacts = true
+			continue
+		}
+		if arg == "--logs" {
+			cfg.fetchLogs = true
 			continue
 		}
 		if strings.HasPrefix(arg, "--filter=") {
@@ -703,6 +709,7 @@ func main() {
 		ingestor := polling.NewPollingIngestor(client, args, progress, analyzer.AnalyzeOptions{
 			Window:      cfg.window,
 			NoArtifacts: cfg.noArtifacts,
+			FetchLogs:   cfg.fetchLogs,
 		})
 		var err error
 		results, globalEarliest, globalLatest, ghaSpans, err = ingestor.Ingest(ctx)
@@ -866,7 +873,15 @@ func main() {
 			inputSources = append(inputSources, filepath.Base(tf))
 		}
 
-		if err := tuiresults.Run(spans, globalStartTime, globalEndTime, inputSources, reloadFunc, openPerfettoFunc, enricher); err != nil {
+		var tuiOpts []tuiresults.ModelOption
+		if len(args) > 0 {
+			logFetchClient := githubapi.NewClient(githubapi.NewContext(token))
+			tuiOpts = append(tuiOpts, tuiresults.WithLogFetchFunc(
+				makeLogFetchFunc(logFetchClient),
+			))
+		}
+
+		if err := tuiresults.Run(spans, globalStartTime, globalEndTime, inputSources, reloadFunc, openPerfettoFunc, enricher, tuiOpts...); err != nil {
 			fmt.Fprintf(os.Stderr, "%sError: TUI failed: %v%s\n", colorRed, err, colorReset)
 			os.Exit(1)
 		}
@@ -925,6 +940,106 @@ func collectEnds(results []analyzer.URLResult) []analyzer.JobEvent {
 	return events
 }
 
+// makeLogFetchFunc creates a LogFetchFunc that uses the given GitHub client
+// to fetch and parse step logs on demand from the TUI.
+func makeLogFetchFunc(client *githubapi.Client) tuiresults.LogFetchFunc {
+	return func(owner, repo string, jobID int64, existingSpans []sdktrace.ReadOnlySpan) ([]sdktrace.ReadOnlySpan, error) {
+		ctx := context.Background()
+
+		logData, err := client.FetchJobLog(ctx, owner, repo, jobID)
+		if err != nil {
+			return nil, fmt.Errorf("fetching job log: %w", err)
+		}
+
+		// Collect step spans belonging to this job, building step info for log splitting
+		type stepInfo struct {
+			span    sdktrace.ReadOnlySpan
+			number  int
+			attrs   map[string]string
+		}
+		var jobStepSpans []stepInfo
+
+		for _, s := range existingSpans {
+			attrs := make(map[string]string)
+			for _, a := range s.Attributes() {
+				attrs[string(a.Key)] = a.Value.Emit()
+			}
+			if attrs["type"] != "step" {
+				continue
+			}
+			parentSpanID := s.Parent().SpanID()
+			for _, js := range existingSpans {
+				jAttrs := make(map[string]string)
+				for _, a := range js.Attributes() {
+					jAttrs[string(a.Key)] = a.Value.Emit()
+				}
+				if jAttrs["type"] == "job" && js.SpanContext().SpanID() == parentSpanID {
+					if jAttrs["github.job_id"] == fmt.Sprintf("%d", jobID) {
+						stepNum := 0
+						if sn, ok := attrs["github.step_number"]; ok {
+							fmt.Sscanf(sn, "%d", &stepNum)
+						}
+						jobStepSpans = append(jobStepSpans, stepInfo{span: s, number: stepNum, attrs: attrs})
+					}
+					break
+				}
+			}
+		}
+
+		if len(jobStepSpans) == 0 {
+			return nil, nil
+		}
+
+		// Build Step slice for timestamp-based log splitting
+		var apiSteps []githubapi.Step
+		for _, si := range jobStepSpans {
+			apiSteps = append(apiSteps, githubapi.Step{
+				Name:        si.span.Name(),
+				Number:      si.number,
+				StartedAt:   si.span.StartTime().Format(time.RFC3339),
+				CompletedAt: si.span.EndTime().Format(time.RFC3339),
+			})
+		}
+
+		stepLogs := githubapi.SplitJobLogByStep(logData, apiSteps)
+		if len(stepLogs) == 0 {
+			return nil, nil
+		}
+
+		builder := &analyzer.SpanBuilder{}
+		registry := logparse.DefaultRegistry()
+
+		for _, si := range jobStepSpans {
+			raw, ok := stepLogs[si.number]
+			if !ok || len(raw) == 0 {
+				continue
+			}
+
+			lines := logparse.ParseLogLines(raw)
+			if len(lines) == 0 {
+				continue
+			}
+
+			parserName, spans := registry.Parse(lines, si.span.StartTime(), si.span.EndTime())
+			if len(spans) == 0 {
+				continue
+			}
+
+			traceID := si.span.SpanContext().TraceID()
+			stepSC := si.span.SpanContext()
+
+			stepURL := ""
+			if ghURL, ok := si.attrs["github.url"]; ok && ghURL != "" {
+				stepURL = ghURL
+			}
+
+			analyzer.AddParsedSpansToBuilder(builder, spans, stepSC, traceID, jobID, si.span.Name(), parserName, 0, 0, stepURL)
+		}
+
+		return builder.Spans(), nil
+	}
+}
+
 // tagSpansWithIndex wraps ReadOnlySpans with a github.url_index attribute
 // so the TUI can group spans by their source file.
 func tagSpansWithIndex(spans []sdktrace.ReadOnlySpan, urlIndex int) []sdktrace.ReadOnlySpan {
@@ -958,6 +1073,7 @@ func printUsage() {
 	fmt.Println("  --jaeger=<baseURL>        Fetch traces from Jaeger v2 (e.g., http://localhost:16686)")
 	fmt.Println("  --trace-id=<id>           Trace ID to fetch from Tempo/Jaeger (can be repeated)")
 	fmt.Println("  --no-artifacts            Skip downloading and ingesting trace artifacts from workflow runs")
+	fmt.Println("  --logs                    Fetch and parse step logs to create sub-step spans")
 	fmt.Println("  --filter=<expr>           Filter spans by attributes (e.g., 'service.name=checkout,http.status_code=5*')")
 	fmt.Println("  --errors-only             Only show spans with ERROR status")
 	fmt.Println("  --listen[=<addr>]         Start OTLP/HTTP receiver (default: :4318)")

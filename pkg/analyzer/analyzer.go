@@ -64,6 +64,7 @@ func (e URLError) Error() string {
 type AnalyzeOptions struct {
 	Window      time.Duration
 	NoArtifacts bool
+	FetchLogs   bool
 }
 
 func AnalyzeURLs(ctx context.Context, urls []string, client githubapi.GitHubProvider, reporter ProgressReporter, opts AnalyzeOptions) ([]URLResult, []TraceEvent, int64, int64, []sdktrace.ReadOnlySpan, []URLError) {
@@ -501,6 +502,11 @@ func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex
 	var runArtifacts []githubapi.Artifact
 	if !opts.NoArtifacts {
 		runArtifacts, _ = IngestTraceArtifacts(ctx, client, run.Repository.Owner.Login, run.Repository.Name, run.ID, builder, urlIndex, wfSC)
+	}
+
+	// Ingest step logs (best-effort) for sub-step span extraction
+	if opts.FetchLogs {
+		_ = IngestStepLogs(ctx, client, owner, repo, jobs, builder, urlIndex, tid, nil)
 	}
 
 	// Build workflow span stub (after processing jobs so runEnd may be adjusted)

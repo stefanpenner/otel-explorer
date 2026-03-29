@@ -6,6 +6,7 @@ go_library(
         "inspector.go",
         "items.go",
         "keys.go",
+        "logfetch.go",
         "model.go",
         "styles.go",
         "timeline.go",

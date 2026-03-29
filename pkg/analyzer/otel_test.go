@@ -99,6 +99,11 @@ func (m *mockGitHubProvider) DownloadArtifact(ctx context.Context, url string) (
 	return args.Get(0).([]byte), args.Error(1)
 }
 
+func (m *mockGitHubProvider) FetchJobLog(ctx context.Context, owner, repo string, jobID int64) ([]byte, error) {
+	args := m.Called(ctx, owner, repo, jobID)
+	return args.Get(0).([]byte), args.Error(1)
+}
+
 func (m *mockGitHubProvider) FetchWorkflowRun(ctx context.Context, owner, repo string, runID int64) (*githubapi.WorkflowRun, error) {
 	args := m.Called(ctx, owner, repo, runID)
 	if args.Get(0) == nil {

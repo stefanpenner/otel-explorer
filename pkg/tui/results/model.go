@@ -153,10 +153,26 @@ type Model struct {
 	artifactNames  string
 	// Workflow definition files
 	workflowFiles []string
+	// Log fetch state
+	logFetchFunc      LogFetchFunc
+	logFetchingJobID  int64            // non-zero while a log fetch is in progress
+	logFetchedJobIDs  map[int64]bool   // job IDs that have already been fetched
+	logFetchInline    *logFetchState   // inline progress for the item being fetched
 }
 
 // ReloadFunc is the function signature for reloading data
 type ReloadFunc func(reporter LoadingReporter) ([]trace.ReadOnlySpan, time.Time, time.Time, error)
+
+// LogFetchFunc fetches and parses step logs for a job, returning new sub-step spans.
+// owner, repo, jobID identify the job whose logs to fetch.
+// existingSpans provides context (the step spans to parent under).
+type LogFetchFunc func(owner, repo string, jobID int64, existingSpans []trace.ReadOnlySpan) ([]trace.ReadOnlySpan, error)
+
+// LogFetchResultMsg is sent when log fetch completes for a step.
+type LogFetchResultMsg struct {
+	newSpans []trace.ReadOnlySpan
+	err      error
+}
 
 // OpenPerfettoFunc is the function signature for opening Perfetto.
 // It receives the currently visible (non-hidden) spans and whether
@@ -164,7 +180,7 @@ type ReloadFunc func(reporter LoadingReporter) ([]trace.ReadOnlySpan, time.Time,
 type OpenPerfettoFunc func(spans []trace.ReadOnlySpan, activityHidden bool)
 
 // NewModel creates a new TUI model from OTel spans
-func NewModel(spans []trace.ReadOnlySpan, globalStart, globalEnd time.Time, inputURLs []string, reloadFunc ReloadFunc, openPerfettoFunc OpenPerfettoFunc, enricher enrichment.Enricher) Model {
+func NewModel(spans []trace.ReadOnlySpan, globalStart, globalEnd time.Time, inputURLs []string, reloadFunc ReloadFunc, openPerfettoFunc OpenPerfettoFunc, enricher enrichment.Enricher, opts ...ModelOption) Model {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 
@@ -231,11 +247,25 @@ func NewModel(spans []trace.ReadOnlySpan, globalStart, globalEnd time.Time, inpu
 		m.expandAllToDepth(0)
 	}
 
+	for _, opt := range opts {
+		opt(&m)
+	}
+
 	m.rebuildItems()
 	m.hideActivityGroups()
 	m.recalculateEffectiveTimes()
 	m.recalculateChartBounds()
 	return m
+}
+
+// ModelOption configures optional Model features.
+type ModelOption func(*Model)
+
+// WithLogFetchFunc sets the function used for on-demand step log fetching.
+func WithLogFetchFunc(f LogFetchFunc) ModelOption {
+	return func(m *Model) {
+		m.logFetchFunc = f
+	}
 }
 
 // calculateComputeAndSteps calculates total compute time and step count from spans
@@ -317,6 +347,27 @@ func (m Model) Init() tea.Cmd {
 // Update implements tea.Model
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case LogFetchResultMsg:
+		if m.logFetchedJobIDs == nil {
+			m.logFetchedJobIDs = make(map[int64]bool)
+		}
+		m.logFetchedJobIDs[m.logFetchingJobID] = true
+		m.logFetchingJobID = 0
+		m.logFetchInline = nil
+		if msg.err != nil {
+			m.reloadError = fmt.Sprintf("Log fetch failed: %v", msg.err)
+			return m, nil
+		}
+		m.reloadError = ""
+		if len(msg.newSpans) > 0 {
+			m.spans = append(m.spans, msg.newSpans...)
+			m.roots = analyzer.BuildTreeFromSpans(m.spans, m.globalStart, m.globalEnd, m.enricher)
+			m.rebuildItems()
+			m.recalculateEffectiveTimes()
+			m.recalculateChartBounds()
+		}
+		return m, nil
+
 	case ReloadResultMsg:
 		m.isLoading = false
 		m.progressCh = nil
@@ -359,7 +410,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		if m.isLoading {
+		if m.isLoading || m.logFetchInline != nil {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
@@ -750,6 +801,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.reloadFunc != nil {
 				m.isLoading = true
 				return m, tea.Batch(m.spinner.Tick, m.doReload())
+			}
+			return m, nil
+
+		case key.Matches(msg, m.keys.Logs):
+			if cmd := m.fetchLogsForCurrentItem(); cmd != nil {
+				return m, tea.Batch(m.spinner.Tick, cmd)
 			}
 			return m, nil
 
@@ -2286,8 +2343,8 @@ func (m *Model) visibleSpans() []trace.ReadOnlySpan {
 }
 
 // Run starts the TUI
-func Run(spans []trace.ReadOnlySpan, globalStart, globalEnd time.Time, inputURLs []string, reloadFunc ReloadFunc, openPerfettoFunc OpenPerfettoFunc, enricher enrichment.Enricher) error {
-	m := NewModel(spans, globalStart, globalEnd, inputURLs, reloadFunc, openPerfettoFunc, enricher)
+func Run(spans []trace.ReadOnlySpan, globalStart, globalEnd time.Time, inputURLs []string, reloadFunc ReloadFunc, openPerfettoFunc OpenPerfettoFunc, enricher enrichment.Enricher, opts ...ModelOption) error {
+	m := NewModel(spans, globalStart, globalEnd, inputURLs, reloadFunc, openPerfettoFunc, enricher, opts...)
 	// Mouse mode disabled by default to allow OSC 8 hyperlinks to work
 	// Press 'm' to toggle mouse mode for scrolling
 	p := tea.NewProgram(m, tea.WithAltScreen())
@@ -2298,3 +2355,4 @@ func Run(spans []trace.ReadOnlySpan, globalStart, globalEnd time.Time, inputURLs
 	_ = finalModel
 	return nil
 }
+

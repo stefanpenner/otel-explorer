@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "logparse",
+    srcs = [
+        "bazel.go",
+        "gradle.go",
+        "logparse.go",
+        "registry.go",
+        "setup_job.go",
+        "timestamp.go",
+    ],
+    importpath = "github.com/stefanpenner/otel-explorer/pkg/logparse",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "logparse_test",
+    srcs = ["logparse_test.go"],
+    embed = [":logparse"],
+    deps = [
+        "@com_github_stretchr_testify//assert",
+        "@com_github_stretchr_testify//require",
+    ],
+)

@@ -19,6 +19,7 @@ go_library(
         "//pkg/ingest/receiver",
         "//pkg/ingest/traceapi",
         "//pkg/ingest/webhook",
+        "//pkg/logparse",
         "//pkg/output",
         "//pkg/perfetto",
         "//pkg/tui",

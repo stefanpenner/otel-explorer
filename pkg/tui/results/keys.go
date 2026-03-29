@@ -26,6 +26,7 @@ type KeyMap struct {
 	Sort            key.Binding
 	ResizeLeft      key.Binding
 	ResizeRight     key.Binding
+	Logs            key.Binding
 	NextFailed      key.Binding
 	NextBottleneck  key.Binding
 	PageUp          key.Binding
@@ -125,6 +126,10 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("]"),
 			key.WithHelp("]", "widen tree"),
 		),
+		Logs: key.NewBinding(
+			key.WithKeys("L"),
+			key.WithHelp("L", "fetch logs"),
+		),
 		NextFailed: key.NewBinding(
 			key.WithKeys("n"),
 			key.WithHelp("n", "next failed"),
@@ -207,6 +212,7 @@ func (k KeyMap) FullHelp() [][]string {
 		{"[/]", "Resize tree/timeline split"},
 
 
+		{"L", "Fetch & parse step logs"},
 		{"r", "Reload data"},
 		{"p", "Open in Perfetto"},
 		{"/", "Search/filter"},
