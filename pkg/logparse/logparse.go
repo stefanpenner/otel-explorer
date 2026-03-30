@@ -6,9 +6,13 @@ package logparse
 import (
 	"bufio"
 	"bytes"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// ansiEscape matches ANSI escape sequences (color codes, cursor movement, etc.)
+var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
 // LogLine represents a single parsed log line with its timestamp and content.
 type LogLine struct {
@@ -63,7 +67,7 @@ func ParseLogLines(raw []byte) []LogLine {
 			continue
 		}
 
-		content := line[ghaTimestampLen:]
+		content := stripANSI(line[ghaTimestampLen:])
 		lines = append(lines, LogLine{
 			Time:    t,
 			Content: content,
@@ -73,11 +77,24 @@ func ParseLogLines(raw []byte) []LogLine {
 	return lines
 }
 
+// stripANSI removes ANSI escape sequences from a string.
+// Cargo, npm, and other tools emit colored output that interferes with
+// span name extraction and prefix grouping.
+func stripANSI(s string) string {
+	if !strings.Contains(s, "\x1b") {
+		return s // fast path: no escape sequences
+	}
+	return strings.TrimSpace(ansiEscape.ReplaceAllString(s, ""))
+}
+
 // TruncateName truncates a span name to maxLen, appending "..." if truncated.
 func TruncateName(name string, maxLen int) string {
 	name = strings.TrimSpace(name)
 	if len(name) <= maxLen {
 		return name
+	}
+	if maxLen <= 3 {
+		return name[:maxLen]
 	}
 	return name[:maxLen-3] + "..."
 }

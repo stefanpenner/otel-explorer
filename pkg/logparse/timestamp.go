@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // TimestampParser is a generic fallback parser that creates spans based on
@@ -254,7 +255,195 @@ func (p *TimestampParser) parseGapBased(lines []LogLine, regionStart, regionEnd 
 		})
 	}
 
-	return spans
+	return groupByPrefix(collapseSpans(spans))
+}
+
+// collapseSpans merges consecutive spans that have identical or non-substantive
+// names into rolled-up summary spans. This reduces noise from repetitive log
+// output (e.g., progress dots, repeated status lines).
+func collapseSpans(spans []ParsedSpan) []ParsedSpan {
+	if len(spans) == 0 {
+		return spans
+	}
+
+	var result []ParsedSpan
+	i := 0
+	for i < len(spans) {
+		s := spans[i]
+		name := s.Name
+
+		// Check if this span name is non-substantive (dots, punctuation, etc.)
+		nonSubstantive := isNonSubstantiveName(name)
+
+		// Look ahead for consecutive spans with the same name or that are
+		// also non-substantive (merge different noise names together)
+		j := i + 1
+		for j < len(spans) {
+			nextName := spans[j].Name
+			if nonSubstantive && isNonSubstantiveName(nextName) {
+				j++
+			} else if name == nextName {
+				j++
+			} else {
+				break
+			}
+		}
+
+		count := j - i
+		if count == 1 && !nonSubstantive {
+			// Single, substantive span — keep as-is
+			result = append(result, s)
+		} else if nonSubstantive && count == 1 {
+			// Single non-substantive span — skip it entirely if short
+			dur := s.EndTime.Sub(s.StartTime)
+			if dur >= 2*time.Second {
+				s.Name = fmt.Sprintf("(%s)", s.Name)
+				result = append(result, s)
+			}
+			// Otherwise drop it
+		} else {
+			// Multiple consecutive similar spans — merge into one
+			last := spans[j-1]
+			totalLines := 0
+			for k := i; k < j; k++ {
+				if lc, ok := spans[k].Attributes["log.line_count"]; ok {
+					var n int
+					fmt.Sscanf(lc, "%d", &n)
+					totalLines += n
+				}
+			}
+			dur := last.EndTime.Sub(s.StartTime)
+			merged := ParsedSpan{
+				Name:      fmt.Sprintf("%s (x%d, %s)", name, count, formatDuration(dur)),
+				StartTime: s.StartTime,
+				EndTime:   last.EndTime,
+				Attributes: map[string]string{
+					"log.line_count":  fmt.Sprintf("%d", totalLines),
+					"log.line_number": s.Attributes["log.line_number"],
+					"log.collapsed":   fmt.Sprintf("%d", count),
+				},
+			}
+			result = append(result, merged)
+		}
+		i = j
+	}
+	return result
+}
+
+// isNonSubstantiveName returns true if a span name is just dots, punctuation,
+// or other non-informative content that clutters the flamechart.
+func isNonSubstantiveName(name string) bool {
+	if name == "" {
+		return true
+	}
+	// Check if the name is predominantly non-alphanumeric
+	alphaCount := 0
+	for _, r := range name {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			alphaCount++
+		}
+	}
+	// If less than 20% of characters are alphanumeric, it's noise
+	if len(name) > 3 && float64(alphaCount)/float64(len(name)) < 0.2 {
+		return true
+	}
+	return false
+}
+
+// groupByPrefix finds runs of 3+ consecutive spans that share a common leading
+// word (e.g., "Compiling", "Downloading", "Checking") and nests them under a
+// parent span named after that prefix. The varying suffix becomes each child's name.
+//
+// Minimum run length of 3 avoids false grouping of unrelated spans that happen
+// to start with the same word.
+const minPrefixRunLen = 3
+
+func groupByPrefix(spans []ParsedSpan) []ParsedSpan {
+	if len(spans) < minPrefixRunLen {
+		return spans
+	}
+
+	var result []ParsedSpan
+	i := 0
+	for i < len(spans) {
+		prefix := leadingWord(spans[i].Name)
+		if prefix == "" {
+			result = append(result, spans[i])
+			i++
+			continue
+		}
+
+		// Find run of consecutive spans with the same leading word
+		j := i + 1
+		for j < len(spans) && leadingWord(spans[j].Name) == prefix {
+			j++
+		}
+
+		runLen := j - i
+		if runLen < minPrefixRunLen {
+			// Too few — emit individually
+			for k := i; k < j; k++ {
+				result = append(result, spans[k])
+			}
+			i = j
+			continue
+		}
+
+		// Build parent span covering the full run
+		parent := ParsedSpan{
+			Name:      fmt.Sprintf("%s (x%d, %s)", prefix, runLen, formatDuration(spans[j-1].EndTime.Sub(spans[i].StartTime))),
+			StartTime: spans[i].StartTime,
+			EndTime:   spans[j-1].EndTime,
+			Attributes: map[string]string{
+				"log.line_number": spans[i].Attributes["log.line_number"],
+				"log.collapsed":   fmt.Sprintf("%d", runLen),
+			},
+		}
+
+		// Each span becomes a child, named by the suffix after the prefix
+		for k := i; k < j; k++ {
+			child := spans[k]
+			suffix := strings.TrimSpace(strings.TrimPrefix(child.Name, prefix))
+			if suffix == "" {
+				suffix = child.Name
+			}
+			child.Name = suffix
+			parent.Children = append(parent.Children, child)
+		}
+
+		result = append(result, parent)
+		i = j
+	}
+	return result
+}
+
+// leadingWord returns the first whitespace-delimited word of s,
+// or "" if s is empty or starts with non-letter characters.
+func leadingWord(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	// Must start with a letter to be a meaningful verb/noun prefix
+	if !unicode.IsLetter(rune(s[0])) {
+		return ""
+	}
+	idx := strings.IndexByte(s, ' ')
+	if idx < 0 {
+		return "" // single-word name, no prefix to factor out
+	}
+	return s[:idx]
+}
+
+// formatDuration formats a duration in a human-friendly way.
+func formatDuration(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%.0fs", d.Seconds())
+	}
+	return fmt.Sprintf("%.1fm", d.Minutes())
 }
 
 // spanNameFromLines picks a representative name from a group of log lines.
