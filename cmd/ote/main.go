@@ -206,8 +206,8 @@ func parseArgs(args []string, terminal bool) (config, error) {
 		}
 		if strings.HasPrefix(arg, "--output=") {
 			cfg.outputFormat = strings.TrimPrefix(arg, "--output=")
-			if cfg.outputFormat != "stdout" && cfg.outputFormat != "markdown" {
-				return cfg, fmt.Errorf("invalid --output value: %s (must be 'stdout' or 'markdown')", cfg.outputFormat)
+			if cfg.outputFormat != "stdout" && cfg.outputFormat != "markdown" && cfg.outputFormat != "otel" {
+				return cfg, fmt.Errorf("invalid --output value: %s (must be 'stdout', 'markdown', or 'otel')", cfg.outputFormat)
 			}
 			cfg.tuiMode = false
 			continue
@@ -896,6 +896,20 @@ func main() {
 	}
 
 	switch cfg.outputFormat {
+	case "otel":
+		exporter, err := otelexport.NewStdoutExporter(os.Stdout)
+		if err != nil {
+			printError(err, "creating OTel exporter")
+			os.Exit(1)
+		}
+		if err := exporter.Export(ctx, spans); err != nil {
+			printError(err, "exporting OTel spans")
+			os.Exit(1)
+		}
+		if err := exporter.Finish(ctx); err != nil {
+			printError(err, "finishing OTel export")
+			os.Exit(1)
+		}
 	case "markdown":
 		output.OutputCombinedResultsMarkdown(os.Stdout, results, combined, allTraceEvents, globalEarliest, globalLatest, perfettoFile, cfg.openInPerfetto, spans, enricher)
 	default:
@@ -1060,7 +1074,7 @@ func printUsage() {
 	fmt.Println("\nFlags:")
 	fmt.Println("  --tui                     Force interactive TUI mode (default when terminal is available)")
 	fmt.Println("  --no-tui                  Disable interactive TUI, use CLI output instead")
-	fmt.Println("  --output=<format>         Output format: 'stdout' (styled terminal) or 'markdown' (implies --no-tui)")
+	fmt.Println("  --output=<format>         Output format: 'stdout', 'markdown', or 'otel' (implies --no-tui)")
 	fmt.Println("  --perfetto=<file.pftrace> Save trace for Perfetto.dev analysis")
 	fmt.Println("  --open-in-perfetto        Automatically open the generated trace in Perfetto UI")
 	fmt.Println("  --otel                    Write OTel spans as JSON to stdout")
