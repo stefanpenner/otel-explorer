@@ -4,7 +4,7 @@ set -e
 REPO="stefanpenner/otel-explorer"
 PROJECT="otel-explorer"
 BINARY="ote"
-INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 
 # Detect OS
 OS="$(uname -s)"
@@ -40,16 +40,17 @@ trap 'rm -rf "$TMPDIR"' EXIT
 curl -fsSL "$URL" -o "${TMPDIR}/${TARBALL}"
 tar -xzf "${TMPDIR}/${TARBALL}" -C "$TMPDIR"
 
-# Install binary and create backward-compat symlink
-if [ -w "$INSTALL_DIR" ]; then
-  mv "${TMPDIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
-  ln -sf "${BINARY}" "${INSTALL_DIR}/otel-explorer"
-else
-  echo "Installing to ${INSTALL_DIR} (requires sudo)..."
-  sudo mv "${TMPDIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
-  sudo ln -sf "${BINARY}" "${INSTALL_DIR}/otel-explorer"
-fi
+# Ensure install directory exists
+mkdir -p "$INSTALL_DIR"
 
+mv "${TMPDIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 chmod +x "${INSTALL_DIR}/${BINARY}"
+ln -sf "${BINARY}" "${INSTALL_DIR}/otel-explorer"
+
 echo "Installed ${BINARY} ${VERSION} to ${INSTALL_DIR}/${BINARY}"
-echo "Symlink: otel-explorer -> ${BINARY}"
+
+# Check if install dir is in PATH
+case ":$PATH:" in
+  *":${INSTALL_DIR}:"*) ;;
+  *) echo "Add ${INSTALL_DIR} to your PATH:  export PATH=\"${INSTALL_DIR}:\$PATH\"" ;;
+esac
