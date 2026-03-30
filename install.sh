@@ -2,6 +2,7 @@
 set -e
 
 REPO="stefanpenner/otel-explorer"
+PROJECT="otel-explorer"
 BINARY="ote"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 
@@ -28,7 +29,7 @@ if [ -z "$VERSION" ]; then
   exit 1
 fi
 
-TARBALL="${BINARY}_${OS}_${ARCH}.tar.gz"
+TARBALL="${PROJECT}_${OS}_${ARCH}.tar.gz"
 URL="https://github.com/${REPO}/releases/download/${VERSION}/${TARBALL}"
 
 echo "Downloading ${BINARY} ${VERSION} for ${OS}/${ARCH}..."
