@@ -377,6 +377,23 @@ func TestParseLogLinesStripsANSI(t *testing.T) {
 	assert.Equal(t, "Compiling ruff v0.15.8", lines[0].Content)
 }
 
+func TestFilterBySignificance(t *testing.T) {
+	base := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
+	parentEnd := base.Add(100 * time.Second) // 1% = 1s
+
+	spans := []ParsedSpan{
+		{Name: "Big span", StartTime: base, EndTime: base.Add(50 * time.Second)},
+		{Name: "Tiny span", StartTime: base.Add(50 * time.Second), EndTime: base.Add(50*time.Second + 500*time.Millisecond)}, // 0.5s < 1%
+		{Name: "Medium span", StartTime: base.Add(51 * time.Second), EndTime: base.Add(55 * time.Second)},
+		{Name: "Zero span", StartTime: base.Add(55 * time.Second), EndTime: base.Add(55 * time.Second)}, // 0ms
+	}
+
+	result := filterBySignificance(spans, base, parentEnd)
+	require.Len(t, result, 2)
+	assert.Equal(t, "Big span", result[0].Name)
+	assert.Equal(t, "Medium span", result[1].Name)
+}
+
 func TestLeadingWord(t *testing.T) {
 	assert.Equal(t, "Compiling", leadingWord("Compiling foo v1.0"))
 	assert.Equal(t, "Downloading", leadingWord("Downloading package"))

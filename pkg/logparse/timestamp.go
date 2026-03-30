@@ -94,7 +94,7 @@ func (p *TimestampParser) Parse(lines []LogLine, stepStart, stepEnd time.Time) [
 	}
 
 	// No groups — use the original gap-based parsing on all lines
-	return p.parseGapBased(lines, stepStart, stepEnd)
+	return filterBySignificance(p.parseGapBased(lines, stepStart, stepEnd), stepStart, stepEnd)
 }
 
 // parseWithGroups builds spans from a mix of top-level lines and group blocks.
@@ -128,7 +128,7 @@ func (p *TimestampParser) parseWithGroups(topLevel []LogLine, groups []groupBloc
 
 		// Parse children within the group using gap-based parsing
 		if len(g.lines) > 0 {
-			children := p.parseGapBased(g.lines, g.start, endTime)
+			children := filterBySignificance(p.parseGapBased(g.lines, g.start, endTime), g.start, endTime)
 			// Override child line numbers to point to the group header,
 			// because GHA collapses groups by default and deep links to
 			// lines inside collapsed groups don't scroll correctly.
@@ -256,6 +256,31 @@ func (p *TimestampParser) parseGapBased(lines []LogLine, regionStart, regionEnd 
 	}
 
 	return groupByPrefix(collapseSpans(spans))
+}
+
+// filterBySignificance drops spans whose duration is less than 1% of the
+// parent time range. This removes noise spans that don't meaningfully
+// contribute to the flamechart.
+func filterBySignificance(spans []ParsedSpan, parentStart, parentEnd time.Time) []ParsedSpan {
+	parentDur := parentEnd.Sub(parentStart)
+	if parentDur <= 0 || len(spans) == 0 {
+		return spans
+	}
+
+	threshold := parentDur / 100 // 1%
+
+	var result []ParsedSpan
+	for _, s := range spans {
+		dur := s.EndTime.Sub(s.StartTime)
+		if dur >= threshold {
+			// Also filter children recursively
+			if len(s.Children) > 0 {
+				s.Children = filterBySignificance(s.Children, s.StartTime, s.EndTime)
+			}
+			result = append(result, s)
+		}
+	}
+	return result
 }
 
 // collapseSpans merges consecutive spans that have identical or non-substantive
