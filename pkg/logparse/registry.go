@@ -39,7 +39,8 @@ func (r *Registry) Detect(lines []LogLine) Parser {
 }
 
 // Parse auto-detects the format and parses in one call.
+// The result is filtered to drop spans below 1% of the step duration.
 func (r *Registry) Parse(lines []LogLine, stepStart, stepEnd time.Time) (parserName string, spans []ParsedSpan) {
 	p := r.Detect(lines)
-	return p.Name(), p.Parse(lines, stepStart, stepEnd)
+	return p.Name(), filterBySignificance(p.Parse(lines, stepStart, stepEnd), stepStart, stepEnd)
 }

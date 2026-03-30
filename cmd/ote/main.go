@@ -35,6 +35,9 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
+// version is set by goreleaser via ldflags.
+var version = "dev"
+
 // ANSI color codes
 const (
 	colorRed   = "\033[31m"
@@ -159,6 +162,10 @@ func parseArgs(args []string, terminal bool) (config, error) {
 		if arg == "help" || arg == "--help" || arg == "-h" {
 			cfg.showHelp = true
 			continue
+		}
+		if arg == "--version" || arg == "-v" {
+			fmt.Println("ote", version)
+			os.Exit(0)
 		}
 		if strings.HasPrefix(arg, "--perfetto=") {
 			cfg.perfettoFile = strings.TrimPrefix(arg, "--perfetto=")

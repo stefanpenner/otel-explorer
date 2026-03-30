@@ -90,7 +90,7 @@ func (p *TimestampParser) Parse(lines []LogLine, stepStart, stepEnd time.Time) [
 
 	// If there are groups, build a span tree with groups as parents
 	if len(groups) > 0 {
-		return p.parseWithGroups(topLevel, groups, stepStart, stepEnd)
+		return filterBySignificance(p.parseWithGroups(topLevel, groups, stepStart, stepEnd), stepStart, stepEnd)
 	}
 
 	// No groups — use the original gap-based parsing on all lines
@@ -128,7 +128,7 @@ func (p *TimestampParser) parseWithGroups(topLevel []LogLine, groups []groupBloc
 
 		// Parse children within the group using gap-based parsing
 		if len(g.lines) > 0 {
-			children := filterBySignificance(p.parseGapBased(g.lines, g.start, endTime), g.start, endTime)
+			children := p.parseGapBased(g.lines, g.start, endTime)
 			// Override child line numbers to point to the group header,
 			// because GHA collapses groups by default and deep links to
 			// lines inside collapsed groups don't scroll correctly.
