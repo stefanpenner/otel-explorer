@@ -250,6 +250,16 @@ func (m Model) renderHeader() string {
 			partsPlain = append(partsPlain, fmt.Sprintf("Billable: %s", billStr))
 		}
 
+		// Artifacts
+		if m.artifactsCount > 0 {
+			artLabel := fmt.Sprintf("%d", m.artifactsCount)
+			if m.artifactsSize != "" {
+				artLabel += " (" + m.artifactsSize + ")"
+			}
+			parts = append(parts, HeaderCountStyle.Render("Artifacts: ")+numStyle.Render(artLabel))
+			partsPlain = append(partsPlain, fmt.Sprintf("Artifacts: %s", artLabel))
+		}
+
 		if len(parts) > 0 {
 			styled4 := strings.Join(parts, sep)
 			plain4 := strings.Join(partsPlain, " • ")
