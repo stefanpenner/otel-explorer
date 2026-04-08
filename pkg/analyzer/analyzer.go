@@ -483,7 +483,7 @@ func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex
 
 	for jobIndex, job := range jobs {
 		jobThreadID := jobIndex + 10
-		processJob(job, jobIndex, run, jobThreadID, processID, earliestTime, &metrics, &traceEvents, &jobStartTimes, &jobEndTimes, prURL, urlIndex, displayURL, sourceType, identifier, requiredContexts, builder, tid, wfSC, jobAnnotations[job.Name])
+		processJob(job, jobIndex, run, jobThreadID, processID, earliestTime, runEndTs, &metrics, &traceEvents, &jobStartTimes, &jobEndTimes, prURL, urlIndex, displayURL, sourceType, identifier, requiredContexts, builder, tid, wfSC, jobAnnotations[job.Name])
 	}
 
 	// Fetch billable timing (best-effort, don't fail on error)
@@ -709,17 +709,31 @@ func processPreviousAttempt(attempt int64, jobs []githubapi.Job, run githubapi.W
 	prURL := fmt.Sprintf("https://github.com/%s/%s/pull/%s", owner, repo, identifier)
 	for jobIndex, job := range jobs {
 		jobThreadID := jobIndex + 10
-		processJob(job, jobIndex, run, jobThreadID, processID, earliestTime, metrics, traceEvents, jobStartTimes, jobEndTimes, prURL, urlIndex, displayURL, sourceType, identifier, requiredContexts, builder, tid, wfSC, nil)
+		processJob(job, jobIndex, run, jobThreadID, processID, earliestTime, wfEnd.UnixMilli(), metrics, traceEvents, jobStartTimes, jobEndTimes, prURL, urlIndex, displayURL, sourceType, identifier, requiredContexts, builder, tid, wfSC, nil)
 	}
 }
 
-func processJob(job githubapi.Job, jobIndex int, run githubapi.WorkflowRun, jobThreadID, processID int, earliestTime int64, metrics *Metrics, traceEvents *[]TraceEvent, jobStartTimes, jobEndTimes *[]JobEvent, prURL string, urlIndex int, displayURL, sourceType, identifier string, requiredContexts []string, builder *SpanBuilder, traceID trace.TraceID, parentSC trace.SpanContext, annotations []githubapi.Annotation) {
+func processJob(job githubapi.Job, jobIndex int, run githubapi.WorkflowRun, jobThreadID, processID int, earliestTime int64, runEndTs int64, metrics *Metrics, traceEvents *[]TraceEvent, jobStartTimes, jobEndTimes *[]JobEvent, prURL string, urlIndex int, displayURL, sourceType, identifier string, requiredContexts []string, builder *SpanBuilder, traceID trace.TraceID, parentSC trace.SpanContext, annotations []githubapi.Annotation) {
 	if job.StartedAt == "" {
 		return
 	}
 
 	jobStart, _ := utils.ParseTime(job.StartedAt)
-	jobEnd, _ := utils.ParseTime(job.CompletedAt)
+	jobEnd := time.Now()
+	if job.CompletedAt != "" {
+		if t, ok := utils.ParseTime(job.CompletedAt); ok {
+			jobEnd = t
+		}
+	}
+	// Clamp job end time to parent workflow's end time so child spans
+	// don't visually escape their parent in the flamechart.
+	wfEndTime := time.UnixMilli(runEndTs)
+	if jobEnd.After(wfEndTime) {
+		jobEnd = wfEndTime
+	}
+	if jobStart.After(wfEndTime) {
+		jobStart = wfEndTime
+	}
 
 	jobURL := job.HTMLURL
 	if jobURL == "" {
@@ -755,12 +769,7 @@ func processJob(job githubapi.Job, jobIndex int, run githubapi.WorkflowRun, jobT
 	if !ok {
 		return
 	}
-	absoluteJobEnd := time.Now()
-	if !isPending {
-		if t, ok := utils.ParseTime(job.CompletedAt); ok {
-			absoluteJobEnd = t
-		}
-	}
+	absoluteJobEnd := jobEnd
 
 	metrics.TotalJobs++
 	if !isPending && (job.Status != "completed" || job.Conclusion != "success") {
@@ -979,6 +988,15 @@ func processStep(step githubapi.Step, job githubapi.Job, run githubapi.WorkflowR
 	end, ok := utils.ParseTime(step.CompletedAt)
 	if !ok {
 		return
+	}
+	// Clamp step end time to parent job's end time so child spans
+	// don't visually escape their parent in the flamechart.
+	jobEndTime := time.UnixMilli(jobEndTs)
+	if end.After(jobEndTime) {
+		end = jobEndTime
+	}
+	if start.After(jobEndTime) {
+		start = jobEndTime
 	}
 
 	stepURL := fmt.Sprintf("%s#step:%d:1", jobURL, step.Number)
