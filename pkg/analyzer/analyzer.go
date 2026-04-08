@@ -564,7 +564,7 @@ func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex
 					run.Repository.Owner.Login, run.Repository.Name, run.ID, a.ID)
 				wfAttrs = append(wfAttrs,
 					attribute.String(fmt.Sprintf("cicd.pipeline.artifact.%d.name", idx), a.Name),
-					attribute.String(fmt.Sprintf("cicd.pipeline.artifact.%d.size", idx), formatBytes(a.SizeInBytes)),
+					attribute.String(fmt.Sprintf("cicd.pipeline.artifact.%d.size", idx), FormatBytes(a.SizeInBytes)),
 					attribute.String(fmt.Sprintf("cicd.pipeline.artifact.%d.url", idx), artifactURL),
 				)
 				idx++
@@ -574,7 +574,8 @@ func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex
 			wfAttrs = append(wfAttrs,
 				attribute.String("cicd.pipeline.artifacts.count", fmt.Sprintf("%d", len(names))),
 				attribute.String("cicd.pipeline.artifacts.names", strings.Join(names, ", ")),
-				attribute.String("cicd.pipeline.artifacts.size", formatBytes(totalSize)),
+				attribute.String("cicd.pipeline.artifacts.size", FormatBytes(totalSize)),
+				attribute.String("cicd.pipeline.artifacts.size_bytes", fmt.Sprintf("%d", totalSize)),
 			)
 		}
 	}
@@ -1240,7 +1241,7 @@ func isJobRequired(jobName, workflowName string, requiredContexts []string) bool
 }
 
 // ghConclusionToResult maps a GitHub conclusion to a cicd.pipeline.run.result value.
-func formatBytes(b int64) string {
+func FormatBytes(b int64) string {
 	switch {
 	case b >= 1<<30:
 		return fmt.Sprintf("%.1f GB", float64(b)/float64(1<<30))

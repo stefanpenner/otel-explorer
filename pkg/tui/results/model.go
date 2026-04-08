@@ -148,9 +148,10 @@ type Model struct {
 	changedFilesAdd   int
 	changedFilesDel   int
 	// Uploaded artifacts (from root span attributes)
-	artifactsCount int
-	artifactsSize  string
-	artifactNames  string
+	artifactsCount     int
+	artifactsSizeBytes int64
+	artifactsSize      string
+	artifactNames      string
 	// Workflow definition files
 	workflowFiles []string
 	// Log fetch state
@@ -231,13 +232,22 @@ func NewModel(spans []trace.ReadOnlySpan, globalStart, globalEnd time.Time, inpu
 		}
 		if n, _ := strconv.Atoi(root.Attrs["cicd.pipeline.artifacts.count"]); n > 0 {
 			m.artifactsCount += n
-			m.artifactsSize = root.Attrs["cicd.pipeline.artifacts.size"]
-			m.artifactNames = root.Attrs["cicd.pipeline.artifacts.names"]
+			if sizeBytes, err := strconv.ParseInt(root.Attrs["cicd.pipeline.artifacts.size_bytes"], 10, 64); err == nil {
+				m.artifactsSizeBytes += sizeBytes
+			}
+			if m.artifactNames == "" {
+				m.artifactNames = root.Attrs["cicd.pipeline.artifacts.names"]
+			} else {
+				m.artifactNames += ", " + root.Attrs["cicd.pipeline.artifacts.names"]
+			}
 		}
 		if p := root.Attrs["cicd.pipeline.definition"]; p != "" && !seenFiles[p] {
 			seenFiles[p] = true
 			m.workflowFiles = append(m.workflowFiles, p)
 		}
+	}
+	if m.artifactsSizeBytes > 0 {
+		m.artifactsSize = analyzer.FormatBytes(m.artifactsSizeBytes)
 	}
 
 	// Expand URL groups + workflows for multi-URL, just workflows for single
