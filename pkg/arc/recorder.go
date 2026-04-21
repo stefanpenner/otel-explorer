@@ -3,7 +3,9 @@ package arc
 import (
 	"context"
 	"fmt"
+	"log"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +27,7 @@ import (
 type OTelRecorder struct {
 	mu       sync.Mutex
 	exporter sdktrace.SpanExporter
+	logf     func(string, ...any)
 
 	// runAttempt is used for trace ID generation. ARC messages don't
 	// include run_attempt, so this defaults to 1. Set it if your
@@ -36,6 +39,7 @@ type OTelRecorder struct {
 func NewOTelRecorder(exporter sdktrace.SpanExporter) *OTelRecorder {
 	return &OTelRecorder{
 		exporter:   exporter,
+		logf:       log.Printf,
 		runAttempt: 1,
 	}
 }
@@ -65,7 +69,9 @@ func (r *OTelRecorder) RecordJobCompleted(msg *JobCompleted) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = r.exporter.ExportSpans(ctx, spans)
+	if err := r.exporter.ExportSpans(ctx, spans); err != nil {
+		r.logf("arc: failed to export OTel spans: %v", err)
+	}
 }
 
 func (r *OTelRecorder) RecordStatistics(_ *RunnerScaleSetStatistic) {}
@@ -85,14 +91,26 @@ func (r *OTelRecorder) buildSpans(msg *JobCompleted, attempt int64) []sdktrace.R
 		TraceFlags: trace.FlagsSampled,
 	})
 
+	conclusion := normalizeConclusion(msg.Result)
+	repo := msg.OwnerName + "/" + msg.RepositoryName
+
 	commonAttrs := []attribute.KeyValue{
+		// GitHub Actions attributes
 		attribute.Int64("github.run_id", msg.WorkflowRunID),
 		attribute.String("github.job_id", msg.JobID),
 		attribute.String("github.job_name", msg.JobDisplayName),
-		attribute.String("github.repository", msg.OwnerName+"/"+msg.RepositoryName),
+		attribute.String("github.repository", repo),
 		attribute.String("github.runner_name", msg.RunnerName),
 		attribute.Int("github.runner_id", msg.RunnerID),
 		attribute.String("github.workflow_ref", msg.JobWorkflowRef),
+		attribute.String("github.event_name", msg.EventName),
+		// OTel CI/CD semantic conventions (cicd.*)
+		attribute.String("cicd.pipeline.run.id", strconv.FormatInt(msg.WorkflowRunID, 10)),
+		attribute.String("cicd.pipeline.task.name", msg.JobDisplayName),
+		attribute.String("cicd.pipeline.task.run.id", msg.JobID),
+		attribute.String("cicd.worker.name", msg.RunnerName),
+		attribute.String("cicd.worker.id", strconv.Itoa(msg.RunnerID)),
+		attribute.String("vcs.repository.url.full", "https://github.com/"+repo),
 	}
 
 	var stubs tracetest.SpanStubs
@@ -101,7 +119,7 @@ func (r *OTelRecorder) buildSpans(msg *JobCompleted, attempt int64) []sdktrace.R
 		stubs = append(stubs, makeStub(
 			traceID, parentSC, "runner.queue",
 			msg.QueueTime, msg.ScaleSetAssignTime,
-			append(commonAttrs, attribute.String("type", "runner.queue")),
+			append(sliceClone(commonAttrs), attribute.String("type", "runner.queue")),
 		))
 	}
 
@@ -109,7 +127,7 @@ func (r *OTelRecorder) buildSpans(msg *JobCompleted, attempt int64) []sdktrace.R
 		stubs = append(stubs, makeStub(
 			traceID, parentSC, "runner.startup",
 			msg.ScaleSetAssignTime, msg.RunnerAssignTime,
-			append(commonAttrs, attribute.String("type", "runner.startup")),
+			append(sliceClone(commonAttrs), attribute.String("type", "runner.startup")),
 		))
 	}
 
@@ -117,14 +135,63 @@ func (r *OTelRecorder) buildSpans(msg *JobCompleted, attempt int64) []sdktrace.R
 		stubs = append(stubs, makeStub(
 			traceID, parentSC, "runner.execution",
 			msg.RunnerAssignTime, msg.FinishTime,
-			append(commonAttrs,
+			append(sliceClone(commonAttrs),
 				attribute.String("type", "runner.execution"),
-				attribute.String("github.conclusion", msg.Result),
+				attribute.String("github.conclusion", conclusion),
+				attribute.String("cicd.pipeline.task.run.result", conclusionToSemconv(conclusion)),
 			),
 		))
 	}
 
 	return stubs.Snapshots()
+}
+
+// normalizeConclusion maps ARC/GitHub conclusion variants to standard
+// GitHub API values (lowercase present tense).
+func normalizeConclusion(raw string) string {
+	switch strings.ToLower(raw) {
+	case "success", "succeeded":
+		return "success"
+	case "failure", "failed":
+		return "failure"
+	case "cancelled", "canceled":
+		return "cancelled"
+	case "skipped":
+		return "skipped"
+	case "timed_out":
+		return "timed_out"
+	case "startup_failure":
+		return "startup_failure"
+	default:
+		return strings.ToLower(raw)
+	}
+}
+
+// conclusionToSemconv maps GitHub conclusion values to OTel CI/CD
+// semantic convention result values.
+func conclusionToSemconv(conclusion string) string {
+	switch conclusion {
+	case "success":
+		return "success"
+	case "failure":
+		return "failure"
+	case "cancelled":
+		return "cancellation"
+	case "skipped":
+		return "skip"
+	case "timed_out":
+		return "timeout"
+	case "startup_failure":
+		return "error"
+	default:
+		return conclusion
+	}
+}
+
+func sliceClone(s []attribute.KeyValue) []attribute.KeyValue {
+	out := make([]attribute.KeyValue, len(s))
+	copy(out, s)
+	return out
 }
 
 func makeStub(

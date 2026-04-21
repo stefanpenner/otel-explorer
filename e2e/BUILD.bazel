@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "e2e_test",
+    srcs = ["arc_integration_test.go"],
+    deps = [
+        "//pkg/arc",
+        "//pkg/enrichment",
+        "//pkg/githubapi",
+        "//pkg/ingest/receiver",
+        "@com_github_stretchr_testify//assert",
+        "@com_github_stretchr_testify//require",
+        "@io_opentelemetry_go_otel_exporters_otlp_otlptrace_otlptracehttp//:otlptracehttp",
+        "@io_opentelemetry_go_otel_sdk//trace",
+    ],
+)

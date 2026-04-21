@@ -2,6 +2,7 @@ package arc
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -48,6 +49,7 @@ func TestOTelRecorder_EmitsThreeSpans(t *testing.T) {
 			OwnerName:          "acme",
 			RepositoryName:     "widgets",
 			JobWorkflowRef:     "acme/widgets/.github/workflows/ci.yml@refs/heads/main",
+			EventName:          "push",
 			QueueTime:          now,
 			ScaleSetAssignTime: now.Add(10 * time.Second),
 			RunnerAssignTime:   now.Add(40 * time.Second),
@@ -101,6 +103,19 @@ func TestOTelRecorder_EmitsThreeSpans(t *testing.T) {
 	assert.Equal(t, now.Add(5*time.Minute), e.EndTime())
 	assertAttr(t, e, "type", "runner.execution")
 	assertAttr(t, e, "github.conclusion", "success")
+	assertAttr(t, e, "cicd.pipeline.task.run.result", "success")
+
+	// Verify CI/CD semantic convention attributes on all spans
+	for name, span := range byName {
+		assertAttr(t, span, "cicd.pipeline.run.id", "99999")
+		assertAttr(t, span, "cicd.pipeline.task.name", "build")
+		assertAttr(t, span, "cicd.pipeline.task.run.id", "42")
+		assertAttr(t, span, "cicd.worker.name", "runner-abc-xyz")
+		assertAttr(t, span, "cicd.worker.id", "7")
+		assertAttr(t, span, "vcs.repository.url.full", "https://github.com/acme/widgets")
+		assertAttr(t, span, "github.event_name", "push")
+		_ = name
+	}
 }
 
 func TestOTelRecorder_SkipsMissingTimestamps(t *testing.T) {
@@ -222,6 +237,78 @@ func TestOTelRecorder_StatisticsIsNoOp(t *testing.T) {
 
 	assert.Empty(t, exp.Spans())
 }
+
+func TestOTelRecorder_NormalizesConclusion(t *testing.T) {
+	tests := []struct {
+		input              string
+		wantConclusion     string
+		wantSemconvResult  string
+	}{
+		{"success", "success", "success"},
+		{"Succeeded", "success", "success"},
+		{"succeeded", "success", "success"},
+		{"failure", "failure", "failure"},
+		{"Failed", "failure", "failure"},
+		{"cancelled", "cancelled", "cancellation"},
+		{"Cancelled", "cancelled", "cancellation"},
+		{"skipped", "skipped", "skip"},
+		{"timed_out", "timed_out", "timeout"},
+		{"startup_failure", "startup_failure", "error"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			exp := &captureExporter{}
+			rec := NewOTelRecorder(exp)
+
+			now := time.Now()
+			rec.RecordJobCompleted(&JobCompleted{
+				JobMessageBase: JobMessageBase{
+					WorkflowRunID:    1,
+					JobID:            "1",
+					RunnerAssignTime: now,
+					FinishTime:       now.Add(time.Second),
+				},
+				Result: tt.input,
+			})
+
+			spans := exp.Spans()
+			require.Len(t, spans, 1)
+			assertAttr(t, spans[0], "github.conclusion", tt.wantConclusion)
+			assertAttr(t, spans[0], "cicd.pipeline.task.run.result", tt.wantSemconvResult)
+		})
+	}
+}
+
+func TestOTelRecorder_ExportError(t *testing.T) {
+	var logged bool
+	exp := &failingExporter{}
+	rec := NewOTelRecorder(exp)
+	rec.logf = func(format string, args ...any) {
+		logged = true
+	}
+
+	now := time.Now()
+	rec.RecordJobCompleted(&JobCompleted{
+		JobMessageBase: JobMessageBase{
+			WorkflowRunID:    1,
+			JobID:            "1",
+			RunnerAssignTime: now,
+			FinishTime:       now.Add(time.Second),
+		},
+		Result: "success",
+	})
+
+	assert.True(t, logged, "export error should have been logged")
+}
+
+type failingExporter struct{}
+
+func (e *failingExporter) ExportSpans(_ context.Context, _ []sdktrace.ReadOnlySpan) error {
+	return fmt.Errorf("connection refused")
+}
+
+func (e *failingExporter) Shutdown(_ context.Context) error { return nil }
 
 func assertAttr(t *testing.T, span sdktrace.ReadOnlySpan, key, expected string) {
 	t.Helper()

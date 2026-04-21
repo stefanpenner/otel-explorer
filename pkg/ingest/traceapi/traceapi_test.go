@@ -32,8 +32,8 @@ func TestFetchTrace(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		if r.Header.Get("Accept") != "application/json" {
-			t.Errorf("expected Accept: application/json, got %q", r.Header.Get("Accept"))
+		if r.Header.Get("Accept") != "application/protobuf" {
+			t.Errorf("expected Accept: application/protobuf, got %q", r.Header.Get("Accept"))
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(otlpJSON))

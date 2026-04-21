@@ -1,0 +1,18 @@
+githubConfigUrl: "https://github.com/stefanpenner/-ci-test"
+githubConfigSecret: arc-github-secret
+
+maxRunners: 3
+minRunners: 0
+
+scaleSetLabels:
+  - kind
+
+listenerTemplate:
+  spec:
+    containers:
+      - name: listener
+        env:
+          - name: OTEL_EXPORTER_OTLP_ENDPOINT
+            value: "otel-collector.observability.svc:4318"
+          - name: OTEL_EXPORTER_OTLP_INSECURE
+            value: "true"

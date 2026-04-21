@@ -1,0 +1,18 @@
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.120.0
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml
+    ports:
+      - "4318:4318"   # OTLP HTTP (arc-sim sends here)
+    depends_on:
+      - tempo
+
+  tempo:
+    image: grafana/tempo:2.7.2
+    volumes:
+      - ./tempo-config.yaml:/etc/tempo/config.yaml
+    command: ["-config.file=/etc/tempo/config.yaml"]
+    ports:
+      - "3200:3200"   # Tempo HTTP API (otel-explorer reads here)
+      - "4317:4317"   # OTLP gRPC (collector sends here)

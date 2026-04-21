@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -95,9 +96,14 @@ func (r *Receiver) handleTraces(w http.ResponseWriter, req *http.Request) {
 	}
 
 	defer req.Body.Close()
-	body, err := io.ReadAll(req.Body)
+	const maxBodySize = 32 * 1024 * 1024 // 32 MB
+	body, err := io.ReadAll(io.LimitReader(req.Body, maxBodySize+1))
 	if err != nil {
 		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return
+	}
+	if len(body) > maxBodySize {
+		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		return
 	}
 
@@ -106,14 +112,18 @@ func (r *Receiver) handleTraces(w http.ResponseWriter, req *http.Request) {
 	var spans []sdktrace.ReadOnlySpan
 
 	switch {
-	case contentType == "application/x-protobuf":
-		// Binary protobuf OTLP — fall back to JSON parser on failure
-		spans, err = otlpfile.ParseProtobuf(bytes.NewReader(body))
+	case strings.HasPrefix(contentType, "application/x-protobuf"),
+		strings.HasPrefix(contentType, "application/protobuf"):
+		// Try raw OTLP protobuf first (ExportTraceServiceRequest),
+		// then length-prefixed file format, then JSON fallback.
+		spans, err = otlpfile.ParseRawProtobuf(body)
+		if err != nil || len(spans) == 0 {
+			spans, err = otlpfile.ParseProtobuf(bytes.NewReader(body))
+		}
 		if err != nil || len(spans) == 0 {
 			var jsonErr error
 			spans, jsonErr = otlpfile.Parse(bytes.NewReader(body))
 			if jsonErr != nil {
-				// Report the original protobuf error since that was the intended format
 				if err == nil {
 					err = jsonErr
 				}

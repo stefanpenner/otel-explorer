@@ -22,6 +22,37 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// ParseRawProtobuf parses a raw (non-length-prefixed) protobuf message as
+// sent by OTLP/HTTP exporters. The wire format of ExportTraceServiceRequest
+// and TracesData is identical for the resource_spans field.
+func ParseRawProtobuf(data []byte) ([]sdktrace.ReadOnlySpan, error) {
+	var td v1.TracesData
+	if err := proto.Unmarshal(data, &td); err != nil {
+		return nil, fmt.Errorf("unmarshaling raw protobuf: %w", err)
+	}
+
+	var stubs tracetest.SpanStubs
+	for _, rs := range td.ResourceSpans {
+		var res *resource.Resource
+		if rs.Resource != nil {
+			res = resource.NewSchemaless(convertProtobufAttrs(rs.Resource.Attributes)...)
+		}
+		for _, ss := range rs.ScopeSpans {
+			var scope instrumentation.Scope
+			if ss.Scope != nil {
+				scope = instrumentation.Scope{
+					Name:    ss.Scope.Name,
+					Version: ss.Scope.Version,
+				}
+			}
+			for _, span := range ss.Spans {
+				stubs = append(stubs, convertProtobufSpan(span, res, scope))
+			}
+		}
+	}
+	return stubs.Snapshots(), nil
+}
+
 // ParseProtobuf reads length-prefixed binary protobuf messages from a reader
 // and returns ReadOnlySpans. Each message is a 4-byte big-endian uint32 length
 // prefix followed by a protobuf-encoded TracesData message.
