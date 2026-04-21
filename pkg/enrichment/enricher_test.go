@@ -144,6 +144,81 @@ func TestGHAEnricher_NonGHASpan(t *testing.T) {
 	}
 }
 
+func TestGHAEnricher_RunnerQueue(t *testing.T) {
+	e := &GHAEnricher{}
+	attrs := map[string]string{
+		"type":               "runner.queue",
+		"github.runner_name": "runner-abc",
+	}
+	h := e.Enrich("runner.queue", attrs, false)
+
+	if h.Category != "runner.queue" {
+		t.Errorf("expected category 'runner.queue', got %q", h.Category)
+	}
+	if !h.IsLeaf {
+		t.Error("expected IsLeaf=true for runner.queue")
+	}
+	if h.Color != "yellow" {
+		t.Errorf("expected color 'yellow', got %q", h.Color)
+	}
+	if h.Outcome != "pending" {
+		t.Errorf("expected outcome 'pending', got %q", h.Outcome)
+	}
+}
+
+func TestGHAEnricher_RunnerStartup(t *testing.T) {
+	e := &GHAEnricher{}
+	attrs := map[string]string{
+		"type": "runner.startup",
+	}
+	h := e.Enrich("runner.startup", attrs, false)
+
+	if h.Category != "runner.startup" {
+		t.Errorf("expected category 'runner.startup', got %q", h.Category)
+	}
+	if h.Color != "blue" {
+		t.Errorf("expected color 'blue', got %q", h.Color)
+	}
+}
+
+func TestGHAEnricher_RunnerExecution(t *testing.T) {
+	e := &GHAEnricher{}
+	attrs := map[string]string{
+		"type":              "runner.execution",
+		"github.conclusion": "success",
+	}
+	h := e.Enrich("runner.execution", attrs, false)
+
+	if h.Category != "runner.execution" {
+		t.Errorf("expected category 'runner.execution', got %q", h.Category)
+	}
+	if !h.IsLeaf {
+		t.Error("expected IsLeaf=true for runner.execution")
+	}
+	if h.Outcome != "success" {
+		t.Errorf("expected outcome 'success', got %q", h.Outcome)
+	}
+	if h.Color != "green" {
+		t.Errorf("expected color 'green', got %q", h.Color)
+	}
+}
+
+func TestGHAEnricher_RunnerExecutionFailure(t *testing.T) {
+	e := &GHAEnricher{}
+	attrs := map[string]string{
+		"type":              "runner.execution",
+		"github.conclusion": "failure",
+	}
+	h := e.Enrich("runner.execution", attrs, false)
+
+	if h.Outcome != "failure" {
+		t.Errorf("expected outcome 'failure', got %q", h.Outcome)
+	}
+	if h.Color != "red" {
+		t.Errorf("expected color 'red', got %q", h.Color)
+	}
+}
+
 func TestGenericEnricher_NormalSpan(t *testing.T) {
 	e := &GenericEnricher{}
 	attrs := map[string]string{
