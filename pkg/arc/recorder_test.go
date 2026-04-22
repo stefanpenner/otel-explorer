@@ -310,6 +310,39 @@ func (e *failingExporter) ExportSpans(_ context.Context, _ []sdktrace.ReadOnlySp
 
 func (e *failingExporter) Shutdown(_ context.Context) error { return nil }
 
+func BenchmarkBuildSpans(b *testing.B) {
+	exp := &captureExporter{}
+	rec := NewOTelRecorder(exp)
+	rec.logf = func(string, ...any) {}
+
+	now := time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC)
+	msg := &JobCompleted{
+		JobMessageBase: JobMessageBase{
+			RunnerRequestID:    1,
+			WorkflowRunID:      99999,
+			JobID:              "42",
+			JobDisplayName:     "build",
+			OwnerName:          "acme",
+			RepositoryName:     "widgets",
+			JobWorkflowRef:     "acme/widgets/.github/workflows/ci.yml@refs/heads/main",
+			EventName:          "push",
+			QueueTime:          now,
+			ScaleSetAssignTime: now.Add(10 * time.Second),
+			RunnerAssignTime:   now.Add(40 * time.Second),
+			FinishTime:         now.Add(5 * time.Minute),
+		},
+		Result:     "succeeded",
+		RunnerID:   7,
+		RunnerName: "runner-abc-xyz",
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rec.RecordJobCompleted(msg)
+	}
+}
+
 func assertAttr(t *testing.T, span sdktrace.ReadOnlySpan, key, expected string) {
 	t.Helper()
 	for _, a := range span.Attributes() {
