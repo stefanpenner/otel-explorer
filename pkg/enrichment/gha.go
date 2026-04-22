@@ -8,7 +8,8 @@ type GHAEnricher struct{}
 // Returns empty hints (Category=="") if the span is not a GHA span.
 func (e *GHAEnricher) Enrich(name string, attrs map[string]string, isZeroDuration bool) SpanHints {
 	spanType := attrs["type"]
-	if spanType != "workflow" && spanType != "job" && spanType != "step" && spanType != "marker" && spanType != "log_span" {
+	if spanType != "workflow" && spanType != "job" && spanType != "step" && spanType != "marker" && spanType != "log_span" &&
+		spanType != "runner.queue" && spanType != "runner.startup" && spanType != "runner.execution" {
 		return SpanHints{}
 	}
 
@@ -67,6 +68,22 @@ func (e *GHAEnricher) Enrich(name string, attrs map[string]string, isZeroDuratio
 		h.SortPriority = -1
 		h.GroupKey = "activity"
 		h.enrichMarker(attrs)
+	case "runner.queue":
+		h.IsLeaf = true
+		h.Icon = "⏳"
+		h.BarChar = "░"
+		h.Color = "yellow"
+		h.Outcome = "pending"
+	case "runner.startup":
+		h.IsLeaf = true
+		h.Icon = "🔄"
+		h.BarChar = "░"
+		h.Color = "blue"
+		h.Outcome = "pending"
+	case "runner.execution":
+		h.IsLeaf = true
+		h.Icon = "🏃"
+		h.BarChar = "▒"
 	}
 
 	return h

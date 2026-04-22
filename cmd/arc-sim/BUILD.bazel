@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "arc-sim_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/stefanpenner/otel-explorer/cmd/arc-sim",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//pkg/arc",
+        "//pkg/githubapi",
+        "@io_opentelemetry_go_otel_exporters_otlp_otlptrace_otlptracehttp//:otlptracehttp",
+    ],
+)
+
+go_binary(
+    name = "arc-sim",
+    embed = [":arc-sim_lib"],
+    visibility = ["//visibility:public"],
+)
