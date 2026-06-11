@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/stefanpenner/otel-explorer/pkg/enrichment"
+	"github.com/stefanpenner/otel-explorer/pkg/utils"
 	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -210,4 +211,53 @@ func TestJobSpanRequiredEmoji(t *testing.T) {
 		assert.NotContains(t, output, "📋")
 		assert.NotContains(t, output, "🔒")
 	})
+}
+
+func TestRenderOTelTimelineZeroDuration(t *testing.T) {
+	// A trace whose spans all share a single timestamp used to make
+	// totalDuration zero, producing 0/0 = NaN in the bar math. int(NaN) is
+	// architecture-dependent (0 on arm64, minInt64 on amd64), garbling the
+	// waterfall on amd64. The timeline must clamp and stay aligned.
+	now := time.Now().Truncate(time.Second)
+
+	span := &mockReadOnlySpan{
+		name:      "instant-op",
+		startTime: now,
+		endTime:   now, // zero duration
+		spanID:    trace.SpanID{9, 9, 9, 9, 9, 9, 9, 9},
+	}
+
+	var buf bytes.Buffer
+	RenderOTelTimeline(&buf, []sdktrace.ReadOnlySpan{span}, now, now, enrichment.DefaultEnricher())
+
+	output := utils.StripANSI(buf.String())
+	assert.Contains(t, output, "Duration: 0s")
+	assert.Contains(t, output, "instant-op")
+
+	// Every row must keep the 62-cell interior between the box borders.
+	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+	assert.NotEmpty(t, lines)
+	for _, line := range lines {
+		runes := []rune(line)
+		if len(runes) == 0 {
+			continue
+		}
+		switch runes[0] {
+		case '┌', '└', '├':
+			assert.Equal(t, 64, len(runes), "border width mismatch: %q", line)
+		case '│':
+			// Find the closing border of the waterfall area.
+			closing := -1
+			for i := 1; i < len(runes); i++ {
+				if runes[i] == '│' {
+					closing = i
+					break
+				}
+			}
+			assert.NotEqual(t, -1, closing, "row missing closing border: %q", line)
+			// Marker rows reserve 2 display cells for the marker char, so
+			// their rune count can be one short of the 63-rune border column.
+			assert.True(t, closing == 62 || closing == 63, "row interior width mismatch (closing border at rune %d): %q", closing, line)
+		}
+	}
 }

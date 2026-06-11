@@ -2,6 +2,7 @@ package utils
 
 import (
 	"fmt"
+	"io"
 	"net/url"
 	"os/exec"
 	"runtime"
@@ -20,8 +21,21 @@ func HumanizeTime(seconds float64) string {
 	if seconds == 0 {
 		return "0s"
 	}
+	prefix := ""
+	if seconds < 0 {
+		prefix = "-"
+		seconds = -seconds
+	}
 	if seconds < 1 {
-		return fmt.Sprintf("%dms", int(seconds*1000+0.5))
+		ms := int(seconds*1000 + 0.5)
+		if ms == 0 {
+			return "0s"
+		}
+		if ms < 1000 {
+			return fmt.Sprintf("%s%dms", prefix, ms)
+		}
+		// Rounded up to a full second; fall through to the seconds path.
+		seconds = 1
 	}
 
 	hours := int(seconds) / 3600
@@ -38,7 +52,7 @@ func HumanizeTime(seconds float64) string {
 	if secs > 0 || len(parts) == 0 {
 		parts = append(parts, fmt.Sprintf("%ds", secs))
 	}
-	return strings.Join(parts, " ")
+	return prefix + strings.Join(parts, " ")
 }
 
 func ParseGitHubURL(raw string) (ParsedGitHubURL, error) {
@@ -60,10 +74,12 @@ func ParseGitHubURL(raw string) (ParsedGitHubURL, error) {
 	}
 
 	parts := strings.FieldsFunc(parsed.Path, func(r rune) bool { return r == '/' })
-	if len(parts) == 4 && parts[2] == "pull" {
+	// Tolerate trailing segments (e.g. /pull/123/files, /pull/123/commits)
+	// that come along when copying URLs from PR tabs.
+	if len(parts) >= 4 && parts[2] == "pull" {
 		return ParsedGitHubURL{Owner: parts[0], Repo: parts[1], Type: "pr", Identifier: parts[3]}, nil
 	}
-	if len(parts) == 4 && parts[2] == "commit" {
+	if len(parts) >= 4 && parts[2] == "commit" {
 		return ParsedGitHubURL{Owner: parts[0], Repo: parts[1], Type: "commit", Identifier: parts[3]}, nil
 	}
 	if len(parts) >= 5 && parts[2] == "actions" && parts[3] == "runs" {
@@ -93,35 +109,57 @@ func GetJobGroup(jobName string) string {
 	return jobName
 }
 
+// colorEnabled gates ANSI color and OSC 8 hyperlink emission. It defaults to
+// true and is initialized by the CLI entry point based on whether the output
+// destination is a terminal (and NO_COLOR).
+var colorEnabled = true
+
+// SetColorEnabled enables or disables ANSI/OSC escape sequence emission.
+func SetColorEnabled(enabled bool) {
+	colorEnabled = enabled
+}
+
+// ColorEnabled reports whether ANSI/OSC escape sequences are emitted.
+func ColorEnabled() bool {
+	return colorEnabled
+}
+
 func MakeClickableLink(urlValue, text string) string {
 	displayText := text
 	if displayText == "" {
 		displayText = urlValue
 	}
-	if !isGitHubURL(urlValue) {
+	if !colorEnabled || !isGitHubURL(urlValue) {
 		return displayText
 	}
 	return fmt.Sprintf("\u001b]8;;%s\u0007%s\u001b]8;;\u0007", urlValue, displayText)
 }
 
+func colorText(code, text string) string {
+	if !colorEnabled {
+		return text
+	}
+	return fmt.Sprintf("\u001b[%sm%s\u001b[0m", code, text)
+}
+
 func GrayText(text string) string {
-	return fmt.Sprintf("\u001b[90m%s\u001b[0m", text)
+	return colorText("90", text)
 }
 
 func GreenText(text string) string {
-	return fmt.Sprintf("\u001b[32m%s\u001b[0m", text)
+	return colorText("32", text)
 }
 
 func RedText(text string) string {
-	return fmt.Sprintf("\u001b[31m%s\u001b[0m", text)
+	return colorText("31", text)
 }
 
 func YellowText(text string) string {
-	return fmt.Sprintf("\u001b[33m%s\u001b[0m", text)
+	return colorText("33", text)
 }
 
 func BlueText(text string) string {
-	return fmt.Sprintf("\u001b[34m%s\u001b[0m", text)
+	return colorText("34", text)
 }
 
 func CategorizeStep(stepName string) string {
@@ -286,6 +324,25 @@ func StripANSI(str string) string {
 		b.WriteByte(c)
 	}
 	return b.String()
+}
+
+// stripANSIWriter removes ANSI/OSC escape sequences from everything written
+// through it. Escape sequences must not be split across Write calls (the
+// styled renderers write whole lines at a time).
+type stripANSIWriter struct{ w io.Writer }
+
+func (s stripANSIWriter) Write(p []byte) (int, error) {
+	if _, err := s.w.Write([]byte(StripANSI(string(p)))); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+// NewStripANSIWriter wraps w so ANSI/OSC escape sequences (including those
+// produced by lipgloss styles) are removed from anything written to it.
+// Useful when styled output is redirected to a file or pipe.
+func NewStripANSIWriter(w io.Writer) io.Writer {
+	return stripANSIWriter{w: w}
 }
 
 // GlobMatch performs simple glob matching: "*" matches everything,

@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -269,4 +270,84 @@ func TestColorFormatters(t *testing.T) {
 			assert.Equal(t, tc.expected, tc.fn("test"))
 		})
 	}
+}
+
+func TestHumanizeTimeBoundaries(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		seconds  float64
+		expected string
+	}{
+		{name: "rounds up to 1s not 1000ms", seconds: 0.9995, expected: "1s"},
+		{name: "just below rounding boundary", seconds: 0.999, expected: "999ms"},
+		{name: "tiny value", seconds: 0.0001, expected: "0s"},
+		{name: "negative sub-second", seconds: -0.5, expected: "-500ms"},
+		{name: "negative seconds", seconds: -2, expected: "-2s"},
+		{name: "negative minutes", seconds: -65, expected: "-1m 5s"},
+		{name: "negative rounds up to 1s", seconds: -0.9995, expected: "-1s"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, HumanizeTime(tc.seconds))
+		})
+	}
+}
+
+func TestParseGitHubURLTrailingSegments(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		url        string
+		expectType string
+		expectID   string
+	}{
+		{name: "pr files tab", url: "https://github.com/owner/repo/pull/123/files", expectType: "pr", expectID: "123"},
+		{name: "pr commits tab", url: "https://github.com/owner/repo/pull/123/commits", expectType: "pr", expectID: "123"},
+		{name: "pr checks tab", url: "https://github.com/owner/repo/pull/123/checks", expectType: "pr", expectID: "123"},
+		{name: "commit with suffix", url: "https://github.com/owner/repo/commit/abc123/checks", expectType: "commit", expectID: "abc123"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := ParseGitHubURL(tc.url)
+			assert.NoError(t, err)
+			assert.Equal(t, tc.expectType, result.Type)
+			assert.Equal(t, tc.expectID, result.Identifier)
+		})
+	}
+}
+
+// Note: deliberately not parallel — it mutates the package-level color gate.
+func TestColorGating(t *testing.T) {
+	defer SetColorEnabled(true)
+
+	SetColorEnabled(false)
+	assert.False(t, ColorEnabled())
+	assert.Equal(t, "plain", GreenText("plain"))
+	assert.Equal(t, "plain", RedText("plain"))
+	assert.Equal(t, "plain", YellowText("plain"))
+	assert.Equal(t, "plain", BlueText("plain"))
+	assert.Equal(t, "plain", GrayText("plain"))
+	assert.Equal(t, "repo link", MakeClickableLink("https://github.com/owner/repo", "repo link"))
+
+	SetColorEnabled(true)
+	assert.True(t, ColorEnabled())
+	assert.Contains(t, GreenText("plain"), "[32m")
+	assert.Contains(t, MakeClickableLink("https://github.com/owner/repo", "repo link"), "]8;;")
+}
+
+func TestStripANSIWriter(t *testing.T) {
+	t.Parallel()
+
+	var sb strings.Builder
+	w := NewStripANSIWriter(&sb)
+	input := GreenText("ok") + " " + MakeClickableLink("https://github.com/o/r", "link")
+	n, err := w.Write([]byte(input))
+	assert.NoError(t, err)
+	assert.Equal(t, len(input), n)
+	assert.Equal(t, "ok link", sb.String())
 }
