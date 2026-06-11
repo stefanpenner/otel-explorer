@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stefanpenner/otel-explorer/pkg/analyzer"
 	"github.com/stefanpenner/otel-explorer/pkg/utils"
 )
@@ -192,10 +193,7 @@ func BuildInspectorTree(item *TreeItem) []*InspectorNode {
 				evNode.Children = append(evNode.Children, &InspectorNode{Label: "Type", Value: exType})
 			}
 			if exMsg := ev.Attrs["exception.message"]; exMsg != "" {
-				msg := exMsg
-				if len(msg) > 120 {
-					msg = msg[:117] + "..."
-				}
+				msg := ansi.Truncate(exMsg, 120, "...")
 				evNode.Children = append(evNode.Children, &InspectorNode{Label: "Message", Value: msg})
 			}
 			if stack := ev.Attrs["exception.stacktrace"]; stack != "" {
