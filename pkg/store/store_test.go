@@ -149,3 +149,18 @@ func TestStoreUpsertJobsDoesNotClobberRun(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, ids)
 }
+
+func TestStoreRunAttemptRoundTrip(t *testing.T) {
+	t.Parallel()
+	st := openTestStore(t)
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	runs := sampleRuns(base)
+	runs[0].Attempt = 3
+
+	require.NoError(t, st.UpsertRuns("o", "r", runs))
+	got, err := st.LoadRuns("o", "r", base.Add(-time.Hour), base.Add(2*time.Hour))
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, int64(3), got[0].Attempt)
+	assert.Equal(t, int64(1), got[1].Attempt, "unset attempt defaults to 1")
+}

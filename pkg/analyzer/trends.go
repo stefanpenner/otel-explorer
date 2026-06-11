@@ -112,6 +112,8 @@ type TrendSummary struct {
 	TrendDescription   string // human-readable explanation of the trend
 	PercentChange      float64
 	MostFlakyJobsCount int
+	RerunRuns          int   // runs that were re-run attempts (attempt > 1)
+	RerunComputeMs     int64 // compute spent on those re-run attempts — retry burn
 }
 
 // DataPoint represents a single data point in a trend
@@ -150,6 +152,7 @@ type FlakyJob struct {
 // RunData represents simplified workflow run data
 type RunData struct {
 	ID           int64
+	Attempt      int64 // run attempt number; >1 means this is a re-run
 	WorkflowName string
 	HeadSHA      string
 	Status       string
@@ -593,8 +596,13 @@ func ConvertRuns(runs []githubapi.WorkflowRun) []RunData {
 	for i, run := range runs {
 		createdAt, _ := utils.ParseTime(run.CreatedAt)
 		updatedAt, _ := utils.ParseTime(run.UpdatedAt)
+		attempt := run.RunAttempt
+		if attempt == 0 {
+			attempt = 1
+		}
 		rd := RunData{
 			ID:           run.ID,
+			Attempt:      attempt,
 			WorkflowName: run.Name,
 			HeadSHA:      run.HeadSHA,
 			Status:       run.Status,
@@ -716,6 +724,8 @@ func calculateTrendSummary(runs []RunData) TrendSummary {
 
 	durations := make([]float64, 0, len(runs))
 	successCount := 0
+	rerunRuns := 0
+	var rerunComputeMs int64
 
 	for _, run := range runs {
 		if run.Duration > 0 {
@@ -724,6 +734,12 @@ func calculateTrendSummary(runs []RunData) TrendSummary {
 		}
 		if run.Conclusion == "success" {
 			successCount++
+		}
+		if run.Attempt > 1 {
+			rerunRuns++
+			if run.Duration > 0 {
+				rerunComputeMs += run.Duration
+			}
 		}
 	}
 
@@ -763,6 +779,8 @@ func calculateTrendSummary(runs []RunData) TrendSummary {
 
 	return TrendSummary{
 		TotalRuns:        len(runs),
+		RerunRuns:        rerunRuns,
+		RerunComputeMs:   rerunComputeMs,
 		AvgDuration:      avgDuration,
 		MedianDuration:   medianDuration,
 		P95Duration:      p95Duration,

@@ -46,7 +46,7 @@ func TestRenderTypicalRun(t *testing.T) {
 	renderTypicalRun(&buf, typical)
 	out := buf.String()
 
-	for _, want := range []string{"5 sampled runs", "4 of 20 commits", "▸ CI", "5/12 runs sampled", "build", "█", "in 40% of runs", "50% pass"} {
+	for _, want := range []string{"5 runs", "4 of 20 commits", "▸ CI", "5/12 runs sampled", "build", "█", "in 40% of runs", "50% pass"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}

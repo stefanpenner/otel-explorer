@@ -22,7 +22,7 @@ const (
 // the right tail.
 func renderTypicalRun(w io.Writer, typical *analyzer.TypicalRun) {
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "  Median timelines across %d sampled runs", typical.SampledRuns)
+	fmt.Fprintf(w, "  Median timelines across %d runs", typical.SampledRuns)
 	if typical.TotalCommits > 0 {
 		fmt.Fprintf(w, " (%d of %d commits)", typical.CommitsCovered, typical.TotalCommits)
 	}
@@ -36,8 +36,12 @@ func renderTypicalRun(w io.Writer, typical *analyzer.TypicalRun) {
 	for _, wf := range shown {
 		fmt.Fprintln(w)
 		header := fmt.Sprintf("▸ %s", wf.Name)
-		stats := fmt.Sprintf("%d/%d runs sampled — run p50 %s  p95 %s",
-			wf.SampledRuns, wf.TotalRuns,
+		coverage := fmt.Sprintf("%d/%d runs sampled", wf.SampledRuns, wf.TotalRuns)
+		if wf.SampledRuns == wf.TotalRuns {
+			coverage = fmt.Sprintf("all %d runs", wf.TotalRuns)
+		}
+		stats := fmt.Sprintf("%s — run p50 %s  p95 %s",
+			coverage,
 			utils.HumanizeTime(wf.RunDuration.P50),
 			utils.HumanizeTime(wf.RunDuration.P95))
 		fmt.Fprintf(w, "  %s  %s\n", valueStyle.Render(header), dimStyle.Render(stats))

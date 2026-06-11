@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/stefanpenner/otel-explorer/pkg/analyzer"
@@ -34,6 +35,7 @@ CREATE TABLE IF NOT EXISTS runs (
 	updated_at    INTEGER NOT NULL DEFAULT 0,
 	duration_ms   INTEGER NOT NULL DEFAULT 0,
 	jobs_fetched  INTEGER NOT NULL DEFAULT 0,
+	run_attempt   INTEGER NOT NULL DEFAULT 1,
 	PRIMARY KEY (owner, repo, id)
 );
 CREATE INDEX IF NOT EXISTS idx_runs_repo_created ON runs(owner, repo, created_at);
@@ -83,6 +85,13 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrating store schema: %w", err)
 	}
+	// Additive migration for databases created before run_attempt existed;
+	// a duplicate-column error means the schema above already provided it.
+	if _, err := db.Exec(`ALTER TABLE runs ADD COLUMN run_attempt INTEGER NOT NULL DEFAULT 1`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		db.Close()
+		return nil, fmt.Errorf("migrating run_attempt column: %w", err)
+	}
 	return &Store{db: db}, nil
 }
 
@@ -100,14 +109,15 @@ func (s *Store) UpsertRuns(owner, repo string, runs []analyzer.RunData) error {
 
 	runStmt, err := tx.Prepare(`
 		INSERT INTO runs (id, owner, repo, workflow_name, head_sha, status, conclusion,
-			created_at, started_at, updated_at, duration_ms, jobs_fetched)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			created_at, started_at, updated_at, duration_ms, jobs_fetched, run_attempt)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (owner, repo, id) DO UPDATE SET
 			workflow_name=excluded.workflow_name, head_sha=excluded.head_sha,
 			status=excluded.status, conclusion=excluded.conclusion,
 			created_at=excluded.created_at, started_at=excluded.started_at,
 			updated_at=excluded.updated_at, duration_ms=excluded.duration_ms,
-			jobs_fetched=max(runs.jobs_fetched, excluded.jobs_fetched)`)
+			jobs_fetched=max(runs.jobs_fetched, excluded.jobs_fetched),
+			run_attempt=excluded.run_attempt`)
 	if err != nil {
 		return err
 	}
@@ -133,9 +143,13 @@ func (s *Store) UpsertRuns(owner, repo string, runs []analyzer.RunData) error {
 		if len(run.Jobs) > 0 {
 			jobsFetched = 1
 		}
+		attempt := run.Attempt
+		if attempt == 0 {
+			attempt = 1
+		}
 		if _, err := runStmt.Exec(run.ID, owner, repo, run.WorkflowName, run.HeadSHA,
 			run.Status, run.Conclusion, msOf(run.CreatedAt), msOf(run.StartedAt),
-			msOf(run.UpdatedAt), run.Duration, jobsFetched); err != nil {
+			msOf(run.UpdatedAt), run.Duration, jobsFetched, attempt); err != nil {
 			return fmt.Errorf("upserting run %d: %w", run.ID, err)
 		}
 		if len(run.Jobs) == 0 {
@@ -162,7 +176,7 @@ func (s *Store) UpsertRuns(owner, repo string, runs []analyzer.RunData) error {
 func (s *Store) LoadRuns(owner, repo string, since, until time.Time) ([]analyzer.RunData, error) {
 	rows, err := s.db.Query(`
 		SELECT id, workflow_name, head_sha, status, conclusion,
-			created_at, started_at, updated_at, duration_ms
+			created_at, started_at, updated_at, duration_ms, run_attempt
 		FROM runs WHERE owner=? AND repo=? AND created_at BETWEEN ? AND ?
 		ORDER BY created_at, id`, owner, repo, msOf(since), msOf(until))
 	if err != nil {
@@ -176,7 +190,7 @@ func (s *Store) LoadRuns(owner, repo string, since, until time.Time) ([]analyzer
 		var run analyzer.RunData
 		var created, started, updated int64
 		if err := rows.Scan(&run.ID, &run.WorkflowName, &run.HeadSHA, &run.Status,
-			&run.Conclusion, &created, &started, &updated, &run.Duration); err != nil {
+			&run.Conclusion, &created, &started, &updated, &run.Duration, &run.Attempt); err != nil {
 			return nil, err
 		}
 		run.CreatedAt = timeOf(created)

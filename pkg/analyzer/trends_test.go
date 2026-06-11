@@ -1630,3 +1630,26 @@ func TestDetectFlakyJobs_TransitionScore(t *testing.T) {
 		t.Errorf("SameSHAFlakes = %d, want 0 (every SHA distinct)", flaky[0].SameSHAFlakes)
 	}
 }
+
+func TestCalculateTrendSummary_RerunBurn(t *testing.T) {
+	t.Parallel()
+	base := time.Now().Add(-3 * 24 * time.Hour)
+	mk := func(i int, attempt int64, durMs int64) RunData {
+		created := base.Add(time.Duration(i) * time.Hour)
+		return RunData{ID: int64(i + 1), Status: "completed", Conclusion: "success",
+			Attempt: attempt, CreatedAt: created, Duration: durMs}
+	}
+	runs := []RunData{
+		mk(0, 1, 600_000),
+		mk(1, 1, 600_000),
+		mk(2, 2, 300_000), // re-run attempt: 5m of retry burn
+		mk(3, 3, 120_000), // re-run attempt: 2m of retry burn
+	}
+	summary := calculateTrendSummary(runs)
+	if summary.RerunRuns != 2 {
+		t.Errorf("RerunRuns = %d, want 2", summary.RerunRuns)
+	}
+	if summary.RerunComputeMs != 420_000 {
+		t.Errorf("RerunComputeMs = %d, want 420000 (5m + 2m)", summary.RerunComputeMs)
+	}
+}

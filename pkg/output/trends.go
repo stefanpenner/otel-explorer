@@ -213,6 +213,12 @@ func renderTrendSummary(w io.Writer, summary analyzer.TrendSummary) {
 		t.Row("Flaky Jobs Detected", warningStyle.Render(fmt.Sprintf("%d", summary.MostFlakyJobsCount)))
 	}
 
+	// Retry burn: compute spent on re-run attempts is pure waste signal.
+	if summary.RerunRuns > 0 {
+		t.Row("Retry Burn", warningStyle.Render(fmt.Sprintf("%d re-runs, %s",
+			summary.RerunRuns, utils.HumanizeTime(float64(summary.RerunComputeMs)/1000.0))))
+	}
+
 	fmt.Fprintln(w, t)
 
 	if summary.TrendDescription != "" {
