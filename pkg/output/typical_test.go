@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stefanpenner/otel-explorer/pkg/analyzer"
+	"github.com/stefanpenner/otel-explorer/pkg/utils"
 )
 
 func TestRenderTypicalRun(t *testing.T) {
@@ -86,5 +87,32 @@ func TestRenderTypicalRunZeroDurations(t *testing.T) {
 	renderTypicalRun(&buf, typical)
 	if buf.Len() == 0 {
 		t.Error("expected output")
+	}
+}
+
+func TestRenderTypicalRunExemplarLinks(t *testing.T) {
+	utils.SetColorEnabled(true)
+	defer utils.SetColorEnabled(false)
+
+	typical := &analyzer.TypicalRun{
+		SampledRuns: 3,
+		Workflows: []analyzer.TypicalWorkflow{{
+			Name: "CI", SampledRuns: 3, TotalRuns: 3,
+			RunDuration: analyzer.Quantiles{P50: 60, P95: 90},
+			Jobs: []analyzer.TypicalJob{{
+				Name: "build", Samples: 3, PresenceRate: 100, SuccessRate: 100,
+				Duration: analyzer.Quantiles{P50: 50, P75: 60, P95: 80},
+				P50URL:   "https://github.com/o/r/actions/runs/1/job/50",
+				P95URL:   "https://github.com/o/r/actions/runs/2/job/95",
+			}},
+		}},
+	}
+	var buf bytes.Buffer
+	renderTypicalRun(&buf, typical)
+	out := buf.String()
+	for _, want := range []string{"https://github.com/o/r/actions/runs/1/job/50", "https://github.com/o/r/actions/runs/2/job/95"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing exemplar link %q", want)
+		}
 	}
 }

@@ -124,7 +124,17 @@ func renderTypicalWorkflow(w io.Writer, wf analyzer.TypicalWorkflow) {
 			name = string(runes[:typicalNameWidth-3]) + "..."
 		}
 
-		detail := fmt.Sprintf("p50 %s  p95 %s", utils.HumanizeTime(job.Duration.P50), utils.HumanizeTime(job.Duration.P95))
+		// Percentile values link to the real run nearest that percentile, so
+		// aggregate statistics stay grounded in inspectable runs.
+		p50Val := utils.HumanizeTime(job.Duration.P50)
+		if job.P50URL != "" {
+			p50Val = utils.MakeClickableLink(job.P50URL, p50Val)
+		}
+		p95Val := utils.HumanizeTime(job.Duration.P95)
+		if job.P95URL != "" {
+			p95Val = utils.MakeClickableLink(job.P95URL, p95Val)
+		}
+		detail := fmt.Sprintf("p50 %s  p95 %s", p50Val, p95Val)
 		if job.PresenceRate < 99.5 {
 			detail += fmt.Sprintf("  in %.0f%% of runs", job.PresenceRate)
 		}

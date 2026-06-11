@@ -5,6 +5,8 @@ import (
 	"math"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func typicalTestRuns() []RunData {
@@ -231,4 +233,34 @@ func TestComputeTypicalRunRetryOffsets(t *testing.T) {
 	if math.Abs(job.StartOffset.P50-10) > 0.01 {
 		t.Errorf("StartOffset.P50 = %v, want 10 (relative to attempt start)", job.StartOffset.P50)
 	}
+}
+
+func TestComputeTypicalRunExemplars(t *testing.T) {
+	t.Parallel()
+	// Each percentile should link to the real job observation nearest it.
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	var runs []RunData
+	durations := []int64{10, 20, 30, 40, 100} // seconds; p50=30, p95=100
+	for i, d := range durations {
+		created := base.Add(time.Duration(i) * time.Hour)
+		runs = append(runs, RunData{
+			ID: int64(i + 1), WorkflowName: "CI", HeadSHA: fmt.Sprintf("s%d", i),
+			CreatedAt: created, StartedAt: created, Duration: d * 1000,
+			Jobs: []JobData{{
+				Name: "build", Conclusion: "success",
+				URL:         fmt.Sprintf("https://example.com/job/%d", i),
+				StartedAt:   created,
+				CompletedAt: created.Add(time.Duration(d) * time.Second),
+				Duration:    d * 1000,
+			}},
+		})
+	}
+
+	typical := computeTypicalRun(runs)
+	if typical == nil {
+		t.Fatal("expected typical run")
+	}
+	job := typical.Workflows[0].Jobs[0]
+	assert.Equal(t, "https://example.com/job/2", job.P50URL, "30s observation is the median exemplar")
+	assert.Equal(t, "https://example.com/job/4", job.P95URL, "100s observation is the p95 exemplar")
 }

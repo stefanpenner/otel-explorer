@@ -21,6 +21,8 @@ type Quantiles struct {
 type TypicalJob struct {
 	Name           string
 	URLs           []string  // sample recent job URLs (newest first)
+	P50URL         string    // exemplar: the real observation nearest the median duration
+	P95URL         string    // exemplar: the real observation nearest the p95 duration
 	Samples        int       // number of counted (non-skipped) observations
 	PresenceRate   float64   // % of the workflow's sampled runs with a counted observation
 	SuccessRate    float64   // % of counted observations that succeeded
@@ -78,7 +80,34 @@ type typicalJobAgg struct {
 	successes  int
 	total      int
 	runsSeen   int
-	urls       []string // chronological; reversed to newest-first later
+	urls       []string      // chronological; reversed to newest-first later
+	obs        []observation // duration+URL pairs for exemplar selection
+}
+
+// observation pairs a duration with the URL of the real job it came from.
+type observation struct {
+	durationSec float64
+	url         string
+}
+
+// exemplarURL returns the URL of the observation nearest the target value.
+func exemplarURL(obs []observation, target float64) string {
+	best := ""
+	bestDist := -1.0
+	for _, o := range obs {
+		if o.url == "" {
+			continue
+		}
+		dist := o.durationSec - target
+		if dist < 0 {
+			dist = -dist
+		}
+		if bestDist < 0 || dist < bestDist {
+			bestDist = dist
+			best = o.url
+		}
+	}
+	return best
 }
 
 type typicalWorkflowAgg struct {
@@ -146,6 +175,7 @@ func computeTypicalRun(runs []RunData) *TypicalRun {
 			}
 			if job.Duration > 0 {
 				agg.durations = append(agg.durations, float64(job.Duration)/1000.0)
+				agg.obs = append(agg.obs, observation{durationSec: float64(job.Duration) / 1000.0, url: job.URL})
 			}
 			if job.QueueTime > 0 {
 				agg.queueTimes = append(agg.queueTimes, float64(job.QueueTime)/1000.0)
@@ -186,14 +216,17 @@ func computeTypicalRun(runs []RunData) *TypicalRun {
 			if agg.total == 0 {
 				continue
 			}
+			duration := quantilesOf(agg.durations)
 			tw.Jobs = append(tw.Jobs, TypicalJob{
 				Name:           jobName,
 				URLs:           lastURLs(agg.urls, 5),
+				P50URL:         exemplarURL(agg.obs, duration.P50),
+				P95URL:         exemplarURL(agg.obs, duration.P95),
 				Samples:        agg.total,
 				PresenceRate:   float64(agg.runsSeen) / float64(wf.sampledRuns) * 100,
 				SuccessRate:    float64(agg.successes) / float64(agg.total) * 100,
 				StartOffset:    quantilesOf(agg.offsets),
-				Duration:       quantilesOf(agg.durations),
+				Duration:       duration,
 				QueueTime:      quantilesOf(agg.queueTimes),
 				TrendDirection: trendOf(agg.durations),
 			})
