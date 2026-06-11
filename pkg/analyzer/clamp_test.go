@@ -13,18 +13,18 @@ import (
 
 // findSpansByType returns all spans with the given type attribute value.
 func findSpansByType(builder *SpanBuilder, typ string) []struct {
-	name            string
+	name           string
 	startMs, endMs int64
 } {
 	var results []struct {
-		name            string
+		name           string
 		startMs, endMs int64
 	}
 	for _, s := range builder.Spans() {
 		for _, a := range s.Attributes() {
 			if string(a.Key) == "type" && a.Value.AsString() == typ {
 				results = append(results, struct {
-					name            string
+					name           string
 					startMs, endMs int64
 				}{s.Name(), s.StartTime().UnixMilli(), s.EndTime().UnixMilli()})
 			}
@@ -321,7 +321,7 @@ func TestClampingEndToEnd(t *testing.T) {
 		_, _, _, _, err := processWorkflowRun(
 			context.Background(), run, 0, 1001, earliestTime,
 			"owner", "repo", "1", 0, "https://github.com/owner/repo/pull/1", "pr",
-			nil, 0, 0, 0, mockClient, nil, builder, NewTraceEmitter(builder), AnalyzeOptions{NoArtifacts: true},
+			nil, 0, 0, 0, mockClient, nil, builder, NewTraceEmitter(builder), AnalyzeOptions{NoArtifacts: true}, nil,
 		)
 		assert.NoError(t, err)
 
@@ -347,4 +347,128 @@ func TestClampingEndToEnd(t *testing.T) {
 		assert.LessOrEqual(t, jobSpans[0].endMs, wfEndMs,
 			"job span end time should not exceed workflow end time")
 	})
+}
+
+func TestWorkflowSpanExtendsToLateJobCompletion(t *testing.T) {
+	// run.UpdatedAt is 17:10 but a job completes at 17:25. runEndTs is
+	// extended to the latest job completion and jobs are clamped against it,
+	// so the workflow OTel span must also extend or children escape it.
+	mockClient := new(mockGitHubProvider)
+	builder := &SpanBuilder{}
+
+	run := githubapi.WorkflowRun{
+		ID:           700,
+		RunAttempt:   1,
+		Name:         "CI",
+		Status:       "completed",
+		Conclusion:   "success",
+		CreatedAt:    "2026-03-18T17:00:00Z",
+		RunStartedAt: "2026-03-18T17:00:00Z",
+		UpdatedAt:    "2026-03-18T17:10:00Z",
+		HeadSHA:      "abc123",
+		Repository: githubapi.RepoRef{
+			Owner: githubapi.RepoOwner{Login: "owner"},
+			Name:  "repo",
+		},
+	}
+
+	job := githubapi.Job{
+		ID:          800,
+		Name:        "Slow job",
+		Status:      "completed",
+		Conclusion:  "success",
+		CreatedAt:   "2026-03-18T17:00:00Z",
+		StartedAt:   "2026-03-18T17:01:00Z",
+		CompletedAt: "2026-03-18T17:25:00Z", // 15 minutes past run.UpdatedAt
+		RunnerName:  "runner-1",
+	}
+
+	jobsURL := "https://api.github.com/repos/owner/repo/actions/runs/700/jobs?per_page=100"
+	mockClient.On("FetchJobsPaginated", mock.Anything, jobsURL).Return([]githubapi.Job{job}, nil)
+	mockClient.On("FetchRunTiming", mock.Anything, "owner", "repo", int64(700)).Return((*githubapi.RunTiming)(nil), nil)
+
+	createdAt, _ := utils.ParseTime(run.CreatedAt)
+	earliestTime := createdAt.UnixMilli()
+
+	_, _, _, _, err := processWorkflowRun(
+		context.Background(), run, 0, 1001, earliestTime,
+		"owner", "repo", "1", 0, "https://github.com/owner/repo/pull/1", "pr",
+		nil, 0, 0, 0, mockClient, nil, builder, NewTraceEmitter(builder), AnalyzeOptions{NoArtifacts: true}, nil,
+	)
+	assert.NoError(t, err)
+
+	wfSpans := findSpansByType(builder, "workflow")
+	assert.Len(t, wfSpans, 1)
+	jobSpans := findSpansByType(builder, "job")
+	assert.Len(t, jobSpans, 1)
+
+	jobCompleted, _ := utils.ParseTime(job.CompletedAt)
+	assert.Equal(t, jobCompleted.UnixMilli(), wfSpans[0].endMs,
+		"workflow span end should extend to the latest job completion")
+	assert.LessOrEqual(t, jobSpans[0].endMs, wfSpans[0].endMs,
+		"job span must not escape its parent workflow span")
+}
+
+func TestSkippedAndCancelledJobsNotCountedAsFailed(t *testing.T) {
+	cases := []struct {
+		conclusion string
+		wantFailed int
+	}{
+		{"skipped", 0},
+		{"cancelled", 0},
+		{"neutral", 0},
+		{"success", 0},
+		{"failure", 1},
+		{"timed_out", 1},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.conclusion, func(t *testing.T) {
+			builder := &SpanBuilder{}
+			tid := githubapi.NewTraceID(100, 1)
+			wfSC := trace.NewSpanContext(trace.SpanContextConfig{
+				TraceID:    tid,
+				SpanID:     githubapi.NewSpanID(100),
+				TraceFlags: trace.FlagsSampled,
+			})
+
+			run := githubapi.WorkflowRun{
+				ID:         100,
+				RunAttempt: 1,
+				Repository: githubapi.RepoRef{
+					Owner: githubapi.RepoOwner{Login: "owner"},
+					Name:  "repo",
+				},
+			}
+
+			// GitHub sets started_at == completed_at for skipped jobs.
+			startedAt := "2026-03-18T17:00:00Z"
+			completedAt := startedAt
+			if tc.conclusion == "success" || tc.conclusion == "failure" || tc.conclusion == "timed_out" {
+				completedAt = "2026-03-18T17:05:00Z"
+			}
+			job := githubapi.Job{
+				ID:          200,
+				Name:        "Deploy",
+				Status:      "completed",
+				Conclusion:  tc.conclusion,
+				CreatedAt:   startedAt,
+				StartedAt:   startedAt,
+				CompletedAt: completedAt,
+			}
+
+			wfEnd, _ := utils.ParseTime("2026-03-18T17:10:00Z")
+			metrics := InitializeMetrics()
+			var traceEvents []TraceEvent
+			var jobStartTimes, jobEndTimes []JobEvent
+
+			processJob(job, 0, run, 10, 1001, wfEnd.UnixMilli(), wfEnd.UnixMilli(),
+				&metrics, &traceEvents, &jobStartTimes, &jobEndTimes,
+				"", 0, "", "", "", nil, builder, tid, wfSC, nil)
+
+			assert.Equal(t, 1, metrics.TotalJobs)
+			assert.Equal(t, tc.wantFailed, metrics.FailedJobs,
+				"conclusion %q should count %d failed jobs", tc.conclusion, tc.wantFailed)
+		})
+	}
 }

@@ -6,11 +6,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stefanpenner/otel-explorer/pkg/enrichment"
 	"github.com/stefanpenner/otel-explorer/pkg/githubapi"
 	"github.com/stefanpenner/otel-explorer/pkg/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -156,7 +159,7 @@ func TestWorkflowQueueTimeSpan(t *testing.T) {
 		_, traceEvents, _, _, err := processWorkflowRun(
 			context.Background(), run, 0, 1001, earliestTime,
 			"owner", "repo", "1", 0, "https://github.com/owner/repo/pull/1", "pr",
-			nil, 0, 0, 0, mockClient, nil, builder, NewTraceEmitter(builder), AnalyzeOptions{NoArtifacts: true},
+			nil, 0, 0, 0, mockClient, nil, builder, NewTraceEmitter(builder), AnalyzeOptions{NoArtifacts: true}, nil,
 		)
 		assert.NoError(t, err)
 
@@ -238,7 +241,7 @@ func TestWorkflowQueueTimeSpan(t *testing.T) {
 		_, traceEvents, _, _, err := processWorkflowRun(
 			context.Background(), run, 0, 1001, earliestTime,
 			"owner", "repo", "1", 0, "https://github.com/owner/repo/pull/1", "pr",
-			nil, 0, 0, 0, mockClient, nil, builder, NewTraceEmitter(builder), AnalyzeOptions{NoArtifacts: true},
+			nil, 0, 0, 0, mockClient, nil, builder, NewTraceEmitter(builder), AnalyzeOptions{NoArtifacts: true}, nil,
 		)
 		assert.NoError(t, err)
 
@@ -292,7 +295,7 @@ func TestWorkflowQueueTimeSpan(t *testing.T) {
 		_, traceEvents, _, _, err := processWorkflowRun(
 			context.Background(), run, 0, 1001, earliestTime,
 			"owner", "repo", "1", 0, "https://github.com/owner/repo/pull/1", "pr",
-			nil, 0, 0, 0, mockClient, nil, builder, NewTraceEmitter(builder), AnalyzeOptions{NoArtifacts: true},
+			nil, 0, 0, 0, mockClient, nil, builder, NewTraceEmitter(builder), AnalyzeOptions{NoArtifacts: true}, nil,
 		)
 		assert.NoError(t, err)
 
@@ -356,7 +359,7 @@ func TestRetriedRun(t *testing.T) {
 		_, _, _, _, err := processWorkflowRun(
 			context.Background(), run, 0, 1001, createdAt.UnixMilli(),
 			"owner", "repo", "1", 0, "https://github.com/owner/repo/pull/1", "pr",
-			nil, 0, 0, 0, mock, nil, builder, NewTraceEmitter(builder), AnalyzeOptions{NoArtifacts: true},
+			nil, 0, 0, 0, mock, nil, builder, NewTraceEmitter(builder), AnalyzeOptions{NoArtifacts: true}, nil,
 		)
 		return err
 	}
@@ -530,4 +533,277 @@ func TestSpanBuilderGeneration(t *testing.T) {
 		}
 		assert.True(t, commitFound, "Commit marker span not found")
 	})
+}
+
+func TestBuildTreeDuplicateStepNames(t *testing.T) {
+	builder := &SpanBuilder{}
+	tid := githubapi.NewTraceID(100, 1)
+	wfSC := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: tid, SpanID: githubapi.NewSpanID(100), TraceFlags: trace.FlagsSampled,
+	})
+	jobSC := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: tid, SpanID: githubapi.NewSpanID(200), TraceFlags: trace.FlagsSampled,
+	})
+
+	base := time.Date(2026, 3, 18, 17, 0, 0, 0, time.UTC)
+	builder.Add(tracetest.SpanStub{
+		Name: "CI", SpanContext: wfSC,
+		StartTime: base, EndTime: base.Add(10 * time.Minute),
+		Attributes: []attribute.KeyValue{attribute.String("type", "workflow")},
+	})
+	builder.Add(tracetest.SpanStub{
+		Name: "Build", SpanContext: jobSC, Parent: wfSC,
+		StartTime: base, EndTime: base.Add(10 * time.Minute),
+		Attributes: []attribute.KeyValue{attribute.String("type", "job")},
+	})
+
+	// Two steps with identical names in the same job derive the SAME span ID
+	// (md5 of "<jobID>-<stepName>") — both must still appear as distinct nodes.
+	stepSID := githubapi.NewSpanIDFromString(fmt.Sprintf("%d-%s", 200, "Run actions/checkout@v4"))
+	stepSC := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: tid, SpanID: stepSID, TraceFlags: trace.FlagsSampled,
+	})
+	builder.Add(tracetest.SpanStub{
+		Name: "Run actions/checkout@v4", SpanContext: stepSC, Parent: jobSC,
+		StartTime: base, EndTime: base.Add(10 * time.Second),
+		Attributes: []attribute.KeyValue{attribute.String("type", "step")},
+	})
+	builder.Add(tracetest.SpanStub{
+		Name: "Run actions/checkout@v4", SpanContext: stepSC, Parent: jobSC,
+		StartTime: base.Add(30 * time.Second), EndTime: base.Add(40 * time.Second),
+		Attributes: []attribute.KeyValue{attribute.String("type", "step")},
+	})
+
+	roots := BuildTreeFromSpans(builder.Spans(), time.Time{}, time.Time{}, enrichment.DefaultEnricher())
+	assert.Len(t, roots, 1)
+	assert.Len(t, roots[0].Children, 1)
+	job := roots[0].Children[0]
+	assert.Len(t, job.Children, 2, "both duplicate-named steps should appear under the job")
+	assert.NotSame(t, job.Children[0], job.Children[1], "duplicate steps must be distinct nodes")
+	assert.Equal(t, base, job.Children[0].StartTime, "first step keeps its own timing")
+	assert.Equal(t, base.Add(30*time.Second), job.Children[1].StartTime, "second step keeps its own timing")
+}
+
+func TestBuildTreeSpanIDsScopedToTrace(t *testing.T) {
+	builder := &SpanBuilder{}
+	parentSID := githubapi.NewSpanID(100)
+	base := time.Date(2026, 3, 18, 17, 0, 0, 0, time.UTC)
+
+	// Trace A has a workflow span with span ID parentSID.
+	tidA := githubapi.NewTraceID(100, 1)
+	builder.Add(tracetest.SpanStub{
+		Name: "Workflow A",
+		SpanContext: trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID: tidA, SpanID: parentSID, TraceFlags: trace.FlagsSampled,
+		}),
+		StartTime: base, EndTime: base.Add(time.Minute),
+		Attributes: []attribute.KeyValue{attribute.String("type", "workflow")},
+	})
+
+	// Trace B has a job whose parent span ID collides with trace A's workflow
+	// span ID — but that parent does not exist in trace B.
+	tidB := githubapi.NewTraceID(999, 1)
+	builder.Add(tracetest.SpanStub{
+		Name: "Orphan job in B",
+		SpanContext: trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID: tidB, SpanID: githubapi.NewSpanID(300), TraceFlags: trace.FlagsSampled,
+		}),
+		Parent: trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID: tidB, SpanID: parentSID, TraceFlags: trace.FlagsSampled,
+		}),
+		StartTime: base, EndTime: base.Add(time.Minute),
+		Attributes: []attribute.KeyValue{attribute.String("type", "job")},
+	})
+
+	roots := BuildTreeFromSpans(builder.Spans(), time.Time{}, time.Time{}, enrichment.DefaultEnricher())
+	assert.Len(t, roots, 2, "trace-B child must not attach under trace-A parent")
+	for _, r := range roots {
+		assert.Empty(t, r.Children, "no cross-trace parent/child links")
+	}
+}
+
+func TestCalculateSummarySkipsSyntheticQueueSpans(t *testing.T) {
+	builder := &SpanBuilder{}
+	tid := githubapi.NewTraceID(100, 1)
+	base := time.Date(2026, 3, 18, 9, 0, 0, 0, time.UTC)
+
+	wfSC := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: tid, SpanID: githubapi.NewSpanID(100), TraceFlags: trace.FlagsSampled,
+	})
+	builder.Add(tracetest.SpanStub{
+		Name: "CI", SpanContext: wfSC,
+		StartTime: base, EndTime: base.Add(time.Hour),
+		Attributes: []attribute.KeyValue{
+			attribute.String("type", "workflow"),
+			attribute.Int64("github.run_id", 100),
+			attribute.String("github.status", "completed"),
+			attribute.String("github.conclusion", "success"),
+		},
+	})
+
+	mkJob := func(id int64, start, end time.Time, queueMs int64) trace.SpanContext {
+		sc := trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID: tid, SpanID: githubapi.NewSpanID(id), TraceFlags: trace.FlagsSampled,
+		})
+		builder.Add(tracetest.SpanStub{
+			Name: fmt.Sprintf("job-%d", id), SpanContext: sc, Parent: wfSC,
+			StartTime: start, EndTime: end,
+			Attributes: []attribute.KeyValue{
+				attribute.String("type", "job"),
+				attribute.String("github.status", "completed"),
+				attribute.String("github.conclusion", "success"),
+				attribute.Int64("queue_time_ms", queueMs),
+			},
+		})
+		return sc
+	}
+
+	// job1 09:00-09:30, job2 09:30-10:00 (back to back, never concurrent)
+	mkJob(200, base, base.Add(30*time.Minute), 5000)
+	job2SC := mkJob(201, base.Add(30*time.Minute), base.Add(60*time.Minute), 7000)
+
+	// Synthetic queued span for job2 overlaps job1 (09:10-09:30)
+	builder.Add(tracetest.SpanStub{
+		Name: "⏳ Queued",
+		SpanContext: trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID: tid, SpanID: githubapi.NewSpanIDFromString("queued-201"), TraceFlags: trace.FlagsSampled,
+		}),
+		Parent:    job2SC,
+		StartTime: base.Add(10 * time.Minute), EndTime: base.Add(30 * time.Minute),
+		Attributes: []attribute.KeyValue{
+			attribute.String("type", "queued"),
+			attribute.String("github.job_name", "job-201"),
+			attribute.Int64("queue_time_ms", 7000),
+		},
+	})
+	// Synthetic workflow-level queue span
+	builder.Add(tracetest.SpanStub{
+		Name: "⏳ Workflow Queued",
+		SpanContext: trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID: tid, SpanID: githubapi.NewSpanIDFromString("wf-queued-100"), TraceFlags: trace.FlagsSampled,
+		}),
+		Parent:    wfSC,
+		StartTime: base.Add(-2 * time.Minute), EndTime: base,
+		Attributes: []attribute.KeyValue{
+			attribute.String("type", "workflow_queued"),
+			attribute.Int64("queue_time_ms", 120000),
+		},
+	})
+
+	s := CalculateSummary(builder.Spans(), enrichment.DefaultEnricher())
+	assert.Equal(t, 1, s.TotalRuns)
+	assert.Equal(t, 2, s.TotalJobs, "synthetic queue spans must not count as jobs")
+	assert.Equal(t, 2, s.QueueCount, "queue time counted once per real job")
+	assert.Equal(t, 6000.0, s.AvgQueueTimeMs)
+	assert.Equal(t, 7000.0, s.MaxQueueTimeMs, "workflow queue span must not pollute per-job max")
+	assert.Equal(t, 1, s.MaxConcurrency, "queue spans must not inflate concurrency")
+}
+
+func TestCalculateSummaryCountsRetriedRunOnce(t *testing.T) {
+	builder := &SpanBuilder{}
+	base := time.Date(2026, 3, 18, 9, 0, 0, 0, time.UTC)
+
+	mkRoot := func(runID, attempt int64, conclusion string) {
+		attrs := []attribute.KeyValue{
+			attribute.String("type", "workflow"),
+			attribute.Int64("github.run_id", runID),
+			attribute.String("github.status", "completed"),
+			attribute.String("github.conclusion", conclusion),
+		}
+		if attempt > 0 {
+			attrs = append(attrs, attribute.Int64("github.run_attempt", attempt))
+		}
+		builder.Add(tracetest.SpanStub{
+			Name: fmt.Sprintf("run-%d-attempt-%d", runID, attempt),
+			SpanContext: trace.NewSpanContext(trace.SpanContextConfig{
+				TraceID:    githubapi.NewTraceID(runID, maxInt64(attempt, 1)),
+				SpanID:     githubapi.NewSpanIDFromString(fmt.Sprintf("wf-%d-%d", runID, attempt)),
+				TraceFlags: trace.FlagsSampled,
+			}),
+			StartTime:  base,
+			EndTime:    base.Add(10 * time.Minute),
+			Attributes: attrs,
+		})
+	}
+
+	// Run 300 retried twice: attempts 1 and 2 failed, attempt 3 succeeded.
+	mkRoot(300, 1, "failure")
+	mkRoot(300, 2, "failure")
+	mkRoot(300, 3, "success")
+	// Run 301: single successful attempt, no run_attempt attribute.
+	mkRoot(301, 0, "success")
+
+	s := CalculateSummary(builder.Spans(), enrichment.DefaultEnricher())
+	assert.Equal(t, 2, s.TotalRuns, "each logical run counted once")
+	assert.Equal(t, 2, s.SuccessfulRuns, "run outcome taken from latest attempt")
+	assert.Equal(t, 1, s.RetriedRuns, "retried run counted once")
+}
+
+func TestCheckRunAnnotationsFetchedOncePerURL(t *testing.T) {
+	mockClient := new(mockGitHubProvider)
+	builder := &SpanBuilder{}
+	emitter := NewTraceEmitter(builder)
+
+	mkRun := func(id int64) githubapi.WorkflowRun {
+		return githubapi.WorkflowRun{
+			ID: id, RunAttempt: 1, Name: fmt.Sprintf("WF %d", id),
+			Status: "completed", Conclusion: "failure",
+			CreatedAt: "2026-03-18T17:00:00Z", UpdatedAt: "2026-03-18T17:30:00Z",
+			HeadSHA: "abc123",
+			Repository: githubapi.RepoRef{
+				Owner: githubapi.RepoOwner{Login: "owner"}, Name: "repo",
+			},
+		}
+	}
+	runs := []githubapi.WorkflowRun{mkRun(500), mkRun(501)}
+
+	mkJob := func(id int64, conclusion string) githubapi.Job {
+		return githubapi.Job{
+			ID: id, Name: "Deploy", Status: "completed", Conclusion: conclusion,
+			CreatedAt: "2026-03-18T17:00:00Z", StartedAt: "2026-03-18T17:01:00Z",
+			CompletedAt: "2026-03-18T17:20:00Z", RunnerName: "runner-1",
+		}
+	}
+
+	mockClient.On("FetchJobsPaginated", mock.Anything,
+		"https://api.github.com/repos/owner/repo/actions/runs/500/jobs?per_page=100").
+		Return([]githubapi.Job{mkJob(600, "failure")}, nil)
+	mockClient.On("FetchJobsPaginated", mock.Anything,
+		"https://api.github.com/repos/owner/repo/actions/runs/501/jobs?per_page=100").
+		Return([]githubapi.Job{mkJob(601, "success")}, nil)
+	mockClient.On("FetchRunTiming", mock.Anything, "owner", "repo", mock.Anything).
+		Return((*githubapi.RunTiming)(nil), nil)
+	// Failed check run 600 belongs to job 600 (check-run ID == job ID for GHA)
+	mockClient.On("FetchCheckRunsForCommit", mock.Anything, "owner", "repo", "abc123").
+		Return([]githubapi.CheckRun{{ID: 600, Name: "Deploy", Conclusion: "failure"}}, nil)
+	mockClient.On("FetchAnnotations", mock.Anything, "owner", "repo", int64(600)).
+		Return([]githubapi.Annotation{{Title: "Boom", Path: "main.go", StartLine: 1, Level: "failure", Message: "exploded"}}, nil)
+
+	parsed := utils.ParsedGitHubURL{Owner: "owner", Repo: "repo", Type: "pr", Identifier: "1"}
+	earliest, _ := utils.ParseTime("2026-03-18T17:00:00Z")
+	_, err := buildURLResult(context.Background(), parsed, 0, "abc123", "main", "PR 1", "url",
+		nil, nil, nil, nil, 0, 0, runs, nil, 0, 0, 0,
+		mockClient, nil, earliest.UnixMilli(), builder, emitter, AnalyzeOptions{NoArtifacts: true})
+	assert.NoError(t, err)
+
+	mockClient.AssertNumberOfCalls(t, "FetchCheckRunsForCommit", 1)
+	mockClient.AssertNumberOfCalls(t, "FetchAnnotations", 1)
+
+	// Annotations attach to job 600 (by ID) and not to the identically-named job 601.
+	for _, s := range builder.Spans() {
+		attrs := map[string]interface{}{}
+		for _, a := range s.Attributes() {
+			attrs[string(a.Key)] = a.Value.AsInterface()
+		}
+		if attrs["type"] != "job" {
+			continue
+		}
+		switch attrs["github.job_id"] {
+		case int64(600):
+			assert.Len(t, s.Events(), 1, "failed job should carry its annotation")
+			assert.Equal(t, "Boom", s.Events()[0].Name)
+		case int64(601):
+			assert.Empty(t, s.Events(), "same-named job in another workflow must not inherit annotations")
+		}
+	}
 }

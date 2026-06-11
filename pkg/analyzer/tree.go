@@ -10,9 +10,9 @@ import (
 
 // SpanEvent represents an event attached to a span (e.g., exception, log).
 type SpanEvent struct {
-	Name       string
-	Time       time.Time
-	Attrs      map[string]string
+	Name  string
+	Time  time.Time
+	Attrs map[string]string
 }
 
 // SpanLink represents a link to another span (cross-trace causality).
@@ -33,10 +33,10 @@ type TreeNode struct {
 	URLIndex  int // index of the input URL this node belongs to
 	Children  []*TreeNode
 	// OTel metadata surfaced for display
-	Events    []SpanEvent // span events (exceptions, logs)
-	Links     []SpanLink  // span links (cross-trace references)
-	SpanID    string      // span ID
-	TraceID   string      // trace ID
+	Events  []SpanEvent // span events (exceptions, logs)
+	Links   []SpanLink  // span links (cross-trace references)
+	SpanID  string      // span ID
+	TraceID string      // trace ID
 	// InstrumentationScope
 	ScopeName    string // instrumentation library name
 	ScopeVersion string // instrumentation library version
@@ -102,10 +102,16 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 		return nil
 	}
 
-	// Build span ID to node mapping
+	// Build one node per span, plus a (traceID, spanID) → node mapping for
+	// parent lookup. Per the OTel spec span IDs are only unique within a
+	// trace, so keying by span ID alone would let spans from one trace
+	// attach under a same-ID parent in another. Building a node per span
+	// (instead of per map key) also keeps spans with colliding IDs — e.g.
+	// two same-named steps in one job — from silently overwriting each other.
 	nodes := make(map[string]*TreeNode)
+	nodeList := make([]*TreeNode, len(filtered))
 
-	for _, sh := range filtered {
+	for i, sh := range filtered {
 		spanID := sh.span.SpanContext().SpanID().String()
 
 		urlIndex := 0
@@ -183,19 +189,22 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 			ScopeVersion:  scope.Version,
 			ResourceAttrs: resourceAttrs,
 		}
-		nodes[spanID] = node
+		nodeList[i] = node
+		key := node.TraceID + "/" + spanID
+		if _, exists := nodes[key]; !exists {
+			nodes[key] = node
+		}
 	}
 
 	// Link children to parents
 	var roots []*TreeNode
-	for _, sh := range filtered {
-		spanID := sh.span.SpanContext().SpanID().String()
+	for i, sh := range filtered {
 		parentID := sh.span.Parent().SpanID().String()
-		node := nodes[spanID]
+		node := nodeList[i]
 
 		if parentID == "0000000000000000" {
 			roots = append(roots, node)
-		} else if parent, ok := nodes[parentID]; ok {
+		} else if parent, ok := nodes[node.TraceID+"/"+parentID]; ok && parent != node {
 			parent.Children = append(parent.Children, node)
 		} else {
 			// Parent not in this batch, treat as root
@@ -205,7 +214,7 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 
 	// Sort all nodes by start time
 	sortTreeNodes(roots)
-	for _, node := range nodes {
+	for _, node := range nodeList {
 		sortTreeNodes(node.Children)
 	}
 

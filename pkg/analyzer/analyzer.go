@@ -84,7 +84,7 @@ func AnalyzeURLs(ctx context.Context, urls []string, client githubapi.GitHubProv
 		if reporter != nil {
 			reporter.StartURL(urlIndex, githubURL)
 		}
-		
+
 		rawData, err := provider.Fetch(ctx, githubURL, urlIndex, reporter, opts)
 		if err != nil {
 			urlErrors = append(urlErrors, URLError{URL: githubURL, Err: err})
@@ -106,8 +106,11 @@ func AnalyzeURLs(ctx context.Context, urls []string, client githubapi.GitHubProv
 			urlEarliestTime = *rawData.CommitPushedAtMs
 		}
 		for _, event := range rawData.ReviewEvents {
+			// TimeMillis returns 0 for missing/unparseable timestamps (e.g.
+			// pending reviews); skip those so they can't reset the timeline
+			// origin to the Unix epoch.
 			ms := event.TimeMillis()
-			if ms < urlEarliestTime {
+			if ms > 0 && ms < urlEarliestTime {
 				urlEarliestTime = ms
 			}
 		}
@@ -172,7 +175,7 @@ func buildURLResult(ctx context.Context, parsed utils.ParsedGitHubURL, urlIndex 
 	traceEvents := []TraceEvent{}
 	jobStartTimes := []JobEvent{}
 	jobEndTimes := []JobEvent{}
-	
+
 	type runResult struct {
 		metrics     Metrics
 		traceEvents []TraceEvent
@@ -180,6 +183,11 @@ func buildURLResult(ctx context.Context, parsed utils.ParsedGitHubURL, urlIndex 
 		jobEnds     []JobEvent
 		err         error
 	}
+
+	// Fetch check-run annotations once for the whole URL: all runs share the
+	// same head SHA, so fetching per run would issue identical API calls
+	// (concurrently, on a cold cache) for every workflow run.
+	jobAnnotations := fetchJobAnnotations(ctx, client, runs)
 
 	workerCount := minInt(runtime.GOMAXPROCS(0), len(runs))
 	if workerCount == 0 {
@@ -199,7 +207,7 @@ func buildURLResult(ctx context.Context, parsed utils.ParsedGitHubURL, urlIndex 
 			defer wg.Done()
 			for job := range jobsCh {
 				processID := (urlIndex+1)*1000 + job.index + 1
-				runMetrics, runTrace, runStarts, runEnds, err := processWorkflowRun(ctx, job.run, job.index, processID, urlEarliestTime, parsed.Owner, parsed.Repo, parsed.Identifier, urlIndex, displayURL, parsed.Type, requiredContexts, changedFilesCount, changedAdditions, changedDeletions, client, reporter, builder, emitter, opts)
+				runMetrics, runTrace, runStarts, runEnds, err := processWorkflowRun(ctx, job.run, job.index, processID, urlEarliestTime, parsed.Owner, parsed.Repo, parsed.Identifier, urlIndex, displayURL, parsed.Type, requiredContexts, changedFilesCount, changedAdditions, changedDeletions, client, reporter, builder, emitter, opts, jobAnnotations)
 				resultsCh <- runResult{
 					metrics:     runMetrics,
 					traceEvents: runTrace,
@@ -260,7 +268,7 @@ func buildURLResult(ctx context.Context, parsed utils.ParsedGitHubURL, urlIndex 
 	return &result, nil
 }
 
-func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex, processID int, earliestTime int64, owner, repo, identifier string, urlIndex int, displayURL, sourceType string, requiredContexts []string, changedFilesCount, changedAdditions, changedDeletions int, client githubapi.GitHubProvider, reporter ProgressReporter, builder *SpanBuilder, emitter *TraceEmitter, opts AnalyzeOptions) (Metrics, []TraceEvent, []JobEvent, []JobEvent, error) {
+func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex, processID int, earliestTime int64, owner, repo, identifier string, urlIndex int, displayURL, sourceType string, requiredContexts []string, changedFilesCount, changedAdditions, changedDeletions int, client githubapi.GitHubProvider, reporter ProgressReporter, builder *SpanBuilder, emitter *TraceEmitter, opts AnalyzeOptions, jobAnnotations map[int64][]githubapi.Annotation) (Metrics, []TraceEvent, []JobEvent, []JobEvent, error) {
 	metrics := InitializeMetrics()
 	traceEvents := []TraceEvent{}
 	jobStartTimes := []JobEvent{}
@@ -358,6 +366,10 @@ func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex
 			runEndTs = maxJobEnd
 		}
 	}
+	// Keep the workflow OTel span end in sync with the extended/clamped
+	// runEndTs: job spans are clamped against runEndTs, so the parent
+	// workflow span must cover it or children escape the parent.
+	runEnd = time.UnixMilli(runEndTs)
 	runDurationMs := runEndTs - runStartTs
 	metrics.TotalDuration += float64(runDurationMs)
 
@@ -467,23 +479,9 @@ func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex
 		}
 	}
 
-	// Fetch annotations for failed check runs (best-effort)
-	jobAnnotations := map[string][]githubapi.Annotation{}
-	checkRuns, err := client.FetchCheckRunsForCommit(ctx, run.Repository.Owner.Login, run.Repository.Name, run.HeadSHA)
-	if err == nil {
-		for _, cr := range checkRuns {
-			if cr.Conclusion == "failure" {
-				annotations, err := client.FetchAnnotations(ctx, run.Repository.Owner.Login, run.Repository.Name, cr.ID)
-				if err == nil && len(annotations) > 0 {
-					jobAnnotations[cr.Name] = append(jobAnnotations[cr.Name], annotations...)
-				}
-			}
-		}
-	}
-
 	for jobIndex, job := range jobs {
 		jobThreadID := jobIndex + 10
-		processJob(job, jobIndex, run, jobThreadID, processID, earliestTime, runEndTs, &metrics, &traceEvents, &jobStartTimes, &jobEndTimes, prURL, urlIndex, displayURL, sourceType, identifier, requiredContexts, builder, tid, wfSC, jobAnnotations[job.Name])
+		processJob(job, jobIndex, run, jobThreadID, processID, earliestTime, runEndTs, &metrics, &traceEvents, &jobStartTimes, &jobEndTimes, prURL, urlIndex, displayURL, sourceType, identifier, requiredContexts, builder, tid, wfSC, jobAnnotations[job.ID])
 	}
 
 	// Fetch billable timing (best-effort, don't fail on error)
@@ -509,7 +507,7 @@ func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex
 		_ = IngestStepLogs(ctx, client, owner, repo, jobs, builder, urlIndex, tid, nil)
 	}
 
-	// Build workflow span stub (after processing jobs so runEnd may be adjusted)
+	// Build workflow span stub (runEnd was extended to cover the latest job completion)
 	wfAttrs := []attribute.KeyValue{
 		// OTel CI/CD semconv
 		attribute.String("cicd.pipeline.name", defaultRunName(run)),
@@ -618,6 +616,34 @@ func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex
 	})
 
 	return metrics, traceEvents, jobStartTimes, jobEndTimes, nil
+}
+
+// fetchJobAnnotations fetches check runs for the runs' head commit (all runs
+// for a URL share the same head SHA) and collects annotations for failed
+// check runs, keyed by check-run ID. For GitHub Actions, a check run's ID is
+// the job ID, so keying by ID (rather than name) keeps annotations from a
+// failed check in one workflow from attaching to an identically-named job in
+// another. Best-effort: returns an empty map on error.
+func fetchJobAnnotations(ctx context.Context, client githubapi.GitHubProvider, runs []githubapi.WorkflowRun) map[int64][]githubapi.Annotation {
+	jobAnnotations := map[int64][]githubapi.Annotation{}
+	if len(runs) == 0 {
+		return jobAnnotations
+	}
+	run := runs[0]
+	checkRuns, err := client.FetchCheckRunsForCommit(ctx, run.Repository.Owner.Login, run.Repository.Name, run.HeadSHA)
+	if err != nil {
+		return jobAnnotations
+	}
+	for _, cr := range checkRuns {
+		if cr.Conclusion != "failure" {
+			continue
+		}
+		annotations, err := client.FetchAnnotations(ctx, run.Repository.Owner.Login, run.Repository.Name, cr.ID)
+		if err == nil && len(annotations) > 0 {
+			jobAnnotations[cr.ID] = append(jobAnnotations[cr.ID], annotations...)
+		}
+	}
+	return jobAnnotations
 }
 
 // processPreviousAttempt creates a synthetic workflow span and job spans for a previous
@@ -773,7 +799,8 @@ func processJob(job githubapi.Job, jobIndex int, run githubapi.WorkflowRun, jobT
 	absoluteJobEnd := jobEnd
 
 	metrics.TotalJobs++
-	if !isPending && (job.Status != "completed" || job.Conclusion != "success") {
+	// Only count genuine failures — skipped/cancelled/neutral jobs are not failures.
+	if !isPending && (job.Conclusion == "failure" || job.Conclusion == "timed_out") {
 		metrics.FailedJobs++
 	}
 
@@ -1095,7 +1122,7 @@ func addReviewMarkersToTrace(urlResults []URLResult, events *[]TraceEvent) {
 		if len(result.ReviewEvents) == 0 {
 			continue
 		}
-		
+
 		for _, event := range result.ReviewEvents {
 			originalEventTime := event.TimeMillis()
 			ts := (originalEventTime - result.EarliestTime) * 1000

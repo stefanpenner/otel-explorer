@@ -156,6 +156,11 @@ type CombinedTimelineJob struct {
 
 func SortJobEvents(events []JobEvent) {
 	sort.Slice(events, func(i, j int) bool {
+		if events[i].Ts == events[j].Ts {
+			// End before start at the same timestamp, so back-to-back jobs
+			// are not counted as concurrent (matches CalculateConcurrency).
+			return events[i].Type == "end" && events[j].Type == "start"
+		}
 		return events[i].Ts < events[j].Ts
 	})
 }

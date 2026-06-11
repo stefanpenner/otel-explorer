@@ -116,3 +116,43 @@ func TestCommitFetchUsesFilteredRunsWhenAvailable(t *testing.T) {
 	assert.NotNil(t, result)
 	assert.Equal(t, filteredRuns, result.Runs, "should use filtered runs when branch+push filter returns results")
 }
+
+func TestPendingReviewsAreDropped(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	baseURL := "https://api.github.com/repos/owner/repo"
+
+	mockClient := new(mockGitHubProvider)
+	mockClient.On("FetchPullRequest", mock.Anything, baseURL, "1").
+		Return(&githubapi.PullRequest{
+			Number: 1,
+			Head:   githubapi.PRRef{Ref: "feature", SHA: "abc123"},
+			Base:   githubapi.PRRef{Ref: "main"},
+		}, nil)
+	// A PENDING (unsubmitted) review has submitted_at == null → empty string.
+	mockClient.On("FetchPRReviews", mock.Anything, "owner", "repo", "1").
+		Return([]githubapi.Review{
+			{State: "PENDING", SubmittedAt: "", User: githubapi.UserInfo{Login: "drafter"}},
+			{State: "APPROVED", SubmittedAt: "2026-01-15T10:00:00Z", User: githubapi.UserInfo{Login: "reviewer"}},
+		}, nil)
+	mockClient.On("FetchPRComments", mock.Anything, "owner", "repo", "1").
+		Return([]githubapi.Review{}, nil)
+	mockClient.On("FetchWorkflowRuns", mock.Anything, baseURL, "abc123", "", "").
+		Return([]githubapi.WorkflowRun{
+			{ID: 1, Name: "CI", Status: "completed", CreatedAt: "2026-01-15T10:05:00Z", UpdatedAt: "2026-01-15T10:15:00Z"},
+		}, nil)
+	mockClient.On("FetchBranchProtection", mock.Anything, "owner", "repo", "main").
+		Return((*githubapi.BranchProtection)(nil), nil)
+
+	provider := NewDataProvider(mockClient)
+	raw, err := provider.Fetch(ctx, "https://github.com/owner/repo/pull/1", 0, nil, AnalyzeOptions{})
+	assert.NoError(t, err)
+	assert.NotNil(t, raw)
+
+	assert.Len(t, raw.ReviewEvents, 1, "pending review without submitted_at must be dropped")
+	assert.Equal(t, "APPROVED", raw.ReviewEvents[0].State)
+	for _, ev := range raw.ReviewEvents {
+		assert.Greater(t, ev.TimeMillis(), int64(0), "no review event may carry the 0 timestamp sentinel")
+	}
+}

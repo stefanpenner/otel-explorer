@@ -139,6 +139,15 @@ func TestCalculateMaxConcurrencyEdgeCases(t *testing.T) {
 			ends:   []JobEvent{{Ts: 5000, Type: "end"}, {Ts: 5000, Type: "end"}, {Ts: 5000, Type: "end"}},
 			expect: 3,
 		},
+		{
+			// One job ends at the exact timestamp the next starts (common with
+			// second-granularity GitHub timestamps and `needs:` chains): the
+			// end event must be processed first, so they are not concurrent.
+			name:   "back-to-back jobs sharing a boundary timestamp",
+			starts: []JobEvent{{Ts: 0, Type: "start"}, {Ts: 1000, Type: "start"}},
+			ends:   []JobEvent{{Ts: 1000, Type: "end"}, {Ts: 2000, Type: "end"}},
+			expect: 1,
+		},
 	}
 
 	for _, tc := range cases {
@@ -146,6 +155,42 @@ func TestCalculateMaxConcurrencyEdgeCases(t *testing.T) {
 			assert.Equal(t, tc.expect, CalculateMaxConcurrency(tc.starts, tc.ends))
 		})
 	}
+}
+
+func TestMaxConcurrencyAtTimesBackToBack(t *testing.T) {
+	t.Parallel()
+
+	starts := []JobEvent{{Ts: 0, Type: "start"}, {Ts: 1000, Type: "start"}}
+	ends := []JobEvent{{Ts: 1000, Type: "end"}, {Ts: 2000, Type: "end"}}
+	assert.Equal(t, 1, maxConcurrencyAtTimes(starts, ends))
+}
+
+func TestCalculateCombinedSuccessRates(t *testing.T) {
+	t.Parallel()
+
+	t.Run("computed from raw counts, not formatted strings", func(t *testing.T) {
+		results := []URLResult{
+			{Metrics: FinalMetrics{
+				Metrics:        Metrics{TotalRuns: 3, SuccessfulRuns: 1, TotalJobs: 3, FailedJobs: 2},
+				SuccessRate:    "33.3",
+				JobSuccessRate: "33.3",
+			}},
+			{Metrics: FinalMetrics{
+				Metrics:        Metrics{TotalRuns: 30, SuccessfulRuns: 1, TotalJobs: 30, FailedJobs: 29},
+				SuccessRate:    "3.3",
+				JobSuccessRate: "3.3",
+			}},
+		}
+		// True combined rate: 2/33 = 6.0606... -> "6.1".
+		// Reconstructing from the 1-decimal strings would yield "6.0".
+		assert.Equal(t, "6.1", CalculateCombinedSuccessRate(results))
+		assert.Equal(t, "6.1", CalculateCombinedJobSuccessRate(results))
+	})
+
+	t.Run("empty input", func(t *testing.T) {
+		assert.Equal(t, "0.0", CalculateCombinedSuccessRate(nil))
+		assert.Equal(t, "0.0", CalculateCombinedJobSuccessRate(nil))
+	})
 }
 
 func TestCalculateFinalMetricsEdgeCases(t *testing.T) {
@@ -281,4 +326,22 @@ func TestFindOverlappingJobsEdgeCases(t *testing.T) {
 		overlaps := FindOverlappingJobs(jobs)
 		assert.Len(t, overlaps, 2)
 	})
+}
+
+func TestSortJobEventsEndBeforeStartAtSameTimestamp(t *testing.T) {
+	t.Parallel()
+
+	events := []JobEvent{
+		{Ts: 2000, Type: "start"},
+		{Ts: 1000, Type: "start"},
+		{Ts: 2000, Type: "end"},
+		{Ts: 3000, Type: "end"},
+	}
+	SortJobEvents(events)
+	assert.Equal(t, []JobEvent{
+		{Ts: 1000, Type: "start"},
+		{Ts: 2000, Type: "end"},
+		{Ts: 2000, Type: "start"},
+		{Ts: 3000, Type: "end"},
+	}, events, "end must sort before start at the same timestamp so back-to-back jobs are not concurrent")
 }

@@ -3,6 +3,7 @@ package analyzer
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 
 	"github.com/stefanpenner/otel-explorer/pkg/githubapi"
@@ -56,13 +57,28 @@ func FindLatestTimestamp(runs []githubapi.WorkflowRun) int64 {
 	return latest
 }
 
+// sortJobEventsEndFirst orders events by timestamp, processing "end" events
+// before "start" events at equal timestamps. This keeps back-to-back jobs
+// (one ending exactly when the next starts, common with second-granularity
+// GitHub timestamps and `needs:` chains) from being counted as concurrent,
+// consistent with FindOverlappingJobs treating touching intervals as
+// non-overlapping.
+func sortJobEventsEndFirst(events []JobEvent) {
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].Ts == events[j].Ts {
+			return events[i].Type == "end" && events[j].Type == "start"
+		}
+		return events[i].Ts < events[j].Ts
+	})
+}
+
 func CalculateMaxConcurrency(jobStartTimes, jobEndTimes []JobEvent) int {
 	if len(jobStartTimes) == 0 {
 		return 0
 	}
 	all := append([]JobEvent{}, jobStartTimes...)
 	all = append(all, jobEndTimes...)
-	SortJobEvents(all)
+	sortJobEventsEndFirst(all)
 
 	current := 0
 	maxConcurrency := 0
@@ -270,43 +286,29 @@ func CalculateCombinedMetrics(urlResults []URLResult, totalRuns int, allJobStart
 }
 
 func CalculateCombinedSuccessRate(urlResults []URLResult) string {
-	totalSuccessful := 0.0
+	totalSuccessful := 0
 	totalRuns := 0
 	for _, result := range urlResults {
-		rate := parsePercent(result.Metrics.SuccessRate)
-		totalSuccessful += float64(result.Metrics.TotalRuns) * rate / 100
+		totalSuccessful += result.Metrics.SuccessfulRuns
 		totalRuns += result.Metrics.TotalRuns
 	}
 	if totalRuns == 0 {
 		return "0.0"
 	}
-	return formatPercent(totalSuccessful / float64(totalRuns) * 100)
+	return formatPercent(float64(totalSuccessful) / float64(totalRuns) * 100)
 }
 
 func CalculateCombinedJobSuccessRate(urlResults []URLResult) string {
-	totalSuccessful := 0.0
+	totalSuccessful := 0
 	totalJobs := 0
 	for _, result := range urlResults {
-		rate := parsePercent(result.Metrics.JobSuccessRate)
-		totalSuccessful += float64(result.Metrics.TotalJobs) * rate / 100
+		totalSuccessful += result.Metrics.TotalJobs - result.Metrics.FailedJobs
 		totalJobs += result.Metrics.TotalJobs
 	}
 	if totalJobs == 0 {
 		return "0.0"
 	}
-	return formatPercent(totalSuccessful / float64(totalJobs) * 100)
-}
-
-func parsePercent(value string) float64 {
-	if value == "" {
-		return 0
-	}
-	parsed := 0.0
-	_, err := fmt.Sscanf(value, "%f", &parsed)
-	if err != nil {
-		return 0
-	}
-	return parsed
+	return formatPercent(float64(totalSuccessful) / float64(totalJobs) * 100)
 }
 
 func maxConcurrencyAtTimes(startEvents, endEvents []JobEvent) int {
@@ -315,7 +317,7 @@ func maxConcurrencyAtTimes(startEvents, endEvents []JobEvent) int {
 	}
 	all := append([]JobEvent{}, startEvents...)
 	all = append(all, endEvents...)
-	SortJobEvents(all)
+	sortJobEventsEndFirst(all)
 
 	current := 0
 	max := 0

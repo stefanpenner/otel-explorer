@@ -93,6 +93,11 @@ func (p *DataProvider) Fetch(ctx context.Context, githubURL string, urlIndex int
 			return nil, err
 		}
 		for _, review := range reviews {
+			// Pending (unsubmitted) reviews have submitted_at == null; drop
+			// them so the 0 timestamp sentinel never enters min/max math.
+			if review.SubmittedAt == "" {
+				continue
+			}
 			reviewEvents = append(reviewEvents, ReviewEvent{
 				Type:     "review",
 				State:    review.State,
@@ -176,17 +181,23 @@ func (p *DataProvider) Fetch(ctx context.Context, githubURL string, urlIndex int
 		prs, err := p.client.FetchCommitAssociatedPRs(ctx, parsed.Owner, parsed.Repo, headSHA)
 		if err == nil && len(prs) > 0 {
 			targetBranch = prs[0].Base.Ref
-			
+
 			// Fetch reviews and comments for the first associated PR
 			prNumber := fmt.Sprintf("%d", prs[0].Number)
 			if reporter != nil {
 				reporter.SetPhase("Fetching associated PR metadata")
 				reporter.SetDetail(prNumber)
 			}
-			
+
 			reviews, err := p.client.FetchPRReviews(ctx, parsed.Owner, parsed.Repo, prNumber)
 			if err == nil {
 				for _, review := range reviews {
+					// Pending (unsubmitted) reviews have submitted_at == null;
+					// drop them so the 0 timestamp sentinel never enters
+					// min/max math.
+					if review.SubmittedAt == "" {
+						continue
+					}
 					reviewEvents = append(reviewEvents, ReviewEvent{
 						Type:     "review",
 						State:    review.State,
@@ -208,7 +219,7 @@ func (p *DataProvider) Fetch(ctx context.Context, githubURL string, urlIndex int
 					})
 				}
 			}
-			
+
 			if prs[0].MergedAt != nil && *prs[0].MergedAt != "" {
 				reviewEvents = append(reviewEvents, ReviewEvent{
 					Type:     "merged",

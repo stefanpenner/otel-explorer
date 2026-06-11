@@ -24,6 +24,15 @@ type Summary struct {
 	BillableMs     map[string]int64 // OS name → total ms (e.g. "ubuntu", "macos", "windows")
 }
 
+// isSyntheticQueueSpan reports whether the span is a synthetic "queued"
+// filler span ("⏳ Queued" / "⏳ Workflow Queued"). These are visual-only:
+// the real job span already carries queue_time_ms, so counting them as jobs
+// would double queue stats and inflate TotalJobs/MaxConcurrency.
+func isSyntheticQueueSpan(attrs map[string]string) bool {
+	t := attrs["type"]
+	return t == "queued" || t == "workflow_queued"
+}
+
 // CalculateSummary analyzes OTel spans to produce a high-level summary.
 // It uses the provided enricher to classify spans as root/child and determine outcome.
 func CalculateSummary(spans []trace.ReadOnlySpan, enricher enrichment.Enricher) Summary {
@@ -33,19 +42,33 @@ func CalculateSummary(spans []trace.ReadOnlySpan, enricher enrichment.Enricher) 
 
 	var totalQueueMs float64
 
+	// Per-run aggregation so retry attempts (one root span per attempt,
+	// sharing the same github.run_id) count as a single logical run —
+	// matching the Metrics-path semantics.
+	type runInfo struct {
+		maxAttempt int64
+		success    bool
+		retried    bool
+	}
+	runsByID := make(map[int64]*runInfo)
+
 	for _, span := range spans {
 		attrs := make(map[string]string)
 		var attrInts map[string]int64
 		for _, a := range span.Attributes() {
 			key := string(a.Key)
 			attrs[key] = a.Value.AsString()
-			// Capture int64 attributes for billable/queue/retry
-			if strings.HasPrefix(key, "billable.") || key == "queue_time_ms" || key == "github.run_attempt" {
+			// Capture int64 attributes for billable/queue/retry/run identity
+			if strings.HasPrefix(key, "billable.") || key == "queue_time_ms" || key == "github.run_attempt" || key == "github.run_id" {
 				if attrInts == nil {
 					attrInts = make(map[string]int64)
 				}
 				attrInts[key] = a.Value.AsInt64()
 			}
+		}
+
+		if isSyntheticQueueSpan(attrs) {
+			continue
 		}
 
 		isZeroDuration := span.EndTime().Before(span.StartTime()) || span.EndTime().Equal(span.StartTime())
@@ -56,14 +79,34 @@ func CalculateSummary(spans []trace.ReadOnlySpan, enricher enrichment.Enricher) 
 		}
 
 		if hints.IsRoot {
-			s.TotalRuns++
-			if hints.Outcome == "success" {
-				s.SuccessfulRuns++
+			attempt := attrInts["github.run_attempt"]
+			if attempt == 0 {
+				attempt = 1
 			}
-			// Extract billable and retry data from workflow spans
-			if attempt, ok := attrInts["github.run_attempt"]; ok && attempt > 1 {
-				s.RetriedRuns++
+			if runID, ok := attrInts["github.run_id"]; ok {
+				info := runsByID[runID]
+				if info == nil {
+					info = &runInfo{}
+					runsByID[runID] = info
+				}
+				if attempt > info.maxAttempt {
+					info.maxAttempt = attempt
+					info.success = hints.Outcome == "success"
+				}
+				if attempt > 1 {
+					info.retried = true
+				}
+			} else {
+				// Root span without a run ID (e.g. external OTLP trace)
+				s.TotalRuns++
+				if hints.Outcome == "success" {
+					s.SuccessfulRuns++
+				}
+				if attempt > 1 {
+					s.RetriedRuns++
+				}
 			}
+			// Extract billable data from workflow spans
 			for key, ms := range attrInts {
 				if strings.HasPrefix(key, "billable.") && strings.HasSuffix(key, "_ms") {
 					// "billable.ubuntu_ms" → "ubuntu"
@@ -88,6 +131,16 @@ func CalculateSummary(spans []trace.ReadOnlySpan, enricher enrichment.Enricher) 
 		}
 	}
 
+	for _, info := range runsByID {
+		s.TotalRuns++
+		if info.success {
+			s.SuccessfulRuns++
+		}
+		if info.retried {
+			s.RetriedRuns++
+		}
+	}
+
 	if s.QueueCount > 0 {
 		s.AvgQueueTimeMs = totalQueueMs / float64(s.QueueCount)
 	}
@@ -109,6 +162,12 @@ func CalculateConcurrency(spans []trace.ReadOnlySpan, enricher enrichment.Enrich
 		attrs := make(map[string]string)
 		for _, a := range s.Attributes() {
 			attrs[string(a.Key)] = a.Value.AsString()
+		}
+
+		// Synthetic queue spans overlap other running jobs and would
+		// inflate the concurrency count.
+		if isSyntheticQueueSpan(attrs) {
+			continue
 		}
 
 		isZeroDuration := s.EndTime().Before(s.StartTime()) || s.EndTime().Equal(s.StartTime())
