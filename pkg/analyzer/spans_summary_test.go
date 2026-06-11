@@ -88,7 +88,7 @@ func TestCombinedMetricsFromSpansEmpty(t *testing.T) {
 	t.Parallel()
 	cm := CombinedMetricsFromSpans(nil, enrichment.DefaultEnricher())
 	assert.Equal(t, 0, cm.TotalRuns)
-	assert.Equal(t, "0.0", cm.SuccessRate)
+	assert.Equal(t, "", cm.SuccessRate)
 }
 
 func TestSpansWallCompute(t *testing.T) {
@@ -158,4 +158,32 @@ func TestCombinedMetricsFromSpansUntypedTrace(t *testing.T) {
 	wallMs, computeMs := SpansWallCompute(builder.Spans(), enrichment.DefaultEnricher())
 	assert.Equal(t, int64(14*60*1000), wallMs)
 	assert.Equal(t, int64(6*60*1000), computeMs, "compute = child span durations, not roots")
+}
+
+func TestCombinedMetricsFromSpansUnknownOutcomes(t *testing.T) {
+	t.Parallel()
+	// Untyped spans have no conclusion attributes: rates must be marked
+	// unknown (empty string) rather than rendered as a misleading "0.0%".
+	tid := githubapi.NewTraceID(10, 1)
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	builder := &SpanBuilder{}
+	root := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: tid, SpanID: githubapi.NewSpanID(1), TraceFlags: trace.FlagsSampled,
+	})
+	builder.Add(tracetest.SpanStub{
+		Name: "Workflow: untyped", SpanContext: root,
+		StartTime: base, EndTime: base.Add(time.Minute),
+	})
+	builder.Add(tracetest.SpanStub{
+		Name: "child",
+		SpanContext: trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID: tid, SpanID: githubapi.NewSpanID(2), TraceFlags: trace.FlagsSampled,
+		}),
+		Parent:    root,
+		StartTime: base, EndTime: base.Add(30 * time.Second),
+	})
+
+	cm := CombinedMetricsFromSpans(builder.Spans(), enrichment.DefaultEnricher())
+	assert.Equal(t, "", cm.SuccessRate, "unknown outcomes must not read as 0%")
+	assert.Equal(t, "", cm.JobSuccessRate, "unknown job outcomes must not read as 0%")
 }

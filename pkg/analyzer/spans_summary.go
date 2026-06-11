@@ -12,7 +12,7 @@ import (
 // trace backends. Without this fallback those inputs render an all-zero
 // header even though the timeline below is fully populated.
 func CombinedMetricsFromSpans(spans []trace.ReadOnlySpan, enricher enrichment.Enricher) CombinedMetrics {
-	var runs, successRuns, jobs, failedJobs, steps int
+	var runs, knownRuns, successRuns, jobs, knownJobs, failedJobs, steps int
 	for _, span := range spans {
 		hints := enrichSpan(span, enricher)
 		if hints.Category == "" || hints.IsMarker {
@@ -21,6 +21,9 @@ func CombinedMetricsFromSpans(spans []trace.ReadOnlySpan, enricher enrichment.En
 		switch {
 		case isRootSpan(span, hints):
 			runs++
+			if hints.Outcome != "" {
+				knownRuns++
+			}
 			if hints.Outcome == "success" {
 				successRuns++
 			}
@@ -28,18 +31,23 @@ func CombinedMetricsFromSpans(spans []trace.ReadOnlySpan, enricher enrichment.En
 			steps++
 		default:
 			jobs++
+			if hints.Outcome != "" {
+				knownJobs++
+			}
 			if hints.Outcome == "failure" {
 				failedJobs++
 			}
 		}
 	}
 
-	successRate := "0.0"
-	if runs > 0 {
+	// Empty rate strings mean "unknown" — untyped traces carry no outcome
+	// attributes, and 0.0% would misread as everything failing.
+	successRate := ""
+	if knownRuns > 0 {
 		successRate = fmt.Sprintf("%.1f", float64(successRuns)/float64(runs)*100)
 	}
-	jobSuccessRate := "0.0"
-	if jobs > 0 {
+	jobSuccessRate := ""
+	if knownJobs > 0 {
 		jobSuccessRate = fmt.Sprintf("%.1f", float64(jobs-failedJobs)/float64(jobs)*100)
 	}
 

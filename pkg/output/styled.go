@@ -50,13 +50,25 @@ func OutputStyledResults(w io.Writer, urlResults []analyzer.URLResult, combined 
 		fmt.Sscanf(combined.JobSuccessRate, "%f", &jobSuccessRate)
 	}
 
-	// Line 2: Success rates (left) + Counts (right)
-	leftStyled := labelStyle.Render("Workflows: ") + colorForSuccessRate(successRate).Render(combined.SuccessRate+"%") +
-		sep + labelStyle.Render("Jobs: ") + colorForSuccessRate(jobSuccessRate).Render(combined.JobSuccessRate+"%")
+	// Line 2: Success rates (left) + Counts (right). Empty rate strings mean
+	// the input carried no outcome data — show "–" rather than a false 0%.
+	wfRate, jobRate := combined.SuccessRate+"%", combined.JobSuccessRate+"%"
+	wfRateStyled := colorForSuccessRate(successRate).Render(wfRate)
+	jobRateStyled := colorForSuccessRate(jobSuccessRate).Render(jobRate)
+	if combined.SuccessRate == "" {
+		wfRate = "–"
+		wfRateStyled = dimStyle.Render(wfRate)
+	}
+	if combined.JobSuccessRate == "" {
+		jobRate = "–"
+		jobRateStyled = dimStyle.Render(jobRate)
+	}
+	leftStyled := labelStyle.Render("Workflows: ") + wfRateStyled +
+		sep + labelStyle.Render("Jobs: ") + jobRateStyled
 	rightStyled := numStyle.Render(fmt.Sprintf("%d", combined.TotalRuns)) + labelStyle.Render(" runs") +
 		sep + numStyle.Render(fmt.Sprintf("%d", combined.TotalJobs)) + labelStyle.Render(" jobs") +
 		sep + numStyle.Render(fmt.Sprintf("%d", combined.TotalSteps)) + labelStyle.Render(" steps")
-	leftPlain := fmt.Sprintf("Workflows: %s%% • Jobs: %s%%", combined.SuccessRate, combined.JobSuccessRate)
+	leftPlain := fmt.Sprintf("Workflows: %s • Jobs: %s", wfRate, jobRate)
 	rightPlain := fmt.Sprintf("%d runs • %d jobs • %d steps", combined.TotalRuns, combined.TotalJobs, combined.TotalSteps)
 	line2 := buildLineAligned(contentWidth, leftStyled, leftPlain, rightStyled, rightPlain)
 
