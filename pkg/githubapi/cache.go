@@ -18,7 +18,7 @@ const cacheTTL = 5 * time.Minute
 
 // cacheVersion is incremented to invalidate all existing cached responses.
 // Bump this when response parsing or enrichment logic changes.
-const cacheVersion = "v3"
+const cacheVersion = "v4"
 
 // CachedTransport implements http.RoundTripper and caches GET requests to disk.
 type CachedTransport struct {
@@ -78,6 +78,10 @@ func (t *CachedTransport) getCacheKey(req *http.Request) string {
 	}
 	h.Write([]byte(u))
 	h.Write([]byte(req.Header.Get("Accept")))
+	// Include the auth credential so responses fetched as one identity are
+	// never served to another (the key is a hash, so the token itself is
+	// not exposed on disk).
+	h.Write([]byte(req.Header.Get("Authorization")))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -87,9 +91,10 @@ func (t *CachedTransport) getFromCache(path string, req *http.Request) *http.Res
 		return nil
 	}
 
-	// Expire stale entries
+	// Expire stale entries. Don't os.Remove here: another process may be
+	// concurrently renaming a fresh entry into place, and removing would
+	// delete it. The stale file is simply overwritten by the next save.
 	if time.Since(info.ModTime()) > cacheTTL {
-		_ = os.Remove(path)
 		return nil
 	}
 
@@ -120,7 +125,10 @@ func (t *CachedTransport) saveToCache(path string, resp *http.Response) {
 		return
 	}
 
-	_ = os.WriteFile(path, dump, 0644)
+	// Write to a temp file and rename it into place. Rename is atomic on
+	// POSIX, so concurrent readers (other goroutines or other ote processes
+	// sharing the cache dir) never observe a torn, partially written entry.
+	t.writeFileAtomic(path, dump)
 
 	// Since DumpResponse consumed the body, we MUST restore it so the 
 	// caller of RoundTrip can still read it.
@@ -128,6 +136,25 @@ func (t *CachedTransport) saveToCache(path string, resp *http.Response) {
 	restored, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(dump)), resp.Request)
 	if err == nil {
 		resp.Body = restored.Body
+	}
+}
+
+// writeFileAtomic writes data to a temp file in the cache directory and
+// renames it over path so readers always see a complete entry.
+func (t *CachedTransport) writeFileAtomic(path string, data []byte) {
+	tmp, err := os.CreateTemp(t.CacheDir, "tmp-*")
+	if err != nil {
+		return
+	}
+	_, werr := tmp.Write(data)
+	cerr := tmp.Close()
+	if werr != nil || cerr != nil {
+		_ = os.Remove(tmp.Name())
+		return
+	}
+	_ = os.Chmod(tmp.Name(), 0644)
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		_ = os.Remove(tmp.Name())
 	}
 }
 

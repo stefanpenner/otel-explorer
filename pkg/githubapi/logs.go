@@ -69,6 +69,15 @@ func SplitJobLogByStep(logData []byte, steps []Step) map[int][]byte {
 	buckets := make(map[int][][]byte) // step number -> lines
 
 	scanner := bufio.NewScanner(bytes.NewReader(logData))
+	// CI log lines routinely exceed bufio.Scanner's default 64KB token limit
+	// (minified JS, base64 blobs, single-line tool dumps). Allow up to 16MB
+	// per line so one long line doesn't silently abort the whole split.
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+
+	// Index into ranges of the most recently matched step; lines without a
+	// parseable timestamp are attached to it (lines before the first match
+	// go to the first step).
+	lastIdx := 0
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		lineCopy := make([]byte, len(line))
@@ -76,17 +85,16 @@ func SplitJobLogByStep(logData []byte, steps []Step) map[int][]byte {
 
 		// Parse timestamp from line (28 chars: "2024-01-15T10:30:45.1234567Z")
 		if len(line) < 28 {
-			// Line too short; attach to most recent step or skip
-			if len(ranges) > 0 {
-				last := ranges[len(ranges)-1].number
-				buckets[last] = append(buckets[last], lineCopy)
-			}
+			// Line too short to carry a timestamp; attach to most recent step
+			buckets[ranges[lastIdx].number] = append(buckets[ranges[lastIdx].number], lineCopy)
 			continue
 		}
 
 		tsStr := string(line[:28])
 		t, err := time.Parse("2006-01-02T15:04:05.0000000Z", tsStr)
 		if err != nil {
+			// No parseable timestamp; attach to most recent step
+			buckets[ranges[lastIdx].number] = append(buckets[ranges[lastIdx].number], lineCopy)
 			continue
 		}
 
@@ -130,8 +138,12 @@ func SplitJobLogByStep(logData []byte, steps []Step) map[int][]byte {
 			}
 		}
 
+		lastIdx = bestIdx
 		buckets[ranges[bestIdx].number] = append(buckets[ranges[bestIdx].number], lineCopy)
 	}
+	// If scanning stopped early (scanner.Err() != nil, e.g. a pathological
+	// >16MB line), keep whatever was bucketed so far rather than discarding
+	// the entire log; splitting is best-effort enrichment.
 
 	for num, lines := range buckets {
 		result[num] = bytes.Join(lines, []byte("\n"))
