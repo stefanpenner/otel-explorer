@@ -331,15 +331,47 @@ func AnalyzeTrends(ctx context.Context, client githubapi.GitHubProvider, owner, 
 		}
 	}
 
+	return analyzeRunData(owner, repo, runData, sampling, TimeRange{Start: startTime, End: endTime, Days: days}), nil
+}
+
+// AnalyzeTrendsFromRuns runs the full trend analysis over locally stored
+// runs — exact job detail, no API calls, no sampling. Incomplete runs are
+// filtered out the same way the API path filters them.
+func AnalyzeTrendsFromRuns(owner, repo string, days int, runs []RunData) *TrendAnalysis {
+	completed := make([]RunData, 0, len(runs))
+	for _, run := range runs {
+		if run.Status == "completed" {
+			completed = append(completed, run)
+		}
+	}
+	sort.Slice(completed, func(i, j int) bool {
+		return completed[i].CreatedAt.Before(completed[j].CreatedAt)
+	})
+	withJobs := 0
+	for _, run := range completed {
+		if len(run.Jobs) > 0 {
+			withJobs++
+		}
+	}
+	sampling := SamplingInfo{
+		SampleSize: withJobs,
+		TotalRuns:  len(completed),
+		Rationale: fmt.Sprintf("%s runs loaded from the local store (exact job detail for %d; run `ote sync` to refresh).",
+			formatCount(len(completed)), withJobs),
+	}
+	endTime := time.Now()
+	return analyzeRunData(owner, repo, completed, sampling,
+		TimeRange{Start: endTime.Add(-time.Duration(days) * 24 * time.Hour), End: endTime, Days: days})
+}
+
+// analyzeRunData computes the full TrendAnalysis over chronologically
+// sorted, completed runs.
+func analyzeRunData(owner, repo string, runData []RunData, sampling SamplingInfo, window TimeRange) *TrendAnalysis {
 	analysis := &TrendAnalysis{
-		Owner: owner,
-		Repo:  repo,
-		TimeRange: TimeRange{
-			Start: startTime,
-			End:   endTime,
-			Days:  days,
-		},
-		Sampling: sampling,
+		Owner:     owner,
+		Repo:      repo,
+		TimeRange: window,
+		Sampling:  sampling,
 	}
 
 	// Calculate summary statistics (uses all runs — run-level data)
@@ -381,7 +413,7 @@ func AnalyzeTrends(ctx context.Context, client githubapi.GitHubProvider, owner, 
 	// Aggregate sampled jobs into the statistically typical run
 	analysis.Typical = computeTypicalRun(runData)
 
-	return analysis, nil
+	return analysis
 }
 
 // stratifiedSampleIndices selects indices spread evenly across time buckets.

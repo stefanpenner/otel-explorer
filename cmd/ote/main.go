@@ -475,24 +475,36 @@ func main() {
 		ctx := context.Background()
 		client := githubapi.NewClient(githubapi.NewContext(token))
 
-		// Setup progress spinner for trends mode
-		progress := tui.NewProgress(1, os.Stderr)
-		progress.Start()
-		progress.StartURL(0, cfg.trendsRepo)
+		// Repos previously opted in via `ote sync` analyze from the local
+		// store: an incremental sync brings it current, then the analysis is
+		// exact (full job detail) with near-zero API cost. Branch/workflow
+		// filters and dump/no-sample knobs still use the API path.
+		var analysis *analyzer.TrendAnalysis
+		if cfg.trendsBranch == "" && cfg.trendsWorkflow == "" && cfg.trendsDumpRuns == "" && !cfg.trendsNoSample {
+			analysis = trendsFromStore(ctx, client, owner, repo, cfg.trendsDays)
+		}
 
-		// Perform trend analysis
-		analysis, err := analyzer.AnalyzeTrends(ctx, client, owner, repo, cfg.trendsDays, cfg.trendsBranch, cfg.trendsWorkflow, analyzer.TrendOptions{
-			NoSample:      cfg.trendsNoSample,
-			MarginOfError: cfg.trendsMargin,
-			DumpRunsPath:  cfg.trendsDumpRuns,
-		}, progress)
+		if analysis == nil {
+			// Setup progress spinner for trends mode
+			progress := tui.NewProgress(1, os.Stderr)
+			progress.Start()
+			progress.StartURL(0, cfg.trendsRepo)
 
-		progress.Finish()
-		progress.Wait()
+			// Perform trend analysis
+			var err error
+			analysis, err = analyzer.AnalyzeTrends(ctx, client, owner, repo, cfg.trendsDays, cfg.trendsBranch, cfg.trendsWorkflow, analyzer.TrendOptions{
+				NoSample:      cfg.trendsNoSample,
+				MarginOfError: cfg.trendsMargin,
+				DumpRunsPath:  cfg.trendsDumpRuns,
+			}, progress)
 
-		if err != nil {
-			printError(err, "trend analysis failed")
-			os.Exit(1)
+			progress.Finish()
+			progress.Wait()
+
+			if err != nil {
+				printError(err, "trend analysis failed")
+				os.Exit(1)
+			}
 		}
 
 		// Output results go to stdout (the spinner above stays on stderr) so
@@ -1424,4 +1436,40 @@ func buildLintData(spans []sdktrace.ReadOnlySpan) []enrichment.SpanData {
 		})
 	}
 	return data
+}
+
+// trendsFromStore analyzes trends from the local store when the repo has
+// been synced before (see `ote sync`). Returns nil to fall back to the API
+// sampling path: store not opted in, store errors, or an empty window.
+func trendsFromStore(ctx context.Context, client githubapi.GitHubProvider, owner, repo string, days int) *analyzer.TrendAnalysis {
+	dbPath, err := store.DefaultPath()
+	if err != nil {
+		return nil
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil // no store yet
+	}
+	st, err := store.Open(dbPath)
+	if err != nil {
+		return nil
+	}
+	defer st.Close()
+
+	wm, err := st.Watermark(owner, repo)
+	if err != nil || wm.IsZero() {
+		return nil // repo never synced
+	}
+
+	fmt.Fprintf(os.Stderr, "Using local store (last synced %s) — syncing...\n",
+		utils.HumanizeTime(time.Since(wm).Seconds())+" ago")
+	if _, err := store.Sync(ctx, client, st, owner, repo, days, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: incremental sync failed (%v); analyzing stored data as-is\n", err)
+	}
+
+	now := time.Now()
+	runs, err := st.LoadRuns(owner, repo, now.Add(-time.Duration(days)*24*time.Hour), now)
+	if err != nil || len(runs) == 0 {
+		return nil
+	}
+	return analyzer.AnalyzeTrendsFromRuns(owner, repo, days, runs)
 }

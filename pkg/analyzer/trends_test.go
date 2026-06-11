@@ -1517,3 +1517,36 @@ func TestFetchJobsForRuns_Concurrent(t *testing.T) {
 		}
 	}
 }
+
+func TestAnalyzeTrendsFromRuns(t *testing.T) {
+	t.Parallel()
+	base := time.Now().Add(-6 * 24 * time.Hour)
+	var runs []RunData
+	for i := 0; i < 6; i++ {
+		created := base.Add(time.Duration(i) * 24 * time.Hour)
+		runs = append(runs, RunData{
+			ID: int64(i + 1), WorkflowName: "CI", HeadSHA: fmt.Sprintf("s%d", i),
+			Status: "completed", Conclusion: "success",
+			CreatedAt: created, StartedAt: created, UpdatedAt: created.Add(5 * time.Minute),
+			Duration: 300_000,
+			Jobs: []JobData{{
+				ID: int64(100 + i), Name: "build", Conclusion: "success",
+				StartedAt: created, CompletedAt: created.Add(4 * time.Minute), Duration: 240_000,
+			}},
+		})
+	}
+	// An in-progress run must be excluded.
+	runs = append(runs, RunData{ID: 99, WorkflowName: "CI", Status: "in_progress",
+		CreatedAt: base.Add(6 * 24 * time.Hour)})
+
+	analysis := AnalyzeTrendsFromRuns("o", "r", 7, runs)
+
+	assert.Equal(t, 6, analysis.Summary.TotalRuns, "in-progress run excluded")
+	assert.False(t, analysis.Sampling.Enabled, "store analysis is exact, not sampled")
+	assert.Contains(t, analysis.Sampling.Rationale, "local store")
+	assert.InDelta(t, 300.0, analysis.Summary.MedianDuration, 0.01)
+	if assert.NotNil(t, analysis.Typical) && assert.Len(t, analysis.Typical.Workflows, 1) {
+		assert.Equal(t, "CI", analysis.Typical.Workflows[0].Name)
+		assert.Len(t, analysis.Typical.Workflows[0].Jobs, 1)
+	}
+}

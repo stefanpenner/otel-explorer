@@ -147,7 +147,7 @@ For repos you analyze repeatedly, mirror the run/job history into a local SQLite
 ote sync owner/repo --days=7
 ```
 
-Syncs are incremental: completed runs never change, so a re-sync lists only what's newer than the stored watermark and fetches job detail only for runs the store doesn't hold — a rails/rails week costs ~90s once, then ~10s and zero job-detail API calls to stay current.
+Syncs are incremental: completed runs never change, so a re-sync lists only what's newer than the stored watermark and fetches job detail only for runs the store doesn't hold — a rails/rails week costs ~90s once, then ~10s and zero job-detail API calls to stay current. Once a repo is synced, `ote trends` automatically analyzes from the store: **exact** job detail for every run (no sampling), full commit coverage, ~10s end-to-end. Branch/workflow filters and `--no-sample`/`--dump-runs` still use the API path.
 
 ## OpenTelemetry
 
