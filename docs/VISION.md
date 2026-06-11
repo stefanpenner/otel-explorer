@@ -26,9 +26,9 @@ distribution:
 - **Regression → commit attribution** *(shipped: changepoint detection)* — change-point
   detection on per-job duration series, reported as "job +31% since `abc123`" with a
   compare URL. Pinning a slowdown to a commit is the single most actionable output.
-- **Exemplars** *(next)* — from the typical view, jump to the real run nearest p50 / p95 /
-  max, so aggregate statistics stay grounded in concrete, inspectable runs `ote` can
-  already render.
+- **Exemplars** *(shipped)* — typical-view p50/p95 values hyperlink to the real run
+  nearest that percentile, so aggregate statistics stay grounded in concrete,
+  inspectable runs. Run-vs-typical diff answers "why was this run slow?" per job.
 - **Flake scoring** *(next)* — adopt the industry-standard definitions, both computable
   purely from the GitHub API: same-SHA-different-conclusion (Mergify/BuildPulse) as the
   flaky flag, plus a transition-count score (Buildkite: state changes over a sliding window
