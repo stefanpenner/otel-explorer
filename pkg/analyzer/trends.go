@@ -257,7 +257,7 @@ func AnalyzeTrends(ctx context.Context, client githubapi.GitHubProvider, owner, 
 	}
 
 	// Convert all runs to RunData (no job fetching yet)
-	runData := convertRuns(runs)
+	runData := ConvertRuns(runs)
 
 	// Determine job-level sampling. Allocation is per workflow rather than
 	// global: a global sample spreads observations so thinly across jobs
@@ -549,8 +549,8 @@ func formatCount(n int) string {
 	return string(result)
 }
 
-// convertRuns converts WorkflowRun data to RunData without fetching jobs
-func convertRuns(runs []githubapi.WorkflowRun) []RunData {
+// ConvertRuns converts WorkflowRun data to RunData without fetching jobs.
+func ConvertRuns(runs []githubapi.WorkflowRun) []RunData {
 	runData := make([]RunData, len(runs))
 	for i, run := range runs {
 		createdAt, _ := utils.ParseTime(run.CreatedAt)
@@ -628,9 +628,16 @@ func fetchJobsForRun(ctx context.Context, client githubapi.GitHubProvider, runDa
 		return
 	}
 	fetched.Add(1)
+	runData[idx].Jobs = append(runData[idx].Jobs, ConvertJobs(jobs, run.RunAttempt)...)
+}
+
+// ConvertJobs converts API jobs into JobData, skipping jobs from previous
+// retry attempts to avoid double-counting. runAttempt 0 accepts all
+// attempts (used when the caller has no listing context for the run).
+func ConvertJobs(jobs []githubapi.Job, runAttempt int64) []JobData {
+	var out []JobData
 	for _, job := range jobs {
-		// Skip jobs from previous retry attempts to avoid double-counting
-		if job.RunAttempt != 0 && job.RunAttempt != run.RunAttempt {
+		if runAttempt != 0 && job.RunAttempt != 0 && job.RunAttempt != runAttempt {
 			continue
 		}
 		createdAt, _ := utils.ParseTime(job.CreatedAt)
@@ -647,7 +654,7 @@ func fetchJobsForRun(ctx context.Context, client githubapi.GitHubProvider, runDa
 			queueTime = startedAt.Sub(createdAt).Milliseconds()
 		}
 
-		runData[idx].Jobs = append(runData[idx].Jobs, JobData{
+		out = append(out, JobData{
 			ID:          job.ID,
 			Name:        job.Name,
 			URL:         job.HTMLURL,
@@ -660,6 +667,7 @@ func fetchJobsForRun(ctx context.Context, client githubapi.GitHubProvider, runDa
 			QueueTime:   queueTime,
 		})
 	}
+	return out
 }
 
 // calculateTrendSummary computes summary statistics

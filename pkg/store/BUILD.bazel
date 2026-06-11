@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "store",
+    srcs = [
+        "store.go",
+        "sync.go",
+    ],
+    importpath = "github.com/stefanpenner/otel-explorer/pkg/store",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/analyzer",
+        "//pkg/githubapi",
+        "@org_modernc_sqlite//:sqlite",
+    ],
+)
+
+go_test(
+    name = "store_test",
+    srcs = [
+        "store_test.go",
+        "sync_test.go",
+    ],
+    embed = [":store"],
+    deps = [
+        "//pkg/analyzer",
+        "//pkg/githubapi",
+        "@com_github_stretchr_testify//assert",
+        "@com_github_stretchr_testify//require",
+    ],
+)

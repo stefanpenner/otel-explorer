@@ -136,8 +136,18 @@ Each segment also reports its presence rate (how often it appears at all), pass 
 
 ```bash
 ote trends owner/repo --no-sample               # exact, more API calls
-ote trends owner/repo --confidence=0.99 --margin=0.05  # tune sampling
+ote trends owner/repo --margin=0.05            # tighter sampling (100/40 obs targets)
 ```
+
+### Incremental sync
+
+For repos you analyze repeatedly, mirror the run/job history into a local SQLite store (`~/.local/share/ote/ote.db`):
+
+```bash
+ote sync owner/repo --days=7
+```
+
+Syncs are incremental: completed runs never change, so a re-sync lists only what's newer than the stored watermark and fetches job detail only for runs the store doesn't hold — a rails/rails week costs ~90s once, then ~10s and zero job-detail API calls to stay current.
 
 ## OpenTelemetry
 

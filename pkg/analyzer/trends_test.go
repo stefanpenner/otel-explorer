@@ -1132,7 +1132,7 @@ func TestConvertRuns(t *testing.T) {
 	t.Parallel()
 
 	t.Run("empty input", func(t *testing.T) {
-		result := convertRuns(nil)
+		result := ConvertRuns(nil)
 		assert.Empty(t, result)
 	})
 
@@ -1147,7 +1147,7 @@ func TestConvertRuns(t *testing.T) {
 				UpdatedAt:  "2026-01-15T10:05:00Z",
 			},
 		}
-		result := convertRuns(runs)
+		result := ConvertRuns(runs)
 		assert.Len(t, result, 1)
 		assert.Equal(t, int64(42), result[0].ID)
 		assert.Equal(t, "abc123", result[0].HeadSHA)
@@ -1162,7 +1162,7 @@ func TestConvertRuns(t *testing.T) {
 			{ID: 2, CreatedAt: "2026-01-15T11:00:00Z", UpdatedAt: "2026-01-15T11:00:00Z"},
 			{ID: 3, CreatedAt: "2026-01-15T12:00:00Z", UpdatedAt: "2026-01-15T12:00:00Z"},
 		}
-		result := convertRuns(runs)
+		result := ConvertRuns(runs)
 		assert.Len(t, result, 3)
 		assert.Equal(t, int64(1), result[0].ID)
 		assert.Equal(t, int64(2), result[1].ID)
@@ -1181,7 +1181,7 @@ func TestConvertRuns(t *testing.T) {
 				UpdatedAt:    "2026-01-15T10:05:00Z",
 			},
 		}
-		result := convertRuns(runs)
+		result := ConvertRuns(runs)
 		assert.Len(t, result, 1)
 		// 5 minutes for the retried attempt, not ~3 days since original creation
 		assert.Equal(t, int64(300000), result[0].Duration)
@@ -1199,7 +1199,7 @@ func TestConvertRuns(t *testing.T) {
 				UpdatedAt:    "2026-01-15T10:05:00Z",
 			},
 		}
-		result := convertRuns(runs)
+		result := ConvertRuns(runs)
 		assert.Equal(t, int64(300000), result[0].Duration)
 	})
 }
@@ -1290,7 +1290,7 @@ func TestFetchJobsForRuns_ReportsAchievedCount(t *testing.T) {
 		makeStubRun(2, "completed", "success", now.Add(-2*time.Hour)),
 		makeStubRun(3, "completed", "success", now.Add(-1*time.Hour)),
 	}
-	runData := convertRuns(runs)
+	runData := ConvertRuns(runs)
 	provider := &stubTrendProvider{
 		jobs: map[int64][]githubapi.Job{
 			1: {{ID: 11, Name: "build", Status: "completed", Conclusion: "success"}},
@@ -1314,7 +1314,7 @@ func TestFetchJobsForRuns_AbortsOnCancelledContext(t *testing.T) {
 	runs := []githubapi.WorkflowRun{
 		makeStubRun(1, "completed", "success", now.Add(-1*time.Hour)),
 	}
-	runData := convertRuns(runs)
+	runData := ConvertRuns(runs)
 	provider := &stubTrendProvider{failRunIDs: map[int64]bool{1: true}}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1477,7 +1477,7 @@ func TestFetchJobsForRuns_Concurrent(t *testing.T) {
 	for i := 0; i < parallelism; i++ {
 		runs = append(runs, makeStubRun(int64(i+1), "completed", "success", now.Add(time.Duration(i)*time.Minute)))
 	}
-	runData := convertRuns(runs)
+	runData := ConvertRuns(runs)
 	indices := []int{0, 1, 2, 3}
 
 	provider := &barrierProvider{

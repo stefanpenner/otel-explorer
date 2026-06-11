@@ -29,6 +29,7 @@ import (
 	"github.com/stefanpenner/otel-explorer/pkg/logparse"
 	"github.com/stefanpenner/otel-explorer/pkg/output"
 	"github.com/stefanpenner/otel-explorer/pkg/perfetto"
+	"github.com/stefanpenner/otel-explorer/pkg/store"
 	"github.com/stefanpenner/otel-explorer/pkg/tui"
 	tuiresults "github.com/stefanpenner/otel-explorer/pkg/tui/results"
 	"github.com/stefanpenner/otel-explorer/pkg/utils"
@@ -116,6 +117,7 @@ type config struct {
 	trendsNoSample   bool
 	trendsDumpRuns   string
 	trendsMargin     float64
+	syncMode         bool
 	noArtifacts      bool
 	convertMode      bool
 	convertFiles     []string
@@ -143,7 +145,7 @@ func parseArgs(args []string, terminal bool) (config, error) {
 		if strings.HasPrefix(a, "-") {
 			continue
 		}
-		if a == "convert" || a == "trends" {
+		if a == "convert" || a == "trends" || a == "sync" {
 			subcommand = a
 			args = append(append([]string{}, args[:i]...), args[i+1:]...)
 		}
@@ -165,6 +167,9 @@ func parseArgs(args []string, terminal bool) (config, error) {
 
 	if subcommand == "trends" {
 		cfg.trendsMode = true
+	}
+	if subcommand == "sync" {
+		cfg.syncMode = true
 	}
 
 	for i := 0; i < len(args); i++ {
@@ -331,7 +336,7 @@ func parseArgs(args []string, terminal bool) (config, error) {
 		}
 
 		// For trends mode, first non-flag arg is the repo
-		if cfg.trendsMode && cfg.trendsRepo == "" && !strings.HasPrefix(arg, "-") {
+		if (cfg.trendsMode || cfg.syncMode) && cfg.trendsRepo == "" && !strings.HasPrefix(arg, "-") {
 			cfg.trendsRepo = arg
 			continue
 		}
@@ -403,6 +408,48 @@ func main() {
 		if len(args) == 0 && !cfg.trendsMode {
 			os.Exit(0)
 		}
+	}
+
+	// Handle sync mode: incrementally mirror run/job history into the
+	// local store so repeat analyses are nearly API-free.
+	if cfg.syncMode {
+		if cfg.trendsRepo == "" {
+			printErrorMsg("Sync requires a repository in format 'owner/repo'\n\n  Usage: ote sync owner/repo [--days=30]")
+			os.Exit(1)
+		}
+		owner, repo, err := parseTrendsRepo(cfg.trendsRepo)
+		if err != nil {
+			printErrorMsg(err.Error())
+			os.Exit(1)
+		}
+		token := resolveGitHubToken()
+		if token == "" {
+			printErrorMsg("GITHUB_TOKEN environment variable is required.\n  Tip: install the GitHub CLI (gh) and run `gh auth login` to authenticate automatically.")
+			os.Exit(1)
+		}
+		dbPath, err := store.DefaultPath()
+		if err != nil {
+			printError(err, "resolving store path")
+			os.Exit(1)
+		}
+		st, err := store.Open(dbPath)
+		if err != nil {
+			printError(err, "opening store")
+			os.Exit(1)
+		}
+		defer st.Close()
+
+		client := githubapi.NewClient(githubapi.NewContext(token))
+		stats, err := store.Sync(context.Background(), client, st, owner, repo, cfg.trendsDays,
+			func(msg string) { fmt.Fprintf(os.Stderr, "  %s\n", msg) })
+		if err != nil {
+			printError(err, "sync failed")
+			os.Exit(1)
+		}
+		fmt.Printf("Synced %s/%s: %d runs listed, job detail fetched for %d runs (%d already stored)\n",
+			owner, repo, stats.RunsFetched, stats.JobsFetched, stats.JobsSkipped)
+		fmt.Printf("Store: %s\n", dbPath)
+		return
 	}
 
 	// Handle trends mode
@@ -1210,6 +1257,7 @@ func printUsage() {
 	fmt.Println("  ote <trace_file.json> [flags]")
 	fmt.Println("  ote convert <file1> [file2...] [flags]")
 	fmt.Println("  ote trends <owner/repo> [flags]")
+	fmt.Println("  ote sync <owner/repo> [--days=30]")
 	fmt.Println("\nFlags:")
 	fmt.Println("  --tui                     Force interactive TUI mode (default when terminal is available)")
 	fmt.Println("  --no-tui                  Disable interactive TUI, use CLI output instead")
@@ -1257,6 +1305,7 @@ func printUsage() {
 	fmt.Println("  ote https://github.com/owner/repo/pull/123 --no-tui")
 	fmt.Println("  ote https://github.com/owner/repo/pull/123 --output=stdout")
 	fmt.Println("  ote https://github.com/owner/repo/pull/123 --output=markdown > report.md")
+	fmt.Println("  ote sync owner/repo --days=7      # mirror run/job history into the local store")
 	fmt.Println("  ote trends owner/repo")
 	fmt.Println("  ote trends owner/repo --days=7 --format=json")
 	fmt.Println("  ote trends owner/repo --branch=main --workflow=post-merge.yaml")
