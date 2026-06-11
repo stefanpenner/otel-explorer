@@ -1104,6 +1104,7 @@ func main() {
 			printError(err, "styled output failed")
 			hadError = true
 		}
+		renderRunVsTypicalFromStore(styledW, results)
 		// Handle perfetto export for styled output
 		if perfettoFile != "" {
 			if err := perfetto.WriteTrace(os.Stderr, results, combined, allTraceEvents, globalEarliest, perfettoFile, cfg.openInPerfetto, spans); err != nil {
@@ -1472,4 +1473,59 @@ func trendsFromStore(ctx context.Context, client githubapi.GitHubProvider, owner
 		return nil
 	}
 	return analyzer.AnalyzeTrendsFromRuns(owner, repo, days, runs)
+}
+
+// renderRunVsTypicalFromStore compares the analyzed run's job durations
+// against the repo's typical baseline from the local store (see `ote sync`)
+// and prints notable deviations. Silently does nothing when the repo was
+// never synced — the baseline must exist before "vs typical" means anything.
+func renderRunVsTypicalFromStore(w io.Writer, urlResults []analyzer.URLResult) {
+	if len(urlResults) == 0 {
+		return
+	}
+	owner, repo := urlResults[0].Owner, urlResults[0].Repo
+	if owner == "" || repo == "" {
+		return
+	}
+	dbPath, err := store.DefaultPath()
+	if err != nil {
+		return
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		return
+	}
+	st, err := store.Open(dbPath)
+	if err != nil {
+		return
+	}
+	defer st.Close()
+	if wm, err := st.Watermark(owner, repo); err != nil || wm.IsZero() {
+		return
+	}
+	now := time.Now()
+	runs, err := st.LoadRuns(owner, repo, now.AddDate(0, 0, -30), now)
+	if err != nil || len(runs) == 0 {
+		return
+	}
+	baseline := analyzer.AnalyzeTrendsFromRuns(owner, repo, 30, runs).Typical
+	if baseline == nil {
+		return
+	}
+
+	var observations []analyzer.JobObservation
+	for _, res := range urlResults {
+		if res.Owner != owner || res.Repo != repo {
+			continue
+		}
+		for _, job := range res.Metrics.JobTimeline {
+			if job.EndTime > job.StartTime {
+				observations = append(observations, analyzer.JobObservation{
+					Name:        job.Name,
+					DurationSec: float64(job.EndTime-job.StartTime) / 1000.0,
+				})
+			}
+		}
+	}
+	deltas := analyzer.CompareJobsToTypical(observations, baseline)
+	output.RenderRunVsTypical(w, deltas, baseline.SampledRuns)
 }

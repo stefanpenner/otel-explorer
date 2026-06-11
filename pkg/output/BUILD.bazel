@@ -8,6 +8,7 @@ go_library(
         "hourly.go",
         "markdown.go",
         "output.go",
+        "rundiff.go",
         "styled.go",
         "timeline.go",
         "trends.go",
