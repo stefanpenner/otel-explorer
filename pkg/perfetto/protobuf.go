@@ -64,11 +64,10 @@ func (w *protoWriter) writeVarintField(field uint32, v uint64) {
 	w.appendVarint(v)
 }
 
-// writeSignedVarintField writes a signed varint (zigzag encoded) field.
-func (w *protoWriter) writeSignedVarintField(field uint32, v int64) {
-	if v == 0 {
-		return
-	}
+// writeInt64Field writes an int64 field as a plain two's-complement varint
+// (proto int64 encoding, not zigzag/sint64). It always writes the field,
+// including v == 0, for oneof members where presence is explicit.
+func (w *protoWriter) writeInt64Field(field uint32, v int64) {
 	w.appendTag(field, wireVarint)
 	w.appendVarint(uint64(v))
 }
@@ -112,29 +111,41 @@ func (w *protoWriter) writeDoubleField(field uint32, v float64) {
 	w.buf = append(w.buf, tmp[:]...)
 }
 
-// writeBoolField writes a bool field.
+// writeBoolField writes a bool field, including v == false, for oneof
+// members where presence is explicit.
 func (w *protoWriter) writeBoolField(field uint32, v bool) {
-	if !v {
-		return
-	}
 	w.appendTag(field, wireVarint)
-	w.appendVarint(1)
+	if v {
+		w.appendVarint(1)
+	} else {
+		w.appendVarint(0)
+	}
+}
+
+// writeStringFieldAlways writes a length-delimited string field, including
+// s == "", for oneof members where presence is explicit.
+func (w *protoWriter) writeStringFieldAlways(field uint32, s string) {
+	w.appendTag(field, wireBytes)
+	w.appendVarint(uint64(len(s)))
+	w.buf = append(w.buf, s...)
 }
 
 // --- Perfetto-specific message builders ---
 
 // buildDebugAnnotation builds a DebugAnnotation submessage.
 // Field numbers: name=10, string_value=6, int_value=4, double_value=5, bool_value=2
+// The value is a proto oneof, so presence is explicit: zero values (0, false,
+// "") must still be written or the annotation shows no value in Perfetto UI.
 func buildDebugAnnotation(name string, value interface{}) []byte {
 	var w protoWriter
 	w.writeStringField(10, name)
 	switch v := value.(type) {
 	case string:
-		w.writeStringField(6, v)
+		w.writeStringFieldAlways(6, v)
 	case int64:
-		w.writeSignedVarintField(4, v)
+		w.writeInt64Field(4, v)
 	case int:
-		w.writeSignedVarintField(4, int64(v))
+		w.writeInt64Field(4, int64(v))
 	case float64:
 		w.writeDoubleField(5, v)
 	case bool:
@@ -142,7 +153,7 @@ func buildDebugAnnotation(name string, value interface{}) []byte {
 	default:
 		// Convert to string as fallback
 		if s, ok := value.(interface{ String() string }); ok {
-			w.writeStringField(6, s.String())
+			w.writeStringFieldAlways(6, s.String())
 		}
 	}
 	return w.bytes()

@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"os"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stefanpenner/otel-explorer/pkg/analyzer"
 	"github.com/stretchr/testify/assert"
@@ -243,4 +245,80 @@ func TestProtobufRoundTrip(t *testing.T) {
 	s, ok := extractStringField(data, 2)
 	assert.True(t, ok)
 	assert.Equal(t, "hello", s)
+}
+
+func TestBuildDebugAnnotationFalsyValues(t *testing.T) {
+	// DebugAnnotation's value is a proto oneof: presence is explicit, so
+	// zero values (0, false, "") must still emit a value field.
+	ann := buildDebugAnnotation("retries", int64(0))
+	val, ok := extractVarintField(ann, 4) // int_value
+	assert.True(t, ok, "int_value field should be present for 0")
+	assert.Equal(t, uint64(0), val)
+
+	ann = buildDebugAnnotation("cache_hit", false)
+	val, ok = extractVarintField(ann, 2) // bool_value
+	assert.True(t, ok, "bool_value field should be present for false")
+	assert.Equal(t, uint64(0), val)
+
+	ann = buildDebugAnnotation("note", "")
+	_, ok = extractStringField(ann, 6) // string_value
+	assert.True(t, ok, "string_value field should be present for empty string")
+
+	// Truthy values keep working.
+	ann = buildDebugAnnotation("count", int64(7))
+	val, ok = extractVarintField(ann, 4)
+	assert.True(t, ok)
+	assert.Equal(t, uint64(7), val)
+}
+
+// findDebugAnnotationString extracts the string_value of the debug annotation
+// with the given name from a serialized Trace.
+func findDebugAnnotationString(t *testing.T, data []byte, name string) (string, bool) {
+	t.Helper()
+	for _, pkt := range extractSubmessages(data, 1) { // TracePacket
+		for _, te := range extractSubmessages(pkt, 11) { // track_event
+			for _, ann := range extractSubmessages(te, 4) { // debug_annotations
+				if n, ok := extractStringField(ann, 10); ok && n == name {
+					return extractStringField(ann, 6)
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+func TestWriteTraceLongAttributeStrippedAndTruncated(t *testing.T) {
+	globalStart := time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)
+
+	// >1000 bytes after stripping, with ANSI escapes sprinkled in and
+	// multi-byte runes ("€" is 3 bytes) so a naive byte slice would cut a
+	// rune in half.
+	longVal := "\x1b[31m" + strings.Repeat("€", 400) + "\x1b[0m" // 1200 bytes stripped
+
+	span := &tracetest.SpanStub{
+		Name:      "log-span",
+		StartTime: globalStart,
+		EndTime:   globalStart.Add(time.Minute),
+		Attributes: []attribute.KeyValue{
+			attribute.String("log.output", longVal),
+		},
+	}
+
+	tempFile := "test_trace_truncate.pftrace"
+	defer os.Remove(tempFile)
+
+	var buf bytes.Buffer
+	err := WriteTrace(&buf, nil, analyzer.CombinedMetrics{}, nil, globalStart.UnixMilli(), tempFile, false, []trace.ReadOnlySpan{span.Snapshot()})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(tempFile)
+	require.NoError(t, err)
+
+	got, ok := findDebugAnnotationString(t, data, "log.output")
+	require.True(t, ok, "log.output annotation not found")
+
+	assert.NotContains(t, got, "\x1b", "ANSI escapes should be stripped from truncated values")
+	assert.True(t, strings.HasSuffix(got, "..."), "long value should be truncated with ellipsis")
+	assert.LessOrEqual(t, len(got), 1003, "truncated value should be at most 1000 bytes plus ellipsis")
+	assert.True(t, utf8.ValidString(got), "truncated value must remain valid UTF-8")
 }

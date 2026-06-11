@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1471,5 +1472,189 @@ func TestParseZipkinWithEndpoint(t *testing.T) {
 	}
 	if attrMap["custom.tag"] != "value" {
 		t.Errorf("custom.tag = %q, want %q", attrMap["custom.tag"], "value")
+	}
+}
+
+func TestParsePrettyPrintedOTLPProtoJSON(t *testing.T) {
+	input := `{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "pretty-svc"}}
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "0af7651916cd43dd8448eb211c80319c",
+              "spanId": "b7ad6b7169203331",
+              "name": "GET /api",
+              "kind": 2,
+              "startTimeUnixNano": "1700000000000000000",
+              "endTimeUnixNano": "1700000001000000000"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}`
+
+	spans, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	if spans[0].Name() != "GET /api" {
+		t.Errorf("name = %q, want %q", spans[0].Name(), "GET /api")
+	}
+}
+
+func TestParseConcatenatedPrettyPrintedOTLPProtoJSON(t *testing.T) {
+	doc := `{
+  "resourceSpans": [{
+    "scopeSpans": [{
+      "spans": [{
+        "traceId": "0af7651916cd43dd8448eb211c80319c",
+        "spanId": "%s",
+        "name": "%s",
+        "startTimeUnixNano": "1700000000000000000",
+        "endTimeUnixNano": "1700000001000000000"
+      }]
+    }]
+  }]
+}`
+	input := fmt.Sprintf(doc, "b7ad6b7169203331", "span-one") + "\n" +
+		fmt.Sprintf(doc, "00f067aa0ba902b7", "span-two")
+
+	spans, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if len(spans) != 2 {
+		t.Fatalf("expected 2 spans, got %d", len(spans))
+	}
+	if spans[0].Name() != "span-one" || spans[1].Name() != "span-two" {
+		t.Errorf("names = %q, %q; want span-one, span-two", spans[0].Name(), spans[1].Name())
+	}
+}
+
+func TestParseJaeger64BitTraceID(t *testing.T) {
+	// Jaeger serializes trace IDs with only 16 hex chars when the high 64
+	// bits are zero (e.g. Zipkin-originated traces). These must be
+	// zero-padded, not dropped.
+	input := `{"data":[{"traceID":"8448eb211c80319c","spans":[{"traceID":"8448eb211c80319c","spanID":"b7ad6b7169203331","operationName":"fetch","references":[],"startTime":1700000000000000,"duration":2000,"tags":[],"logs":[],"processID":"p1"}],"processes":{"p1":{"serviceName":"svc","tags":[]}}}]}`
+
+	spans, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	wantTraceID := "00000000000000008448eb211c80319c"
+	if got := spans[0].SpanContext().TraceID().String(); got != wantTraceID {
+		t.Errorf("traceID = %q, want %q", got, wantTraceID)
+	}
+	if spans[0].Name() != "fetch" {
+		t.Errorf("name = %q, want %q", spans[0].Name(), "fetch")
+	}
+}
+
+func TestParseChromeTraceNestedSameNameBeginEnd(t *testing.T) {
+	// Recursive/nested events with the same name must pair via per-thread
+	// stack semantics: each E closes the most recent unclosed B.
+	input := `[
+		{"name":"f","ph":"B","ts":0,"pid":1,"tid":1},
+		{"name":"f","ph":"B","ts":10000,"pid":1,"tid":1},
+		{"name":"f","ph":"E","ts":20000,"pid":1,"tid":1},
+		{"name":"f","ph":"E","ts":30000,"pid":1,"tid":1}
+	]`
+
+	spans, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if len(spans) != 2 {
+		t.Fatalf("expected 2 spans (outer + inner), got %d", len(spans))
+	}
+
+	var durations []time.Duration
+	for _, s := range spans {
+		durations = append(durations, s.EndTime().Sub(s.StartTime()))
+	}
+	// Inner span: 10000µs..20000µs = 10ms; outer span: 0..30000µs = 30ms.
+	wantInner, wantOuter := 10*time.Millisecond, 30*time.Millisecond
+	foundInner, foundOuter := false, false
+	for _, d := range durations {
+		switch d {
+		case wantInner:
+			foundInner = true
+		case wantOuter:
+			foundOuter = true
+		}
+	}
+	if !foundInner || !foundOuter {
+		t.Errorf("durations = %v, want %v and %v", durations, wantInner, wantOuter)
+	}
+}
+
+func TestParseChromeTraceEndEventWithoutName(t *testing.T) {
+	// The Trace Event Format makes "name" optional on E events: an E closes
+	// the most recent unclosed B on the same thread.
+	input := `[
+		{"name":"work","ph":"B","ts":0,"pid":1,"tid":1},
+		{"ph":"E","ts":50000,"pid":1,"tid":1}
+	]`
+
+	spans, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	if spans[0].Name() != "work" {
+		t.Errorf("name = %q, want %q", spans[0].Name(), "work")
+	}
+	if dur := spans[0].EndTime().Sub(spans[0].StartTime()); dur != 50*time.Millisecond {
+		t.Errorf("duration = %v, want 50ms", dur)
+	}
+}
+
+func TestParseProtobufRequest(t *testing.T) {
+	// OTLP/HTTP bodies are bare ExportTraceServiceRequest messages with no
+	// length prefix, unlike the fileexporter format ParseProtobuf handles.
+	td := &v1.TracesData{
+		ResourceSpans: []*v1.ResourceSpans{{
+			ScopeSpans: []*v1.ScopeSpans{{
+				Spans: []*v1.Span{{
+					TraceId:           mustDecodeHex(t, "0af7651916cd43dd8448eb211c80319c"),
+					SpanId:            mustDecodeHex(t, "b7ad6b7169203331"),
+					Name:              "bare-proto",
+					StartTimeUnixNano: 1705312800000000000,
+					EndTimeUnixNano:   1705312801000000000,
+				}},
+			}},
+		}},
+	}
+	raw, err := proto.Marshal(td)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	spans, err := ParseProtobufRequest(raw)
+	if err != nil {
+		t.Fatalf("ParseProtobufRequest failed: %v", err)
+	}
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	if spans[0].Name() != "bare-proto" {
+		t.Errorf("name = %q, want %q", spans[0].Name(), "bare-proto")
 	}
 }

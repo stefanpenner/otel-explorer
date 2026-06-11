@@ -2,11 +2,16 @@ package receiver
 
 import (
 	"bytes"
+	"compress/gzip"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+
+	v1 "go.opentelemetry.io/proto/otlp/trace/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // validOTLPSpanJSON is a single newline-delimited stdouttrace span
@@ -194,5 +199,107 @@ func TestConcurrentPosts(t *testing.T) {
 
 	if r.SpanCount() != goroutines {
 		t.Errorf("expected %d spans, got %d", goroutines, r.SpanCount())
+	}
+}
+
+// buildProtobufRequestBody builds a bare protobuf-encoded TracesData
+// (wire-compatible with ExportTraceServiceRequest), as standard OTLP/HTTP
+// protobuf exporters send it: no length prefix.
+func buildProtobufRequestBody(t *testing.T) []byte {
+	t.Helper()
+	traceID, err := hex.DecodeString("0af7651916cd43dd8448eb211c80319c")
+	if err != nil {
+		t.Fatalf("decode trace ID: %v", err)
+	}
+	spanID, err := hex.DecodeString("b7ad6b7169203331")
+	if err != nil {
+		t.Fatalf("decode span ID: %v", err)
+	}
+	td := &v1.TracesData{
+		ResourceSpans: []*v1.ResourceSpans{{
+			ScopeSpans: []*v1.ScopeSpans{{
+				Spans: []*v1.Span{{
+					TraceId:           traceID,
+					SpanId:            spanID,
+					Name:              "proto-span",
+					StartTimeUnixNano: 1705312800000000000,
+					EndTimeUnixNano:   1705312801000000000,
+				}},
+			}},
+		}},
+	}
+	body, err := proto.Marshal(td)
+	if err != nil {
+		t.Fatalf("marshal TracesData: %v", err)
+	}
+	return body
+}
+
+func TestPostProtobufBodyAccumulatesSpans(t *testing.T) {
+	r := New(":0")
+	handler := setupMux(r)
+
+	body := buildProtobufRequestBody(t)
+	req := httptest.NewRequest(http.MethodPost, "/v1/traces", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if r.SpanCount() != 1 {
+		t.Fatalf("expected 1 span, got %d", r.SpanCount())
+	}
+	if got := r.Spans()[0].Name(); got != "proto-span" {
+		t.Errorf("span name = %q, want %q", got, "proto-span")
+	}
+}
+
+func TestPostGzipProtobufBodyAccumulatesSpans(t *testing.T) {
+	r := New(":0")
+	handler := setupMux(r)
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	if _, err := gw.Write(buildProtobufRequestBody(t)); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/traces", &buf)
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	req.Header.Set("Content-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if r.SpanCount() != 1 {
+		t.Fatalf("expected 1 span, got %d", r.SpanCount())
+	}
+}
+
+func TestPostMalformedProtobufReturns400(t *testing.T) {
+	r := New(":0")
+	handler := setupMux(r)
+
+	// Garbage bytes must produce a 4xx, not a silent 200 with zero spans.
+	req := httptest.NewRequest(http.MethodPost, "/v1/traces", strings.NewReader("\x0a\xffnot a protobuf message at all\xff\xff"))
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if r.SpanCount() != 0 {
+		t.Fatalf("expected 0 spans, got %d", r.SpanCount())
 	}
 }

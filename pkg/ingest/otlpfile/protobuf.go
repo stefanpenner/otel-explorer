@@ -55,29 +55,46 @@ func ParseProtobuf(r io.Reader) ([]sdktrace.ReadOnlySpan, error) {
 			return nil, fmt.Errorf("unmarshaling protobuf TracesData: %w", err)
 		}
 
-		// Convert each span to a SpanStub.
-		for _, rs := range td.ResourceSpans {
-			var res *resource.Resource
-			if rs.Resource != nil {
-				res = resource.NewSchemaless(convertProtobufAttrs(rs.Resource.Attributes)...)
-			}
-			for _, ss := range rs.ScopeSpans {
-				var scope instrumentation.Scope
-				if ss.Scope != nil {
-					scope = instrumentation.Scope{
-						Name:    ss.Scope.Name,
-						Version: ss.Scope.Version,
-					}
-				}
-				for _, span := range ss.Spans {
-					stub := convertProtobufSpan(span, res, scope)
-					stubs = append(stubs, stub)
-				}
-			}
-		}
+		stubs = appendTracesData(stubs, &td)
 	}
 
 	return stubs.Snapshots(), nil
+}
+
+// ParseProtobufRequest parses a bare protobuf-encoded ExportTraceServiceRequest
+// (wire-compatible with TracesData) as sent in an OTLP/HTTP request body.
+// Unlike ParseProtobuf, the message has no length prefix.
+func ParseProtobufRequest(data []byte) ([]sdktrace.ReadOnlySpan, error) {
+	var td v1.TracesData
+	if err := proto.Unmarshal(data, &td); err != nil {
+		return nil, fmt.Errorf("unmarshaling protobuf TracesData: %w", err)
+	}
+	stubs := appendTracesData(nil, &td)
+	return stubs.Snapshots(), nil
+}
+
+// appendTracesData converts each span in a TracesData message to a SpanStub.
+func appendTracesData(stubs tracetest.SpanStubs, td *v1.TracesData) tracetest.SpanStubs {
+	for _, rs := range td.ResourceSpans {
+		var res *resource.Resource
+		if rs.Resource != nil {
+			res = resource.NewSchemaless(convertProtobufAttrs(rs.Resource.Attributes)...)
+		}
+		for _, ss := range rs.ScopeSpans {
+			var scope instrumentation.Scope
+			if ss.Scope != nil {
+				scope = instrumentation.Scope{
+					Name:    ss.Scope.Name,
+					Version: ss.Scope.Version,
+				}
+			}
+			for _, span := range ss.Spans {
+				stub := convertProtobufSpan(span, res, scope)
+				stubs = append(stubs, stub)
+			}
+		}
+	}
+	return stubs
 }
 
 // convertProtobufSpan converts a protobuf Span to a tracetest.SpanStub.

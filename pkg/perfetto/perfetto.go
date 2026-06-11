@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"unicode/utf8"
 
 	"github.com/cockroachdb/errors"
 	"github.com/stefanpenner/otel-explorer/pkg/analyzer"
@@ -105,10 +106,17 @@ func WriteTrace(w io.Writer, urlResults []analyzer.URLResult, combined analyzer.
 		for _, attr := range s.Attributes() {
 			val := attr.Value.AsInterface()
 			if str, ok := val.(string); ok {
-				val = utils.StripANSI(str)
-				if len(str) > 1000 {
-					val = str[:1000] + "..."
+				stripped := utils.StripANSI(str)
+				if len(stripped) > 1000 {
+					// Truncate on a rune boundary so the protobuf string
+					// field stays valid UTF-8.
+					cut := 1000
+					for cut > 0 && !utf8.RuneStart(stripped[cut]) {
+						cut--
+					}
+					stripped = stripped[:cut] + "..."
 				}
+				val = stripped
 			}
 			attrs[string(attr.Key)] = val
 		}

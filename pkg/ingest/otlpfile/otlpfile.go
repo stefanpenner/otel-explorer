@@ -147,30 +147,28 @@ func Parse(r io.Reader) ([]sdktrace.ReadOnlySpan, error) {
 }
 
 // parseProtoJSONL handles OTLP protobuf-JSON data that may be a single object
-// or newline-delimited (JSONL) where each line is a TracesData object with
-// "resourceSpans". It splits on newlines, parses each non-empty line with
-// ParseProto, and concatenates all spans.
+// (compact or pretty-printed) or a stream of concatenated/newline-delimited
+// (JSONL) documents, each a TracesData object with "resourceSpans". It uses a
+// json.Decoder so indented documents spanning multiple lines parse correctly,
+// decodes each document with ParseProto, and concatenates all spans.
 func parseProtoJSONL(data []byte) ([]sdktrace.ReadOnlySpan, error) {
 	var allSpans []sdktrace.ReadOnlySpan
 
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
-
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 {
-			continue
+	dec := json.NewDecoder(bytes.NewReader(data))
+	for {
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, fmt.Errorf("parsing OTLP JSON document: %w", err)
 		}
 
-		spans, err := ParseProto(bytes.NewReader(line))
+		spans, err := ParseProto(bytes.NewReader(raw))
 		if err != nil {
-			return nil, fmt.Errorf("parsing OTLP JSONL line: %w", err)
+			return nil, fmt.Errorf("parsing OTLP JSON document: %w", err)
 		}
 		allSpans = append(allSpans, spans...)
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scanning OTLP JSONL: %w", err)
 	}
 
 	return allSpans, nil
@@ -359,6 +357,23 @@ func looksLikeChromeTrace(data []byte) bool {
 	return false
 }
 
+// maxDecompressedBytes caps decompressed trace data to guard against
+// compression bombs expanding unbounded in memory.
+const maxDecompressedBytes = 1 << 30 // 1GB
+
+// readAllLimited reads from r, erroring if more than maxDecompressedBytes
+// would be read.
+func readAllLimited(r io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, maxDecompressedBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxDecompressedBytes {
+		return nil, fmt.Errorf("decompressed data exceeds %d byte limit", maxDecompressedBytes)
+	}
+	return data, nil
+}
+
 // maybeDecompress detects gzip or zstd compression by checking magic bytes
 // and decompresses the data. Returns the original data unchanged if no
 // compression is detected.
@@ -374,7 +389,7 @@ func maybeDecompress(data []byte) ([]byte, error) {
 			return nil, fmt.Errorf("gzip reader: %w", err)
 		}
 		defer gr.Close()
-		return io.ReadAll(gr)
+		return readAllLimited(gr)
 	}
 
 	// zstd: magic bytes 0x28 0xb5 0x2f 0xfd
@@ -384,7 +399,7 @@ func maybeDecompress(data []byte) ([]byte, error) {
 			return nil, fmt.Errorf("zstd reader: %w", err)
 		}
 		defer dec.Close()
-		return io.ReadAll(dec)
+		return readAllLimited(dec)
 	}
 
 	return data, nil

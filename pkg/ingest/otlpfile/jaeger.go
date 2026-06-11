@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -92,7 +93,15 @@ func ParseJaeger(r io.Reader) ([]sdktrace.ReadOnlySpan, error) {
 }
 
 func convertJaegerSpan(raw jaegerSpan, res *resource.Resource) (tracetest.SpanStub, error) {
-	traceID, err := trace.TraceIDFromHex(raw.TraceID)
+	// Jaeger emits 16-hex-char trace IDs when the high 64 bits are zero
+	// (common for Zipkin-originated or 64-bit-configured clients), and some
+	// versions strip leading zeros entirely. Left-pad to the 32 chars that
+	// trace.TraceIDFromHex requires.
+	traceIDHex := raw.TraceID
+	if len(traceIDHex) > 0 && len(traceIDHex) < 32 {
+		traceIDHex = strings.Repeat("0", 32-len(traceIDHex)) + traceIDHex
+	}
+	traceID, err := trace.TraceIDFromHex(traceIDHex)
 	if err != nil {
 		return tracetest.SpanStub{}, fmt.Errorf("invalid trace ID %q: %w", raw.TraceID, err)
 	}
