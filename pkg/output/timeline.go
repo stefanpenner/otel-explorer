@@ -2,6 +2,7 @@ package output
 
 import (
 	"fmt"
+	"github.com/charmbracelet/lipgloss"
 	"io"
 	"sort"
 	"strings"
@@ -192,7 +193,7 @@ func RenderOTelTimeline(w io.Writer, spans []trace.ReadOnlySpan, globalEarliest,
 		// bar math below (int(NaN) is architecture-dependent in Go).
 		totalDuration = 1
 	}
-	
+
 	headerText := fmt.Sprintf(" Start: %s   End: %s   Duration: %s", startTime, endTime, durationStr)
 	headerCells := len(headerText) // This is all ASCII
 	padding := (scale + 2) - headerCells
@@ -208,27 +209,18 @@ func RenderOTelTimeline(w io.Writer, spans []trace.ReadOnlySpan, globalEarliest,
 	for _, root := range roots {
 		renderNode(w, root, 0, earliest, totalDuration, scale)
 	}
-	
+
 	fmt.Fprintf(w, "└%s┘\n", strings.Repeat("─", scale+2))
 }
 
-func getMarkerWidth(eventType string) int {
-	switch eventType {
-	case "merged", "default":
-		return 1 // ◆, ▲ are 1 cell
-	case "commit":
-		return 2 // 📍 is 2 cells
-	case "push":
-		return 2 // 🚀 is 2 cells
-	case "comment", "commented":
-		return 2 // 💬 is 2 cells
-	case "approved":
-		return 2 // ✅ is 2 cells
-	case "changes_requested":
-		return 2 // ❌ is 2 cells
-	default:
-		return 2
+// markerWidth measures the marker glyph's display width. Guessing from the
+// event type drifted from the glyphs enrichment actually emits, leaving
+// marker rows a column short of the box border.
+func markerWidth(barChar string) int {
+	if w := lipgloss.Width(barChar); w > 0 {
+		return w
 	}
+	return 1
 }
 
 func renderNode(w io.Writer, node *SpanNode, depth int, globalStart time.Time, totalDuration time.Duration, scale int) {
@@ -280,11 +272,11 @@ func renderNode(w io.Writer, node *SpanNode, depth int, globalStart time.Time, t
 	}
 
 	coloredBar := strings.Repeat(barChar, maxInt(1, clampedLength))
-	markerWidth := 1
+	markerCells := 1
 	if h.IsMarker {
-		// Markers render as a single character
-		markerWidth = getMarkerWidth(h.EventType)
-		coloredBar = colorizeText(h.BarChar, h.Color)
+		// Markers render as a single glyph; reserve its actual display width
+		markerCells = markerWidth(barChar)
+		coloredBar = colorizeText(barChar, h.Color)
 	} else {
 		coloredBar = colorizeText(coloredBar, h.Color)
 	}
@@ -292,7 +284,7 @@ func renderNode(w io.Writer, node *SpanNode, depth int, globalStart time.Time, t
 	indent := strings.Repeat("  ", depth)
 	remainingCount := scale - startPos - maxInt(1, clampedLength)
 	if h.IsMarker {
-		remainingCount = scale - startPos - markerWidth
+		remainingCount = scale - startPos - markerCells
 	}
 	remaining := strings.Repeat(" ", maxInt(0, remainingCount))
 
@@ -307,7 +299,7 @@ func renderNode(w io.Writer, node *SpanNode, depth int, globalStart time.Time, t
 	// Pad icons to ensure consistent labeling alignment
 	var displayName string
 	if h.IsMarker {
-		if markerWidth == 1 {
+		if markerCells == 1 {
 			displayName = fmt.Sprintf("%s     %s", icon, label)
 		} else {
 			displayName = fmt.Sprintf("%s    %s", icon, label)

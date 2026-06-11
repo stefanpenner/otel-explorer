@@ -62,6 +62,10 @@ func OutputStyledResults(w io.Writer, urlResults []analyzer.URLResult, combined 
 
 	// Line 3: Wall time + Compute time
 	wallMs, computeMs := combinedWallCompute(urlResults)
+	if wallMs == 0 && len(spans) > 0 {
+		// Pure span input: derive wall/compute from the spans themselves.
+		wallMs, computeMs = analyzer.SpansWallCompute(spans, enricher)
+	}
 	wallTime := utils.HumanizeTime(float64(wallMs) / 1000)
 	computeTime := utils.HumanizeTime(float64(computeMs) / 1000)
 	leftStyled3 := labelStyle.Render("Wall: ") + numStyle.Render(wallTime) +

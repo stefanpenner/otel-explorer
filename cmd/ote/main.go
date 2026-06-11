@@ -849,6 +849,9 @@ func main() {
 		// Handle perfetto export before TUI starts (so it opens immediately)
 		if perfettoFile != "" {
 			combined := analyzer.CalculateCombinedMetrics(results, sumRuns(results), collectStarts(results), collectEnds(results))
+			if combined.TotalRuns == 0 && len(spans) > 0 {
+				combined = analyzer.CombinedMetricsFromSpans(spans, enricher)
+			}
 			var allTraceEvents []analyzer.TraceEvent
 			for _, res := range results {
 				allTraceEvents = append(allTraceEvents, res.TraceEvents...)
@@ -938,6 +941,9 @@ func main() {
 			tmpFile.Close()
 
 			combined := analyzer.CalculateCombinedMetrics(results, sumRuns(results), collectStarts(results), collectEnds(results))
+			if combined.TotalRuns == 0 && len(spans) > 0 {
+				combined = analyzer.CombinedMetricsFromSpans(spans, enricher)
+			}
 			var allTraceEvents []analyzer.TraceEvent
 			for _, res := range results {
 				allTraceEvents = append(allTraceEvents, res.TraceEvents...)
@@ -983,6 +989,9 @@ func main() {
 
 	// Non-TUI output
 	combined := analyzer.CalculateCombinedMetrics(results, sumRuns(results), collectStarts(results), collectEnds(results))
+	if combined.TotalRuns == 0 && len(spans) > 0 {
+		combined = analyzer.CombinedMetricsFromSpans(spans, enricher)
+	}
 	var allTraceEvents []analyzer.TraceEvent
 	for _, res := range results {
 		allTraceEvents = append(allTraceEvents, res.TraceEvents...)

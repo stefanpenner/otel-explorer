@@ -4,3 +4,4 @@ out.json
 /otel-explorer
 bazel-*
 /sample-eval
+/ote

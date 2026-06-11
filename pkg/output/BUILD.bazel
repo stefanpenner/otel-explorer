@@ -37,6 +37,7 @@ go_test(
         "//pkg/analyzer",
         "//pkg/enrichment",
         "//pkg/utils",
+        "@com_github_charmbracelet_lipgloss//:lipgloss",
         "@com_github_stretchr_testify//assert",
         "@io_opentelemetry_go_otel//attribute",
         "@io_opentelemetry_go_otel_sdk//instrumentation",
