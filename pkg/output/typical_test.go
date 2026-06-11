@@ -116,3 +116,21 @@ func TestRenderTypicalRunExemplarLinks(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderHourlyPatterns(t *testing.T) {
+	hp := &analyzer.HourlyPatterns{PeakVolumeHour: 9, PeakQueueHour: 15}
+	hp.Hours[9] = analyzer.HourBucket{RunCount: 24, QueueP50: 10}
+	hp.Hours[15] = analyzer.HourBucket{RunCount: 20, QueueP50: 60}
+
+	var buf bytes.Buffer
+	renderHourlyPatterns(&buf, hp)
+	out := buf.String()
+	for _, want := range []string{"(UTC)", "Runs", "Queue", "Busiest hour 09:00 (24 runs)", "Worst queue 15:00"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "runner contention") {
+		t.Error("contention hint requires queue and volume peaks to coincide")
+	}
+}

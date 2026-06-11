@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "colors.go",
         "helpers.go",
+        "hourly.go",
         "markdown.go",
         "output.go",
         "styled.go",

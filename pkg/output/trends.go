@@ -138,6 +138,12 @@ func OutputTrends(w io.Writer, analysis *analyzer.TrendAnalysis, format string) 
 		renderJobTrends(w, analysis.JobTrends)
 	}
 
+	// Hour-of-day patterns (only present with enough data, e.g. store-backed)
+	if analysis.Hourly != nil {
+		trendSection(w, "Hourly Patterns")
+		renderHourlyPatterns(w, analysis.Hourly)
+	}
+
 	// Queue time analysis
 	if analysis.QueueTimeStats.AvgQueueTime > 0 {
 		trendSection(w, "Queue Time Analysis")

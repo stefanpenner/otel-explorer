@@ -45,6 +45,7 @@ type TrendAnalysis struct {
 	TopImprovements  []JobImprovement
 	QueueTimeStats   QueueTimeStats
 	Typical          *TypicalRun
+	Hourly           *HourlyPatterns
 }
 
 // Changepoint identifies the approximate point in time where a job's duration shifted.
@@ -412,6 +413,9 @@ func analyzeRunData(owner, repo string, runData []RunData, sampling SamplingInfo
 
 	// Aggregate sampled jobs into the statistically typical run
 	analysis.Typical = computeTypicalRun(runData)
+
+	// Hour-of-day patterns (needs a large dataset; usually store-backed)
+	analysis.Hourly = computeHourlyPatterns(runData)
 
 	return analysis
 }

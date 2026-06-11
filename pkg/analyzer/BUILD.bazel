@@ -6,6 +6,7 @@ go_library(
         "analyzer.go",
         "artifacts.go",
         "data_provider.go",
+        "hourly.go",
         "logspans.go",
         "metrics.go",
         "otel_explorer.go",
@@ -39,6 +40,7 @@ go_test(
     srcs = [
         "clamp_test.go",
         "data_provider_test.go",
+        "hourly_test.go",
         "mapping_test.go",
         "metrics_test.go",
         "otel_test.go",
