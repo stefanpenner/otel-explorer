@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1548,5 +1549,84 @@ func TestAnalyzeTrendsFromRuns(t *testing.T) {
 	if assert.NotNil(t, analysis.Typical) && assert.Len(t, analysis.Typical.Workflows, 1) {
 		assert.Equal(t, "CI", analysis.Typical.Workflows[0].Name)
 		assert.Len(t, analysis.Typical.Workflows[0].Jobs, 1)
+	}
+}
+
+func TestDetectFlakyJobs_SameSHAAndTransitions(t *testing.T) {
+	t.Parallel()
+	base := time.Now().Add(-10 * 24 * time.Hour)
+	mkRun := func(i int, sha, conclusion string) RunData {
+		created := base.Add(time.Duration(i) * time.Hour)
+		return RunData{
+			ID: int64(i + 1), WorkflowName: "CI", HeadSHA: sha, Status: "completed",
+			CreatedAt: created, StartedAt: created,
+			Jobs: []JobData{{
+				ID: int64(1000 + i), Name: "suite", Conclusion: conclusion,
+				URL:         fmt.Sprintf("https://github.com/o/r/actions/runs/%d/job/1", i+1),
+				StartedAt:   created, CompletedAt: created.Add(time.Minute), Duration: 60_000,
+			}},
+		}
+	}
+
+	// 20 runs: 18 successes, 2 failures — only 10% rate, below the >10%
+	// threshold. But one failure shares a SHA with a success: definitively
+	// flaky regardless of rate.
+	var runs []RunData
+	for i := 0; i < 18; i++ {
+		runs = append(runs, mkRun(i, fmt.Sprintf("sha%d", i), "success"))
+	}
+	runs = append(runs, mkRun(18, "sha17", "failure")) // same SHA as run 17's success
+	runs = append(runs, mkRun(19, "sha19", "failure"))
+
+	flaky := detectFlakyJobs(runs)
+	if len(flaky) != 1 {
+		t.Fatalf("len(flaky) = %d, want 1 (same-SHA divergence forces inclusion)", len(flaky))
+	}
+	if flaky[0].SameSHAFlakes != 1 {
+		t.Errorf("SameSHAFlakes = %d, want 1", flaky[0].SameSHAFlakes)
+	}
+	if flaky[0].TransitionScore <= 0 {
+		t.Errorf("TransitionScore = %v, want > 0", flaky[0].TransitionScore)
+	}
+}
+
+func TestDetectFlakyJobs_TransitionScore(t *testing.T) {
+	t.Parallel()
+	base := time.Now().Add(-10 * 24 * time.Hour)
+	var runs []RunData
+	// Perfectly alternating P/F over 10 runs: transition score 1.0, 50% rate.
+	for i := 0; i < 10; i++ {
+		conclusion := "success"
+		if i%2 == 1 {
+			conclusion = "failure"
+		}
+		created := base.Add(time.Duration(i) * time.Hour)
+		runs = append(runs, RunData{
+			ID: int64(i + 1), WorkflowName: "CI", HeadSHA: fmt.Sprintf("s%d", i),
+			Status: "completed", CreatedAt: created, StartedAt: created,
+			Jobs: []JobData{{ID: int64(i + 1), Name: "alternating", Conclusion: conclusion,
+				StartedAt: created, CompletedAt: created.Add(time.Minute), Duration: 60_000}},
+		})
+	}
+	// Always-failing job: zero transitions, must stay excluded.
+	for i := 10; i < 20; i++ {
+		created := base.Add(time.Duration(i) * time.Hour)
+		runs = append(runs, RunData{
+			ID: int64(i + 1), WorkflowName: "CI", HeadSHA: fmt.Sprintf("s%d", i),
+			Status: "completed", CreatedAt: created, StartedAt: created,
+			Jobs: []JobData{{ID: int64(i + 1), Name: "always-fails", Conclusion: "failure",
+				StartedAt: created, CompletedAt: created.Add(time.Minute), Duration: 60_000}},
+		})
+	}
+
+	flaky := detectFlakyJobs(runs)
+	if len(flaky) != 1 || flaky[0].Name != "alternating" {
+		t.Fatalf("flaky = %+v, want only 'alternating'", flaky)
+	}
+	if math.Abs(flaky[0].TransitionScore-1.0) > 0.01 {
+		t.Errorf("TransitionScore = %v, want 1.0 for perfect alternation", flaky[0].TransitionScore)
+	}
+	if flaky[0].SameSHAFlakes != 0 {
+		t.Errorf("SameSHAFlakes = %d, want 0 (every SHA distinct)", flaky[0].SameSHAFlakes)
 	}
 }

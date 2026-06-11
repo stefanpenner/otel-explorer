@@ -135,14 +135,16 @@ type JobTrend struct {
 
 // FlakyJob represents a job with inconsistent outcomes
 type FlakyJob struct {
-	Name           string
-	URLs           []string // sample recent failure URLs (newest first)
-	TotalRuns      int
-	SuccessCount   int
-	FailureCount   int
-	FlakeRate      float64 // percentage of failures
-	RecentFailures int     // failures in last 10 runs
-	LastFailure    time.Time
+	Name            string
+	URLs            []string // sample recent failure URLs (newest first)
+	TotalRuns       int
+	SuccessCount    int
+	FailureCount    int
+	FlakeRate       float64 // percentage of failures among decisive outcomes
+	RecentFailures  int     // failures in last 10 runs
+	LastFailure     time.Time
+	SameSHAFlakes   int     // commits where this job both passed and failed (definitive flakiness)
+	TransitionScore float64 // 0..1: pass/fail state changes over chronological observations (Buildkite-style)
 }
 
 // RunData represents simplified workflow run data
@@ -910,18 +912,18 @@ func analyzeJobTrends(runs []RunData) []JobTrend {
 
 // detectFlakyJobs identifies jobs with inconsistent outcomes
 func detectFlakyJobs(runs []RunData) []FlakyJob {
-	jobMap := make(map[string][]JobData)
+	jobMap := make(map[string][]flakeObs)
 
 	for _, run := range runs {
 		for _, job := range run.Jobs {
-			jobMap[job.Name] = append(jobMap[job.Name], job)
+			jobMap[job.Name] = append(jobMap[job.Name], flakeObs{job: job, headSHA: run.HeadSHA})
 		}
 	}
 
 	var flakyJobs []FlakyJob
 
-	for name, jobs := range jobMap {
-		if len(jobs) < 5 {
+	for name, obs := range jobMap {
+		if len(obs) < 5 {
 			continue // Not enough data
 		}
 
@@ -930,21 +932,34 @@ func detectFlakyJobs(runs []RunData) []FlakyJob {
 		var lastFailure time.Time
 		var failureURLs []string
 
-		// Sort jobs by time (most recent first)
-		sort.Slice(jobs, func(i, j int) bool {
-			return jobs[i].CompletedAt.After(jobs[j].CompletedAt)
+		// Sort observations by time (most recent first)
+		sort.Slice(obs, func(i, j int) bool {
+			return obs[i].job.CompletedAt.After(obs[j].job.CompletedAt)
 		})
 
 		recentFailures := 0
 		recentLimit := 10
-		if len(jobs) < recentLimit {
-			recentLimit = len(jobs)
+		if len(obs) < recentLimit {
+			recentLimit = len(obs)
 		}
 
-		for i, job := range jobs {
-			if job.Conclusion == "success" {
+		// Same-SHA divergence: a commit on which this job both passed and
+		// failed proves the job, not the code, is unstable.
+		shaOutcomes := make(map[string]uint8) // bit 1 = success seen, bit 2 = failure seen
+		sameSHAFlakes := 0
+
+		for i, o := range obs {
+			job := o.job
+			switch job.Conclusion {
+			case "success":
 				successCount++
-			} else if job.Conclusion == "failure" {
+				if o.headSHA != "" {
+					if shaOutcomes[o.headSHA]&2 != 0 && shaOutcomes[o.headSHA]&1 == 0 {
+						sameSHAFlakes++
+					}
+					shaOutcomes[o.headSHA] |= 1
+				}
+			case "failure":
 				failureCount++
 				if lastFailure.IsZero() || job.CompletedAt.After(lastFailure) {
 					lastFailure = job.CompletedAt
@@ -952,9 +967,14 @@ func detectFlakyJobs(runs []RunData) []FlakyJob {
 				if job.URL != "" && len(failureURLs) < 5 {
 					failureURLs = append(failureURLs, job.URL)
 				}
-
 				if i < recentLimit {
 					recentFailures++
+				}
+				if o.headSHA != "" {
+					if shaOutcomes[o.headSHA]&1 != 0 && shaOutcomes[o.headSHA]&2 == 0 {
+						sameSHAFlakes++
+					}
+					shaOutcomes[o.headSHA] |= 2
 				}
 			}
 		}
@@ -965,31 +985,67 @@ func detectFlakyJobs(runs []RunData) []FlakyJob {
 			continue
 		}
 
+		// Transition score: pass/fail state changes over chronological
+		// (oldest-first) decisive observations, normalized to 0..1.
+		transitions := 0
+		decisive := 0
+		prev := ""
+		for i := len(obs) - 1; i >= 0; i-- { // obs is newest-first
+			c := obs[i].job.Conclusion
+			if c != "success" && c != "failure" {
+				continue
+			}
+			decisive++
+			if prev != "" && c != prev {
+				transitions++
+			}
+			prev = c
+		}
+		transitionScore := 0.0
+		if decisive > 1 {
+			transitionScore = float64(transitions) / float64(decisive-1)
+		}
+
 		// Rate over decisive outcomes only, so skipped/cancelled/in-progress
 		// observations don't dilute the flake rate.
 		flakeRate := float64(failureCount) / float64(successCount+failureCount) * 100
 
-		// Only include if flake rate > 10%
-		if flakeRate > 10 {
+		// Include on either signal: >10% flake rate, or definitive same-SHA
+		// divergence regardless of rate.
+		if flakeRate > 10 || sameSHAFlakes > 0 {
 			flakyJobs = append(flakyJobs, FlakyJob{
-				Name:           name,
-				URLs:           failureURLs,
-				TotalRuns:      len(jobs),
-				SuccessCount:   successCount,
-				FailureCount:   failureCount,
-				FlakeRate:      flakeRate,
-				RecentFailures: recentFailures,
-				LastFailure:    lastFailure,
+				Name:            name,
+				URLs:            failureURLs,
+				TotalRuns:       len(obs),
+				SuccessCount:    successCount,
+				FailureCount:    failureCount,
+				FlakeRate:       flakeRate,
+				RecentFailures:  recentFailures,
+				LastFailure:     lastFailure,
+				SameSHAFlakes:   sameSHAFlakes,
+				TransitionScore: transitionScore,
 			})
 		}
 	}
 
-	// Sort by flake rate (worst first)
+	// Definitive same-SHA flakes first, then transition score, then rate.
 	sort.Slice(flakyJobs, func(i, j int) bool {
+		if flakyJobs[i].SameSHAFlakes != flakyJobs[j].SameSHAFlakes {
+			return flakyJobs[i].SameSHAFlakes > flakyJobs[j].SameSHAFlakes
+		}
+		if flakyJobs[i].TransitionScore != flakyJobs[j].TransitionScore {
+			return flakyJobs[i].TransitionScore > flakyJobs[j].TransitionScore
+		}
 		return flakyJobs[i].FlakeRate > flakyJobs[j].FlakeRate
 	})
 
 	return flakyJobs
+}
+
+// flakeObs pairs a job observation with the commit it ran on.
+type flakeObs struct {
+	job     JobData
+	headSHA string
 }
 
 // Utility functions

@@ -299,7 +299,7 @@ func renderJobTrends(w io.Writer, trends []analyzer.JobTrend) {
 }
 
 func renderFlakyJobs(w io.Writer, flakyJobs []analyzer.FlakyJob) {
-	fmt.Fprintf(w, "\n  %s Found %d flaky jobs (>10%% failure rate):\n\n",
+	fmt.Fprintf(w, "\n  %s Found %d flaky jobs (>10%% flake rate, or pass+fail on the same commit):\n\n",
 		warningStyle.Render("!"),
 		len(flakyJobs))
 
@@ -315,19 +315,25 @@ func renderFlakyJobs(w io.Writer, flakyJobs []analyzer.FlakyJob) {
 			}
 			return lipgloss.NewStyle().Align(lipgloss.Right)
 		}).
-		Headers("Job Name", "Total Runs", "Failures", "Flake Rate", "Recent (10)")
+		Headers("Job Name", "Runs", "Failures", "Flake Rate", "Score", "Same-SHA", "Recent (10)")
 
 	for _, job := range flakyJobs {
 		flakeRateColor := utils.YellowText
 		if job.FlakeRate > 30 {
 			flakeRateColor = utils.RedText
 		}
+		sameSHA := "-"
+		if job.SameSHAFlakes > 0 {
+			sameSHA = utils.RedText(fmt.Sprintf("%d", job.SameSHAFlakes))
+		}
 
 		t.Row(
-			linkName(job.Name, job.URLs, 48),
+			linkName(job.Name, job.URLs, 44),
 			fmt.Sprintf("%d", job.TotalRuns),
 			fmt.Sprintf("%d", job.FailureCount),
 			flakeRateColor(fmt.Sprintf("%.1f%%", job.FlakeRate)),
+			fmt.Sprintf("%.2f", job.TransitionScore),
+			sameSHA,
 			fmt.Sprintf("%d", job.RecentFailures),
 		)
 	}
