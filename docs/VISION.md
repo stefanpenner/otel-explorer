@@ -93,9 +93,9 @@ The sampling features are bounded by API budget, so the fetch layer is a feature
 
 | Horizon | Work |
 | --- | --- |
-| Now | Typical Run view; correctness fixes across stats/API/TUI/ingest (2026-06 review wave) |
-| Next | GraphQL batch fetcher for commit sweeps; exemplar navigation from typical view; same-SHA flake flag + transition-count score; queue prefix segments on bars |
-| Later | Run-vs-typical diff mode ("why was this run slow?"); waste metrics; faceting by branch/event/runner; critical-path highlighting with slack; OTel metrics emission; MCP/JSON surface so agents can consume the same statistics the TUI renders |
+| Shipped (2026-06) | Typical Run view; 57-finding correctness wave; per-workflow calibrated sampling (`cmd/sample-eval` methodology); 8-way concurrent fetches; `ote sync` SQLite store with exact store-backed trends; Hourly Patterns; exemplar links on percentiles; run-vs-typical diff; `scripts/e2e-smoke.sh` reality matrix |
+| Next | GraphQL batch fetcher for commit sweeps; same-SHA flake flag + transition-count score; queue prefix segments on bars; TUI interactive polish |
+| Later | Waste metrics (re-run burn, idle staircase gaps); faceting by branch/event/runner; critical-path highlighting with slack; OTel metrics emission; MCP/JSON surface so agents can consume the same statistics the TUI renders |
 
 ## Non-goals
 
