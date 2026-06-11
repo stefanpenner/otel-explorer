@@ -518,9 +518,10 @@ func main() {
 	// Setup enricher chain (needed by both receiver and normal modes)
 	var enricher enrichment.Enricher
 	var enrichers []enrichment.Enricher
-	if len(args) > 0 {
-		enrichers = append(enrichers, &enrichment.GHAEnricher{})
-	}
+	// GHAEnricher is attribute-gated (only spans carrying GHA-shaped attrs
+	// match), so it belongs in every chain: traces ote itself exported and
+	// re-ingested via files or the receiver carry those attrs too.
+	enrichers = append(enrichers, &enrichment.GHAEnricher{})
 	enrichers = append(enrichers, &enrichment.CICDEnricher{})
 	if cfg.enrichmentFile != "" {
 		ruleEnricher, err := enrichment.LoadRules(cfg.enrichmentFile)
@@ -621,18 +622,26 @@ func main() {
 			}
 		}
 
-		pipeline := core.NewPipeline(terminal.NewExporter(os.Stderr, enricher))
-		if err := pipeline.Process(ctx, spans); err != nil {
-			printError(err, "processing spans failed")
-			hadError = true
-		}
-
 		if cfg.tuiMode {
 			globalStartTime := time.UnixMilli(globalEarliest)
 			globalEndTime := time.UnixMilli(globalLatest)
 			if err := tuiresults.Run(spans, globalStartTime, globalEndTime, []string{"receiver"}, nil, nil, enricher); err != nil {
 				fmt.Fprintf(os.Stderr, "%sError: TUI failed: %v%s\n", colorRed, err, colorReset)
 				os.Exit(1)
+			}
+		} else if len(spans) > 0 {
+			// Render the same styled report as trace-file input — the
+			// banner promises "stop and analyze collected spans".
+			combined := analyzer.CombinedMetricsFromSpans(spans, enricher)
+			colorsEnabled := colorsEnabledFor(os.Stderr)
+			utils.SetColorEnabled(colorsEnabled)
+			var styledW io.Writer = os.Stderr
+			if !colorsEnabled {
+				styledW = utils.NewStripANSIWriter(os.Stderr)
+			}
+			if err := output.OutputStyledResults(styledW, nil, combined, nil, globalEarliest, globalLatest, spans, enricher); err != nil {
+				printError(err, "styled output failed")
+				hadError = true
 			}
 		}
 		if hadError {
