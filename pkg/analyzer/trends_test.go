@@ -1,7 +1,13 @@
 package analyzer
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -178,6 +184,44 @@ func TestDetectFlakyJobs(t *testing.T) {
 		}
 		flakyJobs := detectFlakyJobs(runs)
 		assert.Empty(t, flakyJobs)
+	})
+
+	t.Run("always-failing job is not flaky", func(t *testing.T) {
+		now := time.Now()
+		runs := make([]RunData, 10)
+		for i := range runs {
+			runs[i] = RunData{Jobs: []JobData{{
+				Name:        "broken",
+				Conclusion:  "failure",
+				CompletedAt: now.Add(time.Duration(i) * time.Hour),
+			}}}
+		}
+		flakyJobs := detectFlakyJobs(runs)
+		assert.Empty(t, flakyJobs, "deterministically failing jobs are broken, not flaky")
+	})
+
+	t.Run("skipped runs excluded from flake rate denominator", func(t *testing.T) {
+		now := time.Now()
+		// 2 failures + 3 successes + 15 skipped: flake rate over decisive
+		// outcomes is 40%, not 10% over all observations.
+		runs := make([]RunData, 20)
+		for i := range runs {
+			conclusion := "skipped"
+			switch {
+			case i < 2:
+				conclusion = "failure"
+			case i < 5:
+				conclusion = "success"
+			}
+			runs[i] = RunData{Jobs: []JobData{{
+				Name:        "test",
+				Conclusion:  conclusion,
+				CompletedAt: now.Add(time.Duration(i) * time.Hour),
+			}}}
+		}
+		flakyJobs := detectFlakyJobs(runs)
+		assert.Len(t, flakyJobs, 1)
+		assert.Equal(t, 40.0, flakyJobs[0].FlakeRate)
 	})
 }
 
@@ -726,45 +770,6 @@ func TestAnalyzeJobTrends_ChronologicalOrder(t *testing.T) {
 	})
 }
 
-func TestCalculateSampleSize(t *testing.T) {
-	t.Parallel()
-
-	t.Run("zero runs", func(t *testing.T) {
-		assert.Equal(t, 0, calculateSampleSize(0, 0.95, 0.10))
-	})
-
-	t.Run("small population returns all", func(t *testing.T) {
-		// For very small N, the sample size should equal N
-		size := calculateSampleSize(5, 0.95, 0.10)
-		assert.Equal(t, 5, size)
-	})
-
-	t.Run("known values at 95% confidence 10% margin", func(t *testing.T) {
-		// n₀ = 1.96² × 0.25 / 0.01 = 96.04
-		// n = 96.04 / (1 + 95.04/N)
-
-		// N=50: n = 96.04 / (1 + 95.04/50) = 96.04 / 2.9008 ≈ 33.1 -> 34
-		assert.Equal(t, 34, calculateSampleSize(50, 0.95, 0.10))
-
-		// N=100: n = 96.04 / (1 + 95.04/100) = 96.04 / 1.9504 ≈ 49.2 -> 50
-		assert.Equal(t, 50, calculateSampleSize(100, 0.95, 0.10))
-
-		// N=300: n = 96.04 / (1 + 95.04/300) = 96.04 / 1.3168 ≈ 72.9 -> 73
-		assert.Equal(t, 73, calculateSampleSize(300, 0.95, 0.10))
-
-		// N=1000: n = 96.04 / (1 + 95.04/1000) = 96.04 / 1.09504 ≈ 87.7 -> 88
-		assert.Equal(t, 88, calculateSampleSize(1000, 0.95, 0.10))
-	})
-
-	t.Run("sample never exceeds population", func(t *testing.T) {
-		for _, n := range []int{1, 2, 10, 50, 100, 1000} {
-			size := calculateSampleSize(n, 0.95, 0.10)
-			assert.LessOrEqual(t, size, n)
-			assert.Greater(t, size, 0)
-		}
-	})
-}
-
 func TestStratifiedSampleIndices(t *testing.T) {
 	t.Parallel()
 
@@ -1088,7 +1093,9 @@ func TestGenerateRationale(t *testing.T) {
 			Enabled:       true,
 			SampleSize:    73,
 			TotalRuns:     150,
-			Confidence:    0.95,
+			WorkflowCount: 4,
+			MajorTarget:   50,
+			MinorTarget:   20,
 			MarginOfError: 0.10,
 		}
 		r := generateRationale(s)
@@ -1102,7 +1109,6 @@ func TestGenerateRationale(t *testing.T) {
 			Enabled:       false,
 			SampleSize:    42,
 			TotalRuns:     42,
-			Confidence:    0.95,
 			MarginOfError: 0.10,
 		}
 		r := generateRationale(s)
@@ -1162,4 +1168,352 @@ func TestConvertRuns(t *testing.T) {
 		assert.Equal(t, int64(2), result[1].ID)
 		assert.Equal(t, int64(3), result[2].ID)
 	})
+
+	t.Run("retried run uses RunStartedAt as duration base", func(t *testing.T) {
+		runs := []githubapi.WorkflowRun{
+			{
+				ID:           7,
+				RunAttempt:   2,
+				Status:       "completed",
+				Conclusion:   "success",
+				CreatedAt:    "2026-01-12T10:00:00Z", // original attempt, days earlier
+				RunStartedAt: "2026-01-15T10:00:00Z", // start of the current attempt
+				UpdatedAt:    "2026-01-15T10:05:00Z",
+			},
+		}
+		result := convertRuns(runs)
+		assert.Len(t, result, 1)
+		// 5 minutes for the retried attempt, not ~3 days since original creation
+		assert.Equal(t, int64(300000), result[0].Duration)
+	})
+
+	t.Run("first attempt keeps CreatedAt as duration base", func(t *testing.T) {
+		runs := []githubapi.WorkflowRun{
+			{
+				ID:           8,
+				RunAttempt:   1,
+				Status:       "completed",
+				Conclusion:   "success",
+				CreatedAt:    "2026-01-15T10:00:00Z",
+				RunStartedAt: "2026-01-15T10:01:00Z",
+				UpdatedAt:    "2026-01-15T10:05:00Z",
+			},
+		}
+		result := convertRuns(runs)
+		assert.Equal(t, int64(300000), result[0].Duration)
+	})
+}
+
+// stubTrendProvider implements only the GitHubProvider methods AnalyzeTrends
+// needs; any other call panics via the embedded nil interface.
+type stubTrendProvider struct {
+	githubapi.GitHubProvider
+	runs       []githubapi.WorkflowRun
+	jobs       map[int64][]githubapi.Job
+	failRunIDs map[int64]bool
+}
+
+func (s *stubTrendProvider) FetchRecentWorkflowRuns(ctx context.Context, owner, repo string, days int, branch, workflow string, onPage func(fetched, total int)) ([]githubapi.WorkflowRun, error) {
+	return s.runs, nil
+}
+
+func (s *stubTrendProvider) FetchJobsPaginated(ctx context.Context, urlValue string) ([]githubapi.Job, error) {
+	var runID int64
+	idx := strings.LastIndex(urlValue, "/runs/")
+	if _, err := fmt.Sscanf(urlValue[idx:], "/runs/%d/jobs", &runID); err != nil {
+		return nil, err
+	}
+	if s.failRunIDs[runID] {
+		return nil, fmt.Errorf("simulated fetch failure for run %d", runID)
+	}
+	return s.jobs[runID], nil
+}
+
+func makeStubRun(id int64, status, conclusion string, created time.Time) githubapi.WorkflowRun {
+	return githubapi.WorkflowRun{
+		ID:         id,
+		RunAttempt: 1,
+		Status:     status,
+		Conclusion: conclusion,
+		CreatedAt:  created.Format(time.RFC3339),
+		UpdatedAt:  created.Add(10 * time.Minute).Format(time.RFC3339),
+		Repository: githubapi.RepoRef{Owner: githubapi.RepoOwner{Login: "o"}, Name: "r"},
+	}
+}
+
+func TestAnalyzeTrends_FiltersIncompleteRuns(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+
+	provider := &stubTrendProvider{
+		runs: []githubapi.WorkflowRun{
+			makeStubRun(1, "completed", "success", now.Add(-3*time.Hour)),
+			makeStubRun(2, "completed", "failure", now.Add(-2*time.Hour)),
+			makeStubRun(3, "in_progress", "", now.Add(-10*time.Minute)),
+			makeStubRun(4, "queued", "", now.Add(-5*time.Minute)),
+		},
+	}
+
+	analysis, err := AnalyzeTrends(context.Background(), provider, "o", "r", 7, "", "", TrendOptions{}, nil)
+	assert.NoError(t, err)
+	// In-progress/queued runs are excluded from all run-level statistics.
+	assert.Equal(t, 2, analysis.Summary.TotalRuns)
+	assert.Equal(t, 50.0, analysis.Summary.AvgSuccessRate)
+}
+
+func TestAnalyzeTrends_RecordsAchievedSampleSize(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+
+	provider := &stubTrendProvider{
+		runs: []githubapi.WorkflowRun{
+			makeStubRun(1, "completed", "success", now.Add(-3*time.Hour)),
+			makeStubRun(2, "completed", "success", now.Add(-2*time.Hour)),
+			makeStubRun(3, "completed", "success", now.Add(-1*time.Hour)),
+		},
+		failRunIDs: map[int64]bool{2: true},
+	}
+
+	analysis, err := AnalyzeTrends(context.Background(), provider, "o", "r", 7, "", "", TrendOptions{}, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, 2, analysis.Sampling.SampleSize, "achieved sample size should reflect failed fetches")
+	assert.Contains(t, analysis.Sampling.Rationale, "Warning")
+	assert.Contains(t, analysis.Sampling.Rationale, "2 of 3")
+}
+
+func TestFetchJobsForRuns_ReportsAchievedCount(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+
+	runs := []githubapi.WorkflowRun{
+		makeStubRun(1, "completed", "success", now.Add(-3*time.Hour)),
+		makeStubRun(2, "completed", "success", now.Add(-2*time.Hour)),
+		makeStubRun(3, "completed", "success", now.Add(-1*time.Hour)),
+	}
+	runData := convertRuns(runs)
+	provider := &stubTrendProvider{
+		jobs: map[int64][]githubapi.Job{
+			1: {{ID: 11, Name: "build", Status: "completed", Conclusion: "success"}},
+			3: {{ID: 31, Name: "build", Status: "completed", Conclusion: "success"}},
+		},
+		failRunIDs: map[int64]bool{2: true},
+	}
+
+	fetched, err := fetchJobsForRuns(context.Background(), provider, runData, runs, []int{0, 1, 2}, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, 2, fetched)
+	assert.Len(t, runData[0].Jobs, 1)
+	assert.Empty(t, runData[1].Jobs)
+	assert.Len(t, runData[2].Jobs, 1)
+}
+
+func TestFetchJobsForRuns_AbortsOnCancelledContext(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+
+	runs := []githubapi.WorkflowRun{
+		makeStubRun(1, "completed", "success", now.Add(-1*time.Hour)),
+	}
+	runData := convertRuns(runs)
+	provider := &stubTrendProvider{failRunIDs: map[int64]bool{1: true}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	fetched, err := fetchJobsForRuns(ctx, provider, runData, runs, []int{0}, nil)
+	assert.Error(t, err)
+	assert.Equal(t, 0, fetched)
+}
+
+func TestAnalyzeTrends_DumpRuns(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+
+	run := makeStubRun(1, "completed", "success", now.Add(-3*time.Hour))
+	run.Name = "CI"
+	provider := &stubTrendProvider{
+		runs: []githubapi.WorkflowRun{run},
+		jobs: map[int64][]githubapi.Job{
+			1: {{ID: 11, Name: "build", Status: "completed", Conclusion: "success",
+				CreatedAt: run.CreatedAt, StartedAt: run.CreatedAt, CompletedAt: run.UpdatedAt}},
+		},
+	}
+
+	dumpPath := filepath.Join(t.TempDir(), "runs.json")
+	_, err := AnalyzeTrends(context.Background(), provider, "o", "r", 7, "", "",
+		TrendOptions{NoSample: true, DumpRunsPath: dumpPath}, nil)
+	if err != nil {
+		t.Fatalf("AnalyzeTrends: %v", err)
+	}
+
+	data, err := os.ReadFile(dumpPath)
+	if err != nil {
+		t.Fatalf("reading dump: %v", err)
+	}
+	var dump RunDump
+	if err := json.Unmarshal(data, &dump); err != nil {
+		t.Fatalf("unmarshal dump: %v", err)
+	}
+	if dump.Owner != "o" || dump.Repo != "r" || dump.Days != 7 {
+		t.Errorf("dump header = %s/%s days=%d, want o/r days=7", dump.Owner, dump.Repo, dump.Days)
+	}
+	if len(dump.Runs) != 1 || len(dump.Runs[0].Jobs) != 1 || dump.Runs[0].Jobs[0].Name != "build" {
+		t.Errorf("dump runs = %+v, want 1 run with 1 'build' job", dump.Runs)
+	}
+	if dump.Runs[0].WorkflowName != "CI" {
+		t.Errorf("WorkflowName = %q, want CI", dump.Runs[0].WorkflowName)
+	}
+}
+
+func TestSelectSampleIndicesPerWorkflow(t *testing.T) {
+	t.Parallel()
+	now := time.Now().Add(-24 * time.Hour)
+
+	var runs []githubapi.WorkflowRun
+	// Major workflow: 200 runs x 10m duration (>=1% compute share)
+	for i := 0; i < 200; i++ {
+		r := makeStubRun(int64(1000+i), "completed", "success", now.Add(time.Duration(i)*time.Minute))
+		r.Name = "Big CI"
+		runs = append(runs, r)
+	}
+	// Minor workflow: 100 runs x 1s duration (<1% compute share)
+	for i := 0; i < 100; i++ {
+		created := now.Add(time.Duration(i) * time.Minute)
+		r := githubapi.WorkflowRun{
+			ID: int64(5000 + i), RunAttempt: 1, Name: "bot", Status: "completed", Conclusion: "success",
+			CreatedAt: created.Format(time.RFC3339), UpdatedAt: created.Add(time.Second).Format(time.RFC3339),
+		}
+		runs = append(runs, r)
+	}
+	// Tiny workflow: 5 runs — fewer than the minor target, all selected
+	for i := 0; i < 5; i++ {
+		created := now.Add(time.Duration(i) * time.Hour)
+		r := githubapi.WorkflowRun{
+			ID: int64(9000 + i), RunAttempt: 1, Name: "release", Status: "completed", Conclusion: "success",
+			CreatedAt: created.Format(time.RFC3339), UpdatedAt: created.Add(time.Second).Format(time.RFC3339),
+		}
+		runs = append(runs, r)
+	}
+
+	indices := SelectSampleIndices(runs, 50, 20)
+
+	counts := map[string]int{}
+	seen := map[int]bool{}
+	last := -1
+	for _, idx := range indices {
+		if idx < 0 || idx >= len(runs) {
+			t.Fatalf("index %d out of range", idx)
+		}
+		if seen[idx] {
+			t.Fatalf("duplicate index %d", idx)
+		}
+		seen[idx] = true
+		if idx <= last {
+			t.Errorf("indices not sorted: %d after %d", idx, last)
+		}
+		last = idx
+		counts[runs[idx].Name]++
+	}
+
+	if counts["Big CI"] != 50 {
+		t.Errorf("Big CI sampled %d, want 50 (major target)", counts["Big CI"])
+	}
+	if counts["bot"] != 20 {
+		t.Errorf("bot sampled %d, want 20 (minor target, <1%% compute share)", counts["bot"])
+	}
+	if counts["release"] != 5 {
+		t.Errorf("release sampled %d, want all 5 (fewer than target)", counts["release"])
+	}
+
+	// Deterministic: same input, same selection.
+	again := SelectSampleIndices(runs, 50, 20)
+	assert.Equal(t, indices, again, "selection must be deterministic")
+}
+
+func TestJobSampleTargets(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		margin       float64
+		major, minor int
+	}{
+		{0.10, 50, 20},
+		{0.05, 100, 40},
+		{0.30, 20, 10}, // clamped floors
+		{0.01, 200, 80}, // clamped ceiling
+	} {
+		major, minor := JobSampleTargets(tc.margin)
+		if major != tc.major || minor != tc.minor {
+			t.Errorf("JobSampleTargets(%v) = %d/%d, want %d/%d", tc.margin, major, minor, tc.major, tc.minor)
+		}
+	}
+}
+
+// barrierProvider blocks each FetchJobsPaginated call until `parallelism`
+// calls are in flight, proving the fetcher overlaps requests. A serial
+// fetcher deadlocks here and trips the test timeout instead.
+type barrierProvider struct {
+	githubapi.GitHubProvider
+	arrived chan struct{}
+	release chan struct{}
+	once    sync.Once
+	need    int
+}
+
+func (b *barrierProvider) FetchJobsPaginated(ctx context.Context, urlValue string) ([]githubapi.Job, error) {
+	b.arrived <- struct{}{}
+	select {
+	case <-b.release:
+	case <-time.After(2 * time.Second):
+		return nil, fmt.Errorf("barrier timeout: fetches are not concurrent")
+	}
+	return []githubapi.Job{{ID: 1, Name: "job", Status: "completed", Conclusion: "success"}}, nil
+}
+
+func TestFetchJobsForRuns_Concurrent(t *testing.T) {
+	t.Parallel()
+	const parallelism = 4
+	now := time.Now()
+
+	var runs []githubapi.WorkflowRun
+	for i := 0; i < parallelism; i++ {
+		runs = append(runs, makeStubRun(int64(i+1), "completed", "success", now.Add(time.Duration(i)*time.Minute)))
+	}
+	runData := convertRuns(runs)
+	indices := []int{0, 1, 2, 3}
+
+	provider := &barrierProvider{
+		arrived: make(chan struct{}, parallelism),
+		release: make(chan struct{}),
+		need:    parallelism,
+	}
+
+	done := make(chan struct{})
+	var fetched int
+	var err error
+	go func() {
+		fetched, err = fetchJobsForRuns(context.Background(), provider, runData, runs, indices, nil)
+		close(done)
+	}()
+
+	// All four calls must arrive while none has been released.
+	for i := 0; i < parallelism; i++ {
+		select {
+		case <-provider.arrived:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only %d/%d fetches in flight — fetcher is serial", i, parallelism)
+		}
+	}
+	close(provider.release)
+	<-done
+
+	if err != nil {
+		t.Fatalf("fetchJobsForRuns: %v", err)
+	}
+	if fetched != parallelism {
+		t.Errorf("fetched = %d, want %d", fetched, parallelism)
+	}
+	for i := range runData {
+		if len(runData[i].Jobs) != 1 {
+			t.Errorf("runData[%d] has %d jobs, want 1", i, len(runData[i].Jobs))
+		}
+	}
 }

@@ -10,6 +10,7 @@ go_library(
         "styled.go",
         "timeline.go",
         "trends.go",
+        "typical.go",
     ],
     importpath = "github.com/stefanpenner/otel-explorer/pkg/output",
     visibility = ["//visibility:public"],
@@ -26,10 +27,16 @@ go_library(
 
 go_test(
     name = "output_test",
-    srcs = ["timeline_test.go"],
+    srcs = [
+        "timeline_test.go",
+        "trends_test.go",
+        "typical_test.go",
+    ],
     embed = [":output"],
     deps = [
+        "//pkg/analyzer",
         "//pkg/enrichment",
+        "//pkg/utils",
         "@com_github_stretchr_testify//assert",
         "@io_opentelemetry_go_otel//attribute",
         "@io_opentelemetry_go_otel_sdk//instrumentation",

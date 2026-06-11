@@ -48,8 +48,10 @@ func linkName(name string, urls []string, maxVisible int) string {
 	if nameMax < 4 {
 		nameMax = 4
 	}
-	if len(name) > nameMax {
-		name = name[:nameMax-3] + "..."
+	// Truncate on rune boundaries: job names are arbitrary user strings and
+	// byte slicing could split a multi-byte UTF-8 character mid-sequence.
+	if runes := []rune(name); len(runes) > nameMax {
+		name = string(runes[:nameMax-3]) + "..."
 	}
 	return name + suffix
 }
@@ -99,8 +101,8 @@ func OutputTrends(w io.Writer, analysis *analyzer.TrendAnalysis, format string) 
 	if analysis.Sampling.Enabled {
 		jobText := labelStyle.Render("Job details sampled: ") +
 			numStyle.Render(fmt.Sprintf("%d/%d", analysis.Sampling.SampleSize, analysis.Sampling.TotalRuns)) +
-			dimStyle.Render(fmt.Sprintf(" (%.0f%% confidence, ±%.0f%% margin)",
-				analysis.Sampling.Confidence*100, analysis.Sampling.MarginOfError*100))
+			dimStyle.Render(fmt.Sprintf(" (%d workflows, %d/%d obs targets)",
+				analysis.Sampling.WorkflowCount, analysis.Sampling.MajorTarget, analysis.Sampling.MinorTarget))
 		fmt.Fprintln(w, headerLine(jobText))
 	}
 	if analysis.Sampling.Rationale != "" {
@@ -122,6 +124,12 @@ func OutputTrends(w io.Writer, analysis *analyzer.TrendAnalysis, format string) 
 	if len(analysis.SuccessRateTrend) > 0 {
 		trendSection(w, "Success Rate Trend")
 		renderSuccessRateChart(w, analysis.SuccessRateTrend)
+	}
+
+	// Statistically typical run (median Gantt with percentile bands)
+	if analysis.Typical != nil && len(analysis.Typical.Workflows) > 0 {
+		trendSection(w, "Typical Run")
+		renderTypicalRun(w, analysis.Typical)
 	}
 
 	// Top jobs by duration
@@ -355,6 +363,32 @@ func generateASCIIChart(points []analyzer.DataPoint, width, height int, valueTyp
 
 	var sb strings.Builder
 
+	// Map each column to the data point nearest in time, so days without runs
+	// occupy proportional horizontal space and the first/last date labels
+	// describe a genuinely linear time axis. Points are sorted chronologically.
+	pointForCol := make([]int, width)
+	startTs := points[0].Timestamp.UnixMilli()
+	endTs := points[len(points)-1].Timestamp.UnixMilli()
+	span := float64(endTs - startTs)
+	nearest := 0
+	for col := 0; col < width; col++ {
+		if span <= 0 || width == 1 {
+			// Degenerate time range: fall back to index-based mapping.
+			idx := int(math.Round(float64(col) / math.Max(float64(width-1), 1) * float64(len(points)-1)))
+			if idx >= len(points) {
+				idx = len(points) - 1
+			}
+			pointForCol[col] = idx
+			continue
+		}
+		target := float64(startTs) + float64(col)/float64(width-1)*span
+		for nearest < len(points)-1 &&
+			math.Abs(float64(points[nearest+1].Timestamp.UnixMilli())-target) <= math.Abs(target-float64(points[nearest].Timestamp.UnixMilli())) {
+			nearest++
+		}
+		pointForCol[col] = nearest
+	}
+
 	// Build chart from top to bottom
 	for row := height - 1; row >= 0; row-- {
 		// Calculate value threshold for this row
@@ -366,13 +400,7 @@ func generateASCIIChart(points []analyzer.DataPoint, width, height int, valueTyp
 
 		// Plot points
 		for col := 0; col < width; col++ {
-			// Map column to data point
-			pointIdx := int(math.Round(float64(col) / float64(width-1) * float64(len(points)-1)))
-			if pointIdx >= len(points) {
-				pointIdx = len(points) - 1
-			}
-
-			value := points[pointIdx].Value
+			value := points[pointForCol[col]].Value
 
 			// Determine if we should plot here
 			nextThreshold := minVal + (float64(row+1)/float64(height-1))*(maxVal-minVal)
@@ -537,9 +565,11 @@ func renderRegressions(w io.Writer, regressions []analyzer.JobRegression) {
 				labelStyle.Render("Diff:    "),
 				utils.MakeClickableLink(cp.DiffURL, shortSHA(cp.BeforeSHA)+"..."+shortSHA(cp.AfterSHA)))
 		}
+		// cp.Index is the 0-based index of the first post-shift observation;
+		// "observation N of M" is a 1-based ordinal phrase.
 		fmt.Fprintf(w, "     %s  %s\n",
 			labelStyle.Render("Position:"),
-			dimStyle.Render(fmt.Sprintf("observation %d of %d", cp.Index, cp.TotalPoints)))
+			dimStyle.Render(fmt.Sprintf("observation %d of %d", cp.Index+1, cp.TotalPoints)))
 	}
 
 	fmt.Fprintf(w, "\n  %s Investigate these jobs for:\n", subheaderStyle.Render("i"))
@@ -609,9 +639,11 @@ func renderImprovements(w io.Writer, improvements []analyzer.JobImprovement) {
 				labelStyle.Render("Diff:    "),
 				utils.MakeClickableLink(cp.DiffURL, shortSHA(cp.BeforeSHA)+"..."+shortSHA(cp.AfterSHA)))
 		}
+		// cp.Index is the 0-based index of the first post-shift observation;
+		// "observation N of M" is a 1-based ordinal phrase.
 		fmt.Fprintf(w, "     %s  %s\n",
 			labelStyle.Render("Position:"),
-			dimStyle.Render(fmt.Sprintf("observation %d of %d", cp.Index, cp.TotalPoints)))
+			dimStyle.Render(fmt.Sprintf("observation %d of %d", cp.Index+1, cp.TotalPoints)))
 	}
 }
 

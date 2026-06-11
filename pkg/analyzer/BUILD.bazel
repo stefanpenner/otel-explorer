@@ -14,6 +14,7 @@ go_library(
         "tree.go",
         "trends.go",
         "types.go",
+        "typical.go",
     ],
     importpath = "github.com/stefanpenner/otel-explorer/pkg/analyzer",
     visibility = ["//visibility:public"],
@@ -35,14 +36,17 @@ go_library(
 go_test(
     name = "analyzer_test",
     srcs = [
+        "clamp_test.go",
         "data_provider_test.go",
         "mapping_test.go",
         "metrics_test.go",
         "otel_test.go",
         "trends_test.go",
+        "typical_test.go",
     ],
     embed = [":analyzer"],
     deps = [
+        "//pkg/enrichment",
         "//pkg/githubapi",
         "//pkg/utils",
         "@com_github_stretchr_testify//assert",

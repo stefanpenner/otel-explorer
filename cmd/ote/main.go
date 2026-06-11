@@ -6,9 +6,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/stefanpenner/otel-explorer/pkg/analyzer"
@@ -19,12 +21,12 @@ import (
 	"github.com/stefanpenner/otel-explorer/pkg/export/terminal"
 	"github.com/stefanpenner/otel-explorer/pkg/githubapi"
 	"github.com/stefanpenner/otel-explorer/pkg/ingest/filter"
-	"github.com/stefanpenner/otel-explorer/pkg/logparse"
 	"github.com/stefanpenner/otel-explorer/pkg/ingest/otlpfile"
 	"github.com/stefanpenner/otel-explorer/pkg/ingest/polling"
 	"github.com/stefanpenner/otel-explorer/pkg/ingest/receiver"
 	"github.com/stefanpenner/otel-explorer/pkg/ingest/traceapi"
 	"github.com/stefanpenner/otel-explorer/pkg/ingest/webhook"
+	"github.com/stefanpenner/otel-explorer/pkg/logparse"
 	"github.com/stefanpenner/otel-explorer/pkg/output"
 	"github.com/stefanpenner/otel-explorer/pkg/perfetto"
 	"github.com/stefanpenner/otel-explorer/pkg/tui"
@@ -112,7 +114,7 @@ type config struct {
 	trendsBranch     string
 	trendsWorkflow   string
 	trendsNoSample   bool
-	trendsConfidence float64
+	trendsDumpRuns   string
 	trendsMargin     float64
 	noArtifacts      bool
 	convertMode      bool
@@ -128,17 +130,28 @@ type config struct {
 
 func parseArgs(args []string, terminal bool) (config, error) {
 	cfg := config{
-		tuiMode:          terminal,
-		trendsDays:       30, // default to 30 days
-		trendsFormat:     "terminal",
-		trendsConfidence: 0.95,
-		trendsMargin:     0.10,
+		tuiMode:      terminal,
+		trendsDays:   30, // default to 30 days
+		trendsFormat: "terminal",
+		trendsMargin: 0.10,
 	}
 
-	// Check if first arg is "convert" subcommand
-	if len(args) > 0 && args[0] == "convert" {
+	// The subcommand is the first non-flag argument, so global flags like
+	// --clear-cache may precede it (`ote --clear-cache trends owner/repo`).
+	subcommand := ""
+	for i, a := range args {
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		if a == "convert" || a == "trends" {
+			subcommand = a
+			args = append(append([]string{}, args[:i]...), args[i+1:]...)
+		}
+		break // only the first non-flag argument can be a subcommand
+	}
+
+	if subcommand == "convert" {
 		cfg.convertMode = true
-		args = args[1:] // consume the "convert" subcommand
 		// Remaining non-flag args are files to convert
 		for _, a := range args {
 			if a == "help" || a == "--help" || a == "-h" {
@@ -150,10 +163,8 @@ func parseArgs(args []string, terminal bool) (config, error) {
 		return cfg, nil
 	}
 
-	// Check if first arg is "trends" subcommand
-	if len(args) > 0 && args[0] == "trends" {
+	if subcommand == "trends" {
 		cfg.trendsMode = true
-		args = args[1:] // consume the "trends" subcommand
 	}
 
 	for i := 0; i < len(args); i++ {
@@ -216,7 +227,6 @@ func parseArgs(args []string, terminal bool) (config, error) {
 			if cfg.outputFormat != "stdout" && cfg.outputFormat != "markdown" && cfg.outputFormat != "otel" {
 				return cfg, fmt.Errorf("invalid --output value: %s (must be 'stdout', 'markdown', or 'otel')", cfg.outputFormat)
 			}
-			cfg.tuiMode = false
 			continue
 		}
 		if strings.HasPrefix(arg, "--trace=") {
@@ -275,11 +285,11 @@ func parseArgs(args []string, terminal bool) (config, error) {
 		// Trends-specific flags
 		if strings.HasPrefix(arg, "--days=") {
 			days := strings.TrimPrefix(arg, "--days=")
-			var err error
-			_, err = fmt.Sscanf(days, "%d", &cfg.trendsDays)
-			if err != nil || cfg.trendsDays < 1 {
+			n, err := strconv.Atoi(days)
+			if err != nil || n < 1 {
 				return cfg, fmt.Errorf("invalid --days value: %s", days)
 			}
+			cfg.trendsDays = n
 			continue
 		}
 		if strings.HasPrefix(arg, "--format=") {
@@ -301,12 +311,14 @@ func parseArgs(args []string, terminal bool) (config, error) {
 			cfg.trendsNoSample = true
 			continue
 		}
+		if strings.HasPrefix(arg, "--dump-runs=") {
+			cfg.trendsDumpRuns = strings.TrimPrefix(arg, "--dump-runs=")
+			continue
+		}
 		if strings.HasPrefix(arg, "--confidence=") {
-			val, err := strconv.ParseFloat(strings.TrimPrefix(arg, "--confidence="), 64)
-			if err != nil || val <= 0 || val >= 1 {
-				return cfg, fmt.Errorf("invalid --confidence value: must be between 0 and 1 (e.g., 0.95)")
-			}
-			cfg.trendsConfidence = val
+			// Sampling switched from a global confidence/margin formula to
+			// per-workflow observation targets; only --margin tunes those.
+			fmt.Fprintln(os.Stderr, "Warning: --confidence is deprecated and ignored; use --margin to tune sampling")
 			continue
 		}
 		if strings.HasPrefix(arg, "--margin=") {
@@ -336,6 +348,25 @@ func parseArgs(args []string, terminal bool) (config, error) {
 		cfg.urls = append(cfg.urls, arg)
 	}
 
+	// --output implies --no-tui regardless of flag order, so
+	// `--output=markdown --tui` behaves the same as `--tui --output=markdown`.
+	if cfg.outputFormat != "" {
+		cfg.tuiMode = false
+	}
+
+	// Receiver mode never consults --output; reject the combination instead
+	// of silently ignoring the flag.
+	if cfg.listenAddr != "" && cfg.outputFormat != "" {
+		return cfg, fmt.Errorf("--output is not supported with --listen (receiver mode); use --no-tui to disable the TUI")
+	}
+
+	if cfg.tempoURL != "" && cfg.jaegerURL != "" {
+		return cfg, fmt.Errorf("--tempo and --jaeger cannot be used together; specify a single trace backend")
+	}
+	if (cfg.tempoURL != "" || cfg.jaegerURL != "") && len(cfg.traceIDs) == 0 {
+		return cfg, fmt.Errorf("--tempo/--jaeger requires at least one --trace-id=<id>")
+	}
+
 	return cfg, nil
 }
 
@@ -350,6 +381,14 @@ func main() {
 		printUsage()
 		os.Exit(0)
 	}
+
+	// Gate raw ANSI/OSC escape emission on the destination of human-readable
+	// output (stderr by default) being a terminal, honoring NO_COLOR.
+	utils.SetColorEnabled(colorsEnabledFor(os.Stderr))
+
+	// hadError tracks non-fatal failures (export/pipeline errors that are
+	// reported but don't stop the run) so the process can exit non-zero.
+	hadError := false
 
 	args := cfg.urls
 
@@ -374,12 +413,11 @@ func main() {
 		}
 
 		// Parse owner/repo
-		parts := strings.Split(cfg.trendsRepo, "/")
-		if len(parts) != 2 {
-			printErrorMsg(fmt.Sprintf("Invalid repository format: %s (expected 'owner/repo')", cfg.trendsRepo))
+		owner, repo, err := parseTrendsRepo(cfg.trendsRepo)
+		if err != nil {
+			printErrorMsg(err.Error())
 			os.Exit(1)
 		}
-		owner, repo := parts[0], parts[1]
 
 		token := resolveGitHubToken()
 		if token == "" {
@@ -398,8 +436,8 @@ func main() {
 		// Perform trend analysis
 		analysis, err := analyzer.AnalyzeTrends(ctx, client, owner, repo, cfg.trendsDays, cfg.trendsBranch, cfg.trendsWorkflow, analyzer.TrendOptions{
 			NoSample:      cfg.trendsNoSample,
-			Confidence:    cfg.trendsConfidence,
 			MarginOfError: cfg.trendsMargin,
+			DumpRunsPath:  cfg.trendsDumpRuns,
 		}, progress)
 
 		progress.Finish()
@@ -410,8 +448,10 @@ func main() {
 			os.Exit(1)
 		}
 
-		// Output results
-		if err := output.OutputTrends(os.Stderr, analysis, cfg.trendsFormat); err != nil {
+		// Output results go to stdout (the spinner above stays on stderr) so
+		// `ote trends owner/repo --format=json | jq .` and `> out.json` work.
+		utils.SetColorEnabled(colorsEnabledFor(os.Stdout))
+		if err := output.OutputTrends(os.Stdout, analysis, cfg.trendsFormat); err != nil {
 			printError(err, "output failed")
 			os.Exit(1)
 		}
@@ -522,11 +562,33 @@ func main() {
 			errCh <- recv.Start(ctx)
 		}()
 
-		// Pure receiver mode: wait for user input to stop
+		// Pure receiver mode: wait for user input or a signal to stop.
 		if len(args) == 0 && len(cfg.traceFiles) == 0 && !hasTraceBackend {
-			fmt.Fprintf(os.Stderr, "  Waiting for traces... (press Enter to stop)\n")
-			buf := make([]byte, 1)
-			os.Stdin.Read(buf)
+			fmt.Fprintf(os.Stderr, "  Waiting for traces... (press Enter or Ctrl+C to stop)\n")
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+			stdinCh := make(chan struct{})
+			go func() {
+				buf := make([]byte, 1)
+				for {
+					n, err := os.Stdin.Read(buf)
+					if n > 0 {
+						close(stdinCh)
+						return
+					}
+					if err != nil {
+						// Stdin is closed or redirected (e.g. </dev/null,
+						// nohup, CI): an immediate EOF must not shut the
+						// receiver down — rely on SIGINT/SIGTERM instead.
+						return
+					}
+				}
+			}()
+			select {
+			case <-stdinCh:
+			case <-sigCh:
+			}
+			signal.Stop(sigCh)
 		}
 
 		cancel()
@@ -562,6 +624,7 @@ func main() {
 		pipeline := core.NewPipeline(terminal.NewExporter(os.Stderr, enricher))
 		if err := pipeline.Process(ctx, spans); err != nil {
 			printError(err, "processing spans failed")
+			hadError = true
 		}
 
 		if cfg.tuiMode {
@@ -571,6 +634,9 @@ func main() {
 				fmt.Fprintf(os.Stderr, "%sError: TUI failed: %v%s\n", colorRed, err, colorReset)
 				os.Exit(1)
 			}
+		}
+		if hadError {
+			os.Exit(1)
 		}
 		return
 	}
@@ -610,22 +676,37 @@ func main() {
 	// Setup GitHub Token (only required when GHA URLs are provided)
 	var token string
 	if len(args) > 0 {
-		token = resolveGitHubToken()
+		// A positional arg shaped like a GitHub token (legacy usage:
+		// `ote <url> <token>`) is always treated as the token — even when
+		// ambient auth (GITHUB_TOKEN / gh CLI) exists — so it is never
+		// mistakenly passed to the ingestor as a URL.
+		for i, arg := range args {
+			if looksLikeGitHubToken(arg) {
+				token = arg
+				args = append(args[:i], args[i+1:]...)
+				break
+			}
+		}
 		if token == "" {
-			// Fall back to parsing token from positional args (legacy behavior)
-			for i, arg := range args {
-				if !strings.HasPrefix(arg, "http") && !strings.HasPrefix(arg, "-") {
-					if _, err := utils.ParseGitHubURL(arg); err == nil {
-						continue
-					}
-					token = arg
-					args = append(args[:i], args[i+1:]...)
-					break
-				}
+			token = resolveGitHubToken()
+		}
+
+		// Everything left must be a parsable GitHub URL: fail loudly instead
+		// of silently consuming a bad arg as a token (which previously made
+		// `ote owner/repo` print an empty report with exit 0).
+		for _, arg := range args {
+			if _, err := utils.ParseGitHubURL(arg); err != nil {
+				printErrorMsg(err.Error())
+				os.Exit(1)
 			}
 		}
 
-		if token == "" {
+		if len(args) == 0 && len(cfg.traceFiles) == 0 && !hasTraceBackend {
+			printErrorMsg("No GitHub URLs or trace files provided (only a token).\n\n  Usage: ote <github_url> [flags]\n\n  Run 'ote --help' for more information.")
+			os.Exit(1)
+		}
+
+		if len(args) > 0 && token == "" {
 			printErrorMsg("GITHUB_TOKEN environment variable or token argument is required.\n  Tip: install the GitHub CLI (gh) and run `gh auth login` to authenticate automatically.")
 			printUsage()
 			os.Exit(1)
@@ -760,6 +841,7 @@ func main() {
 
 	if err := pipeline.Process(ctx, spans); err != nil {
 		printError(err, "processing spans failed")
+		hadError = true
 	}
 
 	// If TUI mode is enabled, launch interactive TUI
@@ -773,6 +855,7 @@ func main() {
 			}
 			if err := perfetto.WriteTrace(os.Stderr, results, combined, allTraceEvents, globalEarliest, perfettoFile, cfg.openInPerfetto, spans); err != nil {
 				printError(err, "writing perfetto trace failed")
+				hadError = true
 			}
 		}
 
@@ -892,6 +975,9 @@ func main() {
 			fmt.Fprintf(os.Stderr, "%sError: TUI failed: %v%s\n", colorRed, err, colorReset)
 			os.Exit(1)
 		}
+		if hadError {
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -918,22 +1004,50 @@ func main() {
 			os.Exit(1)
 		}
 	case "markdown":
-		output.OutputCombinedResultsMarkdown(os.Stdout, results, combined, allTraceEvents, globalEarliest, globalLatest, perfettoFile, cfg.openInPerfetto, spans, enricher)
+		if err := output.OutputCombinedResultsMarkdown(os.Stdout, results, combined, allTraceEvents, globalEarliest, globalLatest, perfettoFile, cfg.openInPerfetto, spans, enricher); err != nil {
+			printError(err, "markdown output failed")
+			hadError = true
+		}
 	default:
-		output.OutputStyledResults(os.Stderr, results, combined, allTraceEvents, globalEarliest, globalLatest, spans, enricher)
+		// --output=stdout sends the report to stdout (so `> report.txt`
+		// works); the bare default keeps the legacy stderr destination.
+		dest := os.Stderr
+		if cfg.outputFormat == "stdout" {
+			dest = os.Stdout
+		}
+		colorsEnabled := colorsEnabledFor(dest)
+		utils.SetColorEnabled(colorsEnabled)
+		var styledW io.Writer = dest
+		if !colorsEnabled {
+			// Also strip escapes produced by lipgloss styles, which detect
+			// their color profile from stdout rather than the report writer.
+			styledW = utils.NewStripANSIWriter(dest)
+		}
+		if err := output.OutputStyledResults(styledW, results, combined, allTraceEvents, globalEarliest, globalLatest, spans, enricher); err != nil {
+			printError(err, "styled output failed")
+			hadError = true
+		}
 		// Handle perfetto export for styled output
 		if perfettoFile != "" {
-			perfetto.WriteTrace(os.Stderr, results, combined, allTraceEvents, globalEarliest, perfettoFile, cfg.openInPerfetto, spans)
+			if err := perfetto.WriteTrace(os.Stderr, results, combined, allTraceEvents, globalEarliest, perfettoFile, cfg.openInPerfetto, spans); err != nil {
+				printError(err, "writing perfetto trace failed")
+				hadError = true
+			}
 		}
 	}
 
 	if err := pipeline.Finish(ctx); err != nil {
 		printError(err, "finalizing pipeline failed")
+		hadError = true
 	}
 
 	if cfg.openInOTel {
 		fmt.Println("Opening OTel Desktop Viewer...")
 		_ = utils.OpenBrowser("http://localhost:8000")
+	}
+
+	if hadError {
+		os.Exit(1)
 	}
 }
 
@@ -974,9 +1088,9 @@ func makeLogFetchFunc(client *githubapi.Client) tuiresults.LogFetchFunc {
 
 		// Collect step spans belonging to this job, building step info for log splitting
 		type stepInfo struct {
-			span    sdktrace.ReadOnlySpan
-			number  int
-			attrs   map[string]string
+			span   sdktrace.ReadOnlySpan
+			number int
+			attrs  map[string]string
 		}
 		var jobStepSpans []stepInfo
 
@@ -1108,8 +1222,11 @@ func printUsage() {
 	fmt.Println("  --branch=<name>           Filter by branch name (e.g., main, master)")
 	fmt.Println("  --workflow=<file>         Filter by workflow file name (e.g., post-merge.yaml)")
 	fmt.Println("  --no-sample               Fetch job details for all runs (disables statistical sampling)")
-	fmt.Println("  --confidence=<0-1>        Confidence level for sampling (default: 0.95)")
+	fmt.Println("  --dump-runs=<file>        Write fetched run/job data as JSON (ground truth with --no-sample)")
+	fmt.Println("  --confidence=<0-1>        Deprecated and ignored; use --margin")
 	fmt.Println("  --margin=<0-1>            Margin of error for sampling (default: 0.10)")
+	fmt.Println("  Output includes a Typical Run section: per-job median timeline with p75/p95 range bands,")
+	fmt.Println("  presence and pass rates, aggregated across the sampled runs and commits.")
 	fmt.Println("\nConvert Mode:")
 	fmt.Println("  Converts any supported trace format to OTel JSON on stdout.")
 	fmt.Println("  Supported formats: Chrome Tracing, Jaeger, Zipkin, OTLP proto-JSON, stdouttrace, binary protobuf.")
@@ -1140,6 +1257,55 @@ func printUsage() {
 	fmt.Println("  ote convert file1.json file2.json     # multiple files")
 	fmt.Println("  cat trace.json | ote convert          # stdin → OTel JSON")
 	fmt.Println("  ote --clear-cache")
+}
+
+// looksLikeGitHubToken reports whether arg has the shape of a GitHub token:
+// a modern prefixed token (ghp_, gho_, ghu_, ghs_, ghr_, github_pat_) or a
+// legacy 40-character hex personal access token.
+func looksLikeGitHubToken(arg string) bool {
+	for _, prefix := range []string{"ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"} {
+		if strings.HasPrefix(arg, prefix) {
+			return true
+		}
+	}
+	if len(arg) != 40 {
+		return false
+	}
+	for _, r := range arg {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+// parseTrendsRepo extracts owner and repo from the trends repository argument,
+// accepting "owner/repo", trailing slashes, and full GitHub URLs like
+// "https://github.com/owner/repo".
+func parseTrendsRepo(raw string) (string, string, error) {
+	s := raw
+	s = strings.TrimPrefix(s, "https://")
+	s = strings.TrimPrefix(s, "http://")
+	s = strings.TrimPrefix(s, "www.")
+	s = strings.TrimPrefix(s, "github.com/")
+	parts := strings.FieldsFunc(s, func(r rune) bool { return r == '/' })
+	if len(parts) < 2 {
+		return "", "", fmt.Errorf("Invalid repository format: %s (expected 'owner/repo')", raw)
+	}
+	return parts[0], parts[1], nil
+}
+
+// colorsEnabledFor reports whether ANSI escape sequences should be written to
+// f: NO_COLOR must be unset and f must be a terminal.
+func colorsEnabledFor(f *os.File) bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (info.Mode() & os.ModeCharDevice) != 0
 }
 
 // resolveGitHubToken returns a GitHub token from GITHUB_TOKEN env var or gh CLI.
