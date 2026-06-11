@@ -47,7 +47,7 @@ func renderTypicalRun(w io.Writer, typical *analyzer.TypicalRun) {
 	if hidden := len(typical.Workflows) - len(shown); hidden > 0 {
 		fmt.Fprintf(w, "\n  %s\n", dimStyle.Render(fmt.Sprintf("... and %d more workflows (use --workflow=<file> to focus)", hidden)))
 	}
-	fmt.Fprintf(w, "\n  %s\n", dimStyle.Render("█ median  ▓ to p75  ░ to p95 — bars start at each job's median offset from run start"))
+	fmt.Fprintf(w, "\n  %s\n", dimStyle.Render("▒ queue  █ median  ▓ to p75  ░ to p95 — bars start at each job's median offset from run start"))
 }
 
 func renderTypicalWorkflow(w io.Writer, wf analyzer.TypicalWorkflow) {
@@ -105,10 +105,29 @@ func renderTypicalWorkflow(w io.Writer, wf analyzer.TypicalWorkflow) {
 			p95End = p75End
 		}
 
-		track := strings.Repeat(" ", start) +
-			strings.Repeat("█", p50End-start) +
-			strings.Repeat("▓", p75End-p50End) +
-			strings.Repeat("░", p95End-p75End) +
+		// Queue prefix: the median wait before the job started, drawn dim so
+		// "waiting for a runner" reads differently from "running".
+		queueStart := start
+		if job.QueueTime.P50 > 0 {
+			queueStart = scaleX(job.StartOffset.P50 - job.QueueTime.P50)
+			if queueStart > start {
+				queueStart = start
+			}
+		}
+
+		barStyle := successStyle
+		if job.SuccessRate < 90 {
+			barStyle = failureStyle
+		} else if job.SuccessRate < 99.5 {
+			barStyle = warningStyle
+		}
+		// Style segments independently: a nested style reset would cancel the
+		// outer bar color for the rest of the row.
+		track := strings.Repeat(" ", queueStart) +
+			dimStyle.Render(strings.Repeat("▒", start-queueStart)) +
+			barStyle.Render(strings.Repeat("█", p50End-start)+
+				strings.Repeat("▓", p75End-p50End)+
+				strings.Repeat("░", p95End-p75End)) +
 			strings.Repeat(" ", typicalTrackWidth-p95End)
 
 		trendIcon := dimStyle.Render("→")
@@ -142,13 +161,7 @@ func renderTypicalWorkflow(w io.Writer, wf analyzer.TypicalWorkflow) {
 			detail += fmt.Sprintf("  %.0f%% pass", job.SuccessRate)
 		}
 
-		barStyle := successStyle
-		if job.SuccessRate < 90 {
-			barStyle = failureStyle
-		} else if job.SuccessRate < 99.5 {
-			barStyle = warningStyle
-		}
-		fmt.Fprintf(w, "  %-*s %s %s %s\n", typicalNameWidth, name, barStyle.Render(track), trendIcon, dimStyle.Render(detail))
+		fmt.Fprintf(w, "  %-*s %s %s %s\n", typicalNameWidth, name, track, trendIcon, dimStyle.Render(detail))
 	}
 
 	if hidden := len(wf.Jobs) - len(jobs); hidden > 0 {

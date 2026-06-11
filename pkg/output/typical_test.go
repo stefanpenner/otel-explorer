@@ -134,3 +134,51 @@ func TestRenderHourlyPatterns(t *testing.T) {
 		t.Error("contention hint requires queue and volume peaks to coincide")
 	}
 }
+
+func TestRenderTypicalRunQueuePrefix(t *testing.T) {
+	typical := &analyzer.TypicalRun{
+		SampledRuns: 10,
+		Workflows: []analyzer.TypicalWorkflow{{
+			Name: "CI", SampledRuns: 10, TotalRuns: 10,
+			RunDuration: analyzer.Quantiles{P50: 100, P95: 100},
+			Jobs: []analyzer.TypicalJob{
+				{
+					// Job starts at t=50s after a 30s queue: a visible ▒ prefix.
+					Name: "queued-job", Samples: 10, PresenceRate: 100, SuccessRate: 100,
+					StartOffset: analyzer.Quantiles{P50: 50},
+					Duration:    analyzer.Quantiles{P50: 40, P75: 45, P95: 50},
+					QueueTime:   analyzer.Quantiles{P50: 30},
+				},
+				{
+					// No queue: no prefix.
+					Name: "instant-job", Samples: 10, PresenceRate: 100, SuccessRate: 100,
+					StartOffset: analyzer.Quantiles{P50: 0},
+					Duration:    analyzer.Quantiles{P50: 40, P75: 45, P95: 50},
+				},
+			},
+		}},
+	}
+	var buf bytes.Buffer
+	renderTypicalRun(&buf, typical)
+	out := buf.String()
+
+	lines := strings.Split(out, "\n")
+	var queuedLine, instantLine string
+	for _, l := range lines {
+		if strings.Contains(l, "queued-job") {
+			queuedLine = l
+		}
+		if strings.Contains(l, "instant-job") {
+			instantLine = l
+		}
+	}
+	if !strings.Contains(queuedLine, "▒") {
+		t.Errorf("queued-job row should show a ▒ queue prefix:\n%s", queuedLine)
+	}
+	if strings.Contains(instantLine, "▒") {
+		t.Errorf("instant-job row should have no queue prefix:\n%s", instantLine)
+	}
+	if !strings.Contains(out, "▒ queue") {
+		t.Error("legend should explain the queue prefix glyph")
+	}
+}
