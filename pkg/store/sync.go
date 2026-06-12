@@ -39,11 +39,20 @@ func Sync(ctx context.Context, client githubapi.GitHubProvider, st *Store, owner
 		}
 	}
 
-	// Bound the listing window by the watermark: nothing older changes.
+	// Bound the listing window by the watermark — nothing older changes —
+	// but only when the store already covers the requested depth. A deeper
+	// request than ever synced is a backfill and must list the full window.
 	fetchDays := days
-	if wm, err := st.Watermark(owner, repo); err != nil {
+	wm, err := st.Watermark(owner, repo)
+	if err != nil {
 		return stats, err
-	} else if !wm.IsZero() {
+	}
+	oldest, err := st.OldestRun(owner, repo)
+	if err != nil {
+		return stats, err
+	}
+	requestStart := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	if !wm.IsZero() && !oldest.IsZero() && oldest.Before(requestStart.Add(24*time.Hour)) {
 		gap := time.Since(wm.Add(-watermarkOverlap))
 		gapDays := int(gap/(24*time.Hour)) + 1
 		if gapDays < fetchDays {
@@ -79,10 +88,10 @@ func Sync(ctx context.Context, client githubapi.GitHubProvider, st *Store, owner
 	report("fetching job detail for %d runs", len(needJobs))
 
 	var (
-		wg      sync.WaitGroup
-		sem     = make(chan struct{}, syncWorkers)
-		fetched atomic.Int64
-		mu      sync.Mutex
+		wg       sync.WaitGroup
+		sem      = make(chan struct{}, syncWorkers)
+		fetched  atomic.Int64
+		mu       sync.Mutex
 		firstErr error
 	)
 	for _, runID := range needJobs {

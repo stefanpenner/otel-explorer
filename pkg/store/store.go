@@ -317,3 +317,15 @@ func (s *Store) UpsertJobs(owner, repo string, runID int64, jobs []analyzer.JobD
 	}
 	return tx.Commit()
 }
+
+// OldestRun returns the oldest run CreatedAt stored for the repo, or the
+// zero time when nothing is stored yet.
+func (s *Store) OldestRun(owner, repo string) (time.Time, error) {
+	var ms sql.NullInt64
+	err := s.db.QueryRow(`SELECT MIN(created_at) FROM runs WHERE owner=? AND repo=? AND created_at > 0`,
+		owner, repo).Scan(&ms)
+	if err != nil || !ms.Valid || ms.Int64 == 0 {
+		return time.Time{}, err
+	}
+	return timeOf(ms.Int64), nil
+}
