@@ -152,6 +152,69 @@ func TestCachedTransportDoesNotShareAcrossTokens(t *testing.T) {
 	assert.NotEqual(t, string(bodyA), string(bodyB))
 }
 
+func TestCachedTransportRevalidatesWithETag(t *testing.T) {
+	cacheDir := t.TempDir()
+
+	var fullResponses, notModified int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"v1"`)
+		if r.Header.Get("If-None-Match") == `"v1"` {
+			notModified++
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		fullResponses++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("hello world"))
+	}))
+	defer server.Close()
+
+	transport := NewCachedTransport(http.DefaultTransport, cacheDir)
+	client := &http.Client{Transport: transport}
+
+	// First call: full 200, body cached along with its ETag.
+	req, _ := http.NewRequest(http.MethodGet, server.URL, nil)
+	resp, err := client.Do(req)
+	assert.NoError(t, err)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "hello world", string(body))
+	assert.Equal(t, 1, fullResponses)
+
+	// Backdate the entry past the TTL so the next call must revalidate.
+	files, _ := os.ReadDir(cacheDir)
+	assert.Equal(t, 1, len(files))
+	cachePath := cacheDir + "/" + files[0].Name()
+	staleTime := time.Now().Add(-(cacheTTL + time.Minute))
+	assert.NoError(t, os.Chtimes(cachePath, staleTime, staleTime))
+
+	// Second call: stale entry carries an ETag, so the transport sends a
+	// conditional request. The server answers 304, and the caller still gets
+	// the cached body with a 200 — no full body transfer.
+	resp2, err := client.Do(req)
+	assert.NoError(t, err)
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	assert.Equal(t, http.StatusOK, resp2.StatusCode)
+	assert.Equal(t, "hello world", string(body2))
+	assert.Equal(t, 1, fullResponses, "304 revalidation must not refetch the full body")
+	assert.Equal(t, 1, notModified)
+
+	// The 304 should have refreshed the entry's TTL, so an immediate third
+	// call is served straight from cache without touching the server.
+	resp3, err := client.Do(req)
+	assert.NoError(t, err)
+	body3, _ := io.ReadAll(resp3.Body)
+	resp3.Body.Close()
+	assert.Equal(t, "hello world", string(body3))
+	assert.Equal(t, 1, fullResponses)
+	assert.Equal(t, 1, notModified, "refreshed entry should serve from cache, not revalidate again")
+
+	// The caller's request must not be mutated with conditional headers.
+	assert.Empty(t, req.Header.Get("If-None-Match"))
+}
+
 func TestCachedTransportConcurrentSameURL(t *testing.T) {
 	cacheDir := t.TempDir()
 
