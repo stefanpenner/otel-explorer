@@ -857,8 +857,10 @@ func main() {
 	var results []analyzer.URLResult
 	var globalEarliest, globalLatest int64
 	var ghaSpans []sdktrace.ReadOnlySpan
+	var ghClient githubapi.GitHubProvider
 	if len(args) > 0 {
 		client := githubapi.NewClient(githubapi.NewContext(token))
+		ghClient = client
 		progress := tui.NewProgress(len(args), os.Stderr)
 		progress.Start()
 
@@ -1112,6 +1114,14 @@ func main() {
 				hadError = true
 			}
 		}
+	}
+
+	// Seed the local store with the completed runs we just analyzed so the
+	// typical-run baseline builds passively from ordinary usage. Runs after
+	// rendering so the run-vs-typical comparison above reads a baseline that
+	// excludes the current run.
+	if ghClient != nil {
+		persistRunsToStore(ctx, ghClient, results)
 	}
 
 	if err := pipeline.Finish(ctx); err != nil {
@@ -1473,6 +1483,43 @@ func trendsFromStore(ctx context.Context, client githubapi.GitHubProvider, owner
 		return nil
 	}
 	return analyzer.AnalyzeTrendsFromRuns(owner, repo, days, runs)
+}
+
+// persistRunsToStore seeds the local store with the completed runs from a
+// normal analysis, so the typical-run baseline grows from ordinary usage and
+// not just explicit `ote sync`. It is opt-in: it only writes when a store
+// already exists, so users who never sync incur no new file or fetch cost.
+// In-progress runs are skipped by CollectCompletedRunData, keeping partial
+// timings out of the baseline.
+func persistRunsToStore(ctx context.Context, client githubapi.GitHubProvider, results []analyzer.URLResult) {
+	if len(results) == 0 {
+		return
+	}
+	dbPath, err := store.DefaultPath()
+	if err != nil {
+		return
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		return // no store yet: don't create one unless the user opted into sync
+	}
+	st, err := store.Open(dbPath)
+	if err != nil {
+		return
+	}
+	defer st.Close()
+
+	for _, res := range results {
+		if res.Owner == "" || res.Repo == "" || len(res.RawRuns) == 0 {
+			continue
+		}
+		runData := analyzer.CollectCompletedRunData(ctx, client, res.RawRuns, nil)
+		if len(runData) == 0 {
+			continue
+		}
+		if err := st.UpsertRuns(res.Owner, res.Repo, runData); err != nil {
+			return // best-effort: a write failure shouldn't fail the analysis
+		}
+	}
 }
 
 // renderRunVsTypicalFromStore compares the analyzed run's job durations

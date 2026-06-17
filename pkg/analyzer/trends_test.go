@@ -293,7 +293,7 @@ func TestCalculateQueueTimeStats(t *testing.T) {
 		}
 		stats := calculateQueueTimeStats(runs)
 		assert.Equal(t, 4.0, stats.AvgQueueTime) // (5+3)/2 seconds
-		assert.Equal(t, 45.0, stats.AvgRunTime)   // (60+30)/2 seconds
+		assert.Equal(t, 45.0, stats.AvgRunTime)  // (60+30)/2 seconds
 		assert.Greater(t, stats.QueueTimeRatio, 0.0)
 		assert.Less(t, stats.QueueTimeRatio, 100.0)
 	})
@@ -1010,8 +1010,8 @@ func TestDetectChangepoint(t *testing.T) {
 		}
 		cp := detectChangepoint(obs, 3)
 		assert.NotNil(t, cp)
-		assert.Equal(t, "sha3", cp.BeforeSHA)  // last before changepoint
-		assert.Equal(t, "sha4", cp.AfterSHA)   // first after changepoint
+		assert.Equal(t, "sha3", cp.BeforeSHA) // last before changepoint
+		assert.Equal(t, "sha4", cp.AfterSHA)  // first after changepoint
 		assert.Equal(t, obs[4].RunCreatedAt, cp.Date)
 		assert.Equal(t, "https://example.com/job/3", cp.BeforeRunURL)
 		assert.Equal(t, "https://example.com/job/4", cp.AfterRunURL)
@@ -1308,6 +1308,50 @@ func TestFetchJobsForRuns_ReportsAchievedCount(t *testing.T) {
 	assert.Len(t, runData[2].Jobs, 1)
 }
 
+func TestCollectCompletedRunData_SkipsIncompleteAndFetchesJobs(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+
+	runs := []githubapi.WorkflowRun{
+		makeStubRun(1, "completed", "success", now.Add(-3*time.Hour)),
+		makeStubRun(2, "in_progress", "", now.Add(-10*time.Minute)),
+		makeStubRun(3, "completed", "failure", now.Add(-1*time.Hour)),
+	}
+	provider := &stubTrendProvider{
+		jobs: map[int64][]githubapi.Job{
+			1: {{ID: 11, Name: "build", Status: "completed", Conclusion: "success"}},
+			3: {{ID: 31, Name: "test", Status: "completed", Conclusion: "failure"}},
+		},
+	}
+
+	got := CollectCompletedRunData(context.Background(), provider, runs, nil)
+
+	byID := map[int64]RunData{}
+	for _, r := range got {
+		byID[r.ID] = r
+	}
+	assert.Len(t, got, 2, "only completed runs should be collected")
+	assert.NotContains(t, byID, int64(2), "in-progress run must be skipped")
+	assert.Len(t, byID[1].Jobs, 1)
+	assert.Equal(t, "build", byID[1].Jobs[0].Name)
+	assert.Len(t, byID[3].Jobs, 1)
+	assert.Equal(t, "test", byID[3].Jobs[0].Name)
+}
+
+func TestCollectCompletedRunData_EmptyWhenNoneCompleted(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+
+	runs := []githubapi.WorkflowRun{
+		makeStubRun(1, "in_progress", "", now),
+		makeStubRun(2, "queued", "", now),
+	}
+
+	// A nil client is safe: with nothing to collect we must not fetch jobs.
+	got := CollectCompletedRunData(context.Background(), nil, runs, nil)
+	assert.Empty(t, got)
+}
+
 func TestFetchJobsForRuns_AbortsOnCancelledContext(t *testing.T) {
 	t.Parallel()
 	now := time.Now()
@@ -1438,7 +1482,7 @@ func TestJobSampleTargets(t *testing.T) {
 	}{
 		{0.10, 50, 20},
 		{0.05, 100, 40},
-		{0.30, 20, 10}, // clamped floors
+		{0.30, 20, 10},  // clamped floors
 		{0.01, 200, 80}, // clamped ceiling
 	} {
 		major, minor := JobSampleTargets(tc.margin)
@@ -1562,8 +1606,8 @@ func TestDetectFlakyJobs_SameSHAAndTransitions(t *testing.T) {
 			CreatedAt: created, StartedAt: created,
 			Jobs: []JobData{{
 				ID: int64(1000 + i), Name: "suite", Conclusion: conclusion,
-				URL:         fmt.Sprintf("https://github.com/o/r/actions/runs/%d/job/1", i+1),
-				StartedAt:   created, CompletedAt: created.Add(time.Minute), Duration: 60_000,
+				URL:       fmt.Sprintf("https://github.com/o/r/actions/runs/%d/job/1", i+1),
+				StartedAt: created, CompletedAt: created.Add(time.Minute), Duration: 60_000,
 			}},
 		}
 	}

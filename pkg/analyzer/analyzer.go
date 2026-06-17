@@ -123,6 +123,9 @@ func AnalyzeURLs(ctx context.Context, urls []string, client githubapi.GitHubProv
 		if result == nil {
 			continue
 		}
+		// Carry the fetched runs so callers can seed the local store with the
+		// completed ones. Shared slice (no copy); not used for rendering.
+		result.RawRuns = rawData.Runs
 		urlResults = append(urlResults, *result)
 		allTraceEvents = append(allTraceEvents, result.TraceEvents...)
 		allJobStartTimes = append(allJobStartTimes, result.JobStartTimes...)

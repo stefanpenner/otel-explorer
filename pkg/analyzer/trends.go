@@ -628,6 +628,31 @@ func ConvertRuns(runs []githubapi.WorkflowRun) []RunData {
 	return runData
 }
 
+// CollectCompletedRunData converts the completed runs in `runs` to store-ready
+// RunData and fetches their job detail, so a normal analysis can seed the local
+// store with the same records `ote sync` would (job fetches are served from the
+// HTTP cache the analysis already populated). In-progress and queued runs are
+// skipped: their timings are not yet final and would pollute the typical-run
+// baseline. Returns nil when nothing is completed, without touching the client.
+func CollectCompletedRunData(ctx context.Context, client githubapi.GitHubProvider, runs []githubapi.WorkflowRun, reporter ProgressReporter) []RunData {
+	var completed []githubapi.WorkflowRun
+	for _, run := range runs {
+		if run.Status == "completed" {
+			completed = append(completed, run)
+		}
+	}
+	if len(completed) == 0 {
+		return nil
+	}
+	runData := ConvertRuns(completed)
+	indices := make([]int, len(completed))
+	for i := range completed {
+		indices[i] = i
+	}
+	_, _ = fetchJobsForRuns(ctx, client, runData, completed, indices, reporter)
+	return runData
+}
+
 // fetchJobsForRuns fetches job details for runs at the given indices.
 // It returns the number of runs whose job details were successfully fetched;
 // individual fetch errors are skipped, but a cancelled/expired context aborts.

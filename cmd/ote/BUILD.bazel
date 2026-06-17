@@ -40,6 +40,16 @@ go_binary(
 
 go_test(
     name = "ote_test",
-    srcs = ["args_test.go"],
+    srcs = [
+        "args_test.go",
+        "persist_test.go",
+    ],
     embed = [":ote_lib"],
+    deps = [
+        "//pkg/analyzer",
+        "//pkg/githubapi",
+        "//pkg/store",
+        "@com_github_stretchr_testify//assert",
+        "@com_github_stretchr_testify//require",
+    ],
 )

@@ -3,6 +3,7 @@ package analyzer
 import (
 	"sort"
 
+	"github.com/stefanpenner/otel-explorer/pkg/githubapi"
 	"github.com/stefanpenner/otel-explorer/pkg/utils"
 )
 
@@ -123,6 +124,10 @@ type URLResult struct {
 	CommitPushedAtMs       *int64
 	AllCommitRunsCount     int
 	AllCommitRunsComputeMs int64
+	// RawRuns are the workflow runs this analysis fetched, shared (not copied)
+	// from the fetch stage. Callers use them to seed the local store with
+	// completed runs (see CollectCompletedRunData); not used for rendering.
+	RawRuns []githubapi.WorkflowRun
 }
 
 type TraceEvent struct {
