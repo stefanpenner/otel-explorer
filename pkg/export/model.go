@@ -22,6 +22,7 @@ type Report struct {
 	SchemaVersion string       `json:"schema_version"`
 	Kind          string       `json:"kind"`
 	Meta          Meta         `json:"meta"`
+	Highlights    []Insight    `json:"highlights,omitempty"`
 	Run           *RunReport   `json:"run,omitempty"`
 	Trends        *TrendReport `json:"trends,omitempty"`
 }

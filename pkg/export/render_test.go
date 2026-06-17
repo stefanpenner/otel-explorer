@@ -48,6 +48,11 @@ func sampleTrendReport() *Report {
 			Typical: []TypicalWorkflow{{Name: "CI", Jobs: []TypicalJob{
 				{Name: "build", Duration: Quantiles{P50: 120, P95: 200}, SuccessRatePct: 99},
 			}}},
+			DailyDuration: []DailyPoint{
+				{Date: "2026-06-15", Value: 290, Count: 12},
+				{Date: "2026-06-16", Value: 305, Count: 10},
+				{Date: "2026-06-17", Value: 280, Count: 14},
+			},
 		},
 	}
 }
@@ -77,10 +82,15 @@ func TestRenderXLSX_OpensWithExpectedSheetsAndCells(t *testing.T) {
 	defer f.Close()
 
 	sheets := f.GetSheetList()
-	assert.Contains(t, sheets, "Summary")
+	assert.Equal(t, "Overview", sheets[0], "dashboard Overview is the first sheet")
 	assert.Contains(t, sheets, "Jobs")
 	assert.Contains(t, sheets, "Steps")
 	assert.NotContains(t, sheets, "Sheet1", "default sheet should be renamed, not left empty")
+
+	// Overview carries KPI cards + a key-findings block.
+	overview := cellGrid(t, f, "Overview")
+	assert.Contains(t, overview, "Job success", "KPI card label present")
+	assert.Contains(t, overview, "Key findings")
 
 	// Header + a data cell on the Jobs sheet.
 	h, _ := f.GetCellValue("Jobs", "C1")
@@ -97,7 +107,14 @@ func TestRenderXLSX_OpensWithExpectedSheetsAndCells(t *testing.T) {
 	dur, _ := f.GetCellValue("Jobs", "F2")
 	assert.Equal(t, "3", dur, "3000ms → 3 sec")
 
-	// Unknown job success rate renders as the em dash, not a misleading 0%.
+	// Data bars decorate the duration column (world-class visual).
+	cf, _ := f.GetConditionalFormats("Jobs")
+	assert.NotEmpty(t, cf, "Jobs sheet has conditional formatting (data bars)")
+	// Failed job rows are red-filled (not default style id 0).
+	failStyle, _ := f.GetCellStyle("Jobs", "E3") // row 3 = the failing "test" job, Conclusion col
+	assert.NotZero(t, failStyle, "failed conclusion cell is styled (red fill)")
+
+	// Unknown job success rate renders as the em dash KPI, not a misleading 0%.
 	rep := sampleRunReport()
 	rep.Run.Summary.JobSuccessRatePct = nil
 	var buf2 bytes.Buffer
@@ -105,15 +122,7 @@ func TestRenderXLSX_OpensWithExpectedSheetsAndCells(t *testing.T) {
 	f2, err := excelize.OpenReader(&buf2)
 	require.NoError(t, err)
 	defer f2.Close()
-	// Summary sheet is Metric/Value rows; find the "Job success rate" row value.
-	found := ""
-	rows, _ := f2.GetRows("Summary")
-	for _, r := range rows {
-		if len(r) >= 2 && r[0] == "Job success rate" {
-			found = r[1]
-		}
-	}
-	assert.Equal(t, "—", found, "unknown rate shows em dash, not 0%")
+	assert.Contains(t, cellGrid(t, f2, "Overview"), "—", "unknown rate shows em dash, not 0%")
 }
 
 func TestRenderXLSX_Trends(t *testing.T) {
@@ -123,9 +132,31 @@ func TestRenderXLSX_Trends(t *testing.T) {
 	require.NoError(t, err)
 	defer f.Close()
 	sheets := f.GetSheetList()
-	assert.Contains(t, sheets, "Summary")
+	assert.Equal(t, "Overview", sheets[0])
 	assert.Contains(t, sheets, "Typical Run")
 	assert.Contains(t, sheets, "Flaky Jobs")
+	assert.Contains(t, sheets, "Daily", "daily series sheet with trend chart")
+
+	// Flake % column carries a color-scale conditional format. (The Daily line
+	// chart is validated by RenderXLSX returning no error — AddChart failures
+	// propagate.)
+	cf, _ := f.GetConditionalFormats("Flaky Jobs")
+	assert.NotEmpty(t, cf, "Flaky Jobs has a color-scale conditional format")
+}
+
+// cellGrid flattens a sheet's cells into one string for content assertions.
+func cellGrid(t *testing.T, f *excelize.File, sheet string) string {
+	t.Helper()
+	rows, err := f.GetRows(sheet)
+	require.NoError(t, err)
+	var sb strings.Builder
+	for _, r := range rows {
+		for _, c := range r {
+			sb.WriteString(c)
+			sb.WriteByte('\n')
+		}
+	}
+	return sb.String()
 }
 
 func TestRenderTrends_AllFormatsCarryKeyContent(t *testing.T) {
@@ -138,9 +169,15 @@ func TestRenderTrends_AllFormatsCarryKeyContent(t *testing.T) {
 
 	var hbuf bytes.Buffer
 	require.NoError(t, RenderHTML(&hbuf, rep))
-	assert.Contains(t, hbuf.String(), "CI Trends")
-	assert.Contains(t, hbuf.String(), "Flakiest jobs")
-	assert.Contains(t, hbuf.String(), "Typical run · CI")
+	html := hbuf.String()
+	assert.Contains(t, html, "CI Trends")
+	assert.Contains(t, html, "Flakiest jobs")
+	assert.Contains(t, html, "Typical run · CI")
+	// World-class: KPI cards, key findings, and an inline SVG trend chart.
+	assert.Contains(t, html, `class="kpi`)
+	assert.Contains(t, html, "Key findings")
+	assert.Contains(t, html, "<svg")
+	assert.Contains(t, html, `class="area"`)
 
 	var dbuf bytes.Buffer
 	require.NoError(t, RenderDOCX(&dbuf, rep))
@@ -172,9 +209,11 @@ func TestRenderDOCX_IsValidZipWithContent(t *testing.T) {
 	var buf bytes.Buffer
 	require.NoError(t, RenderDOCX(&buf, sampleRunReport()))
 
-	// A .docx is a zip; word/document.xml must contain our text.
+	// A .docx is a zip; word/document.xml must contain our structure.
 	doc := docXML(t, &buf)
 	assert.Contains(t, doc, "CI Run Analysis")
+	assert.Contains(t, doc, "Executive summary")
+	assert.Contains(t, doc, "Recommendations") // sample has a failing job → a rec
 	assert.Contains(t, doc, "build")
 	assert.Contains(t, doc, "Slowest jobs")
 }
@@ -189,6 +228,12 @@ func TestRenderHTML_WellFormedAndEscaped(t *testing.T) {
 	assert.True(t, strings.HasPrefix(out, "<!DOCTYPE html>"))
 	assert.Contains(t, out, "<title>CI Run Analysis — o/r</title>")
 	assert.Contains(t, out, "Slowest jobs")
+	// World-class structure: KPI cards, key-findings callout.
+	assert.Contains(t, out, `class="kpi`)
+	assert.Contains(t, out, "Key findings")
+	assert.Contains(t, out, `class="finding`)
+	// Failed job rows are color-coded.
+	assert.Contains(t, out, `<tr class="bad">`)
 	// html/template must escape injected content.
 	assert.NotContains(t, out, "<script>")
 	assert.Contains(t, out, "&lt;script&gt;")

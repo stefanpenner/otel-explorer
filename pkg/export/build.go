@@ -82,12 +82,14 @@ func BuildRunReport(results []analyzer.URLResult, spanRuns []analyzer.SpanRun, c
 		}
 	}
 
-	return &Report{
+	rep := &Report{
 		SchemaVersion: SchemaVersion,
 		Kind:          KindRunAnalysis,
 		Meta:          Meta{Tool: "ote", GeneratedAt: generatedAt, Repo: repo},
 		Run:           rr,
 	}
+	rep.Highlights = Highlights(rep)
+	return rep
 }
 
 func runFromURLResult(res analyzer.URLResult) Run {
@@ -268,12 +270,14 @@ func BuildTrendReport(a *analyzer.TrendAnalysis, generatedAt string) *Report {
 		})
 	}
 
-	return &Report{
+	rep := &Report{
 		SchemaVersion: SchemaVersion,
 		Kind:          KindTrends,
 		Meta:          Meta{Tool: "ote", GeneratedAt: generatedAt, Repo: a.Owner + "/" + a.Repo},
 		Trends:        tr,
 	}
+	rep.Highlights = Highlights(rep)
+	return rep
 }
 
 func quant(q analyzer.Quantiles) Quantiles {

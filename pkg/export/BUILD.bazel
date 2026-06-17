@@ -5,11 +5,14 @@ go_library(
     srcs = [
         "build.go",
         "helpers.go",
+        "insights.go",
         "model.go",
         "render_docx.go",
         "render_html.go",
         "render_json.go",
         "render_xlsx.go",
+        "render_xlsx_styles.go",
+        "view.go",
     ],
     importpath = "github.com/stefanpenner/otel-explorer/pkg/export",
     visibility = ["//visibility:public"],
@@ -26,6 +29,7 @@ go_test(
     srcs = [
         "build_test.go",
         "golden_test.go",
+        "insights_test.go",
         "render_test.go",
     ],
     embed = [":export"],
