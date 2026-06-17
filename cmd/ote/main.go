@@ -1015,8 +1015,8 @@ func main() {
 		}
 	}
 
-	// 6. Combine all spans
-	spans := append(ghaSpans, traceSpans...)
+	// 6. Combine all spans, collapsing API/runner duplicates (runner wins)
+	spans := analyzer.DedupeRunnerSpans(append(ghaSpans, traceSpans...))
 	// Update global time bounds from trace spans
 	for _, s := range traceSpans {
 		startMs := s.StartTime().UnixMilli()

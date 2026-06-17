@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stefanpenner/otel-explorer/pkg/enrichment"
 	"github.com/stefanpenner/otel-explorer/pkg/githubapi"
 	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -61,35 +61,22 @@ func TestRunnerSpanDedup(t *testing.T) {
 		},
 	})
 
-	roots := BuildTreeFromSpans(builder.Spans(), time.Time{}, time.Time{}, &enrichment.GHAEnricher{})
+	deduped := DedupeRunnerSpans(builder.Spans())
 
-	// Collect every node in the tree keyed by span ID.
-	var all []*TreeNode
-	var walk func(n *TreeNode)
-	walk = func(n *TreeNode) {
-		all = append(all, n)
-		for _, c := range n.Children {
-			walk(c)
-		}
-	}
-	for _, r := range roots {
-		walk(r)
-	}
-
-	var matches []*TreeNode
-	for _, n := range all {
-		if n.SpanID == stepSID.String() {
-			matches = append(matches, n)
+	var matches []sdktrace.ReadOnlySpan
+	for _, s := range deduped {
+		if s.SpanContext().SpanID() == stepSID {
+			matches = append(matches, s)
 		}
 	}
 
 	if len(matches) != 1 {
-		t.Fatalf("expected exactly 1 step node after dedup, got %d", len(matches))
+		t.Fatalf("expected exactly 1 step span after dedup, got %d", len(matches))
 	}
-	if got := matches[0].Attrs["source"]; got != "runner" {
-		t.Errorf("expected the runner span to win dedup, got source=%q", got)
+	if !spanIsRunner(matches[0]) {
+		t.Errorf("expected the runner span to win dedup")
 	}
-	if !matches[0].EndTime.Equal(runnerEnd) {
-		t.Errorf("expected runner's precise EndTime to survive, got %v", matches[0].EndTime)
+	if !matches[0].EndTime().Equal(runnerEnd) {
+		t.Errorf("expected runner's precise EndTime to survive, got %v", matches[0].EndTime())
 	}
 }
