@@ -80,6 +80,36 @@ func TestParseArgs(t *testing.T) {
 			want:       config{urls: []string{"url"}, otelGRPCEndpoint: "host:9999"},
 		},
 		{
+			name:       "--output=json",
+			args:       []string{"url", "--output=json"},
+			isTerminal: false,
+			want:       config{urls: []string{"url"}, outputFormat: "json"},
+		},
+		{
+			name:       "--output=xlsx with --out",
+			args:       []string{"url", "--output=xlsx", "--out=report.xlsx"},
+			isTerminal: false,
+			want:       config{urls: []string{"url"}, outputFormat: "xlsx", outFile: "report.xlsx"},
+		},
+		{
+			name:       "--output=doc",
+			args:       []string{"url", "--output=doc"},
+			isTerminal: false,
+			want:       config{urls: []string{"url"}, outputFormat: "doc"},
+		},
+		{
+			name:       "--output=html",
+			args:       []string{"url", "--output=html"},
+			isTerminal: false,
+			want:       config{urls: []string{"url"}, outputFormat: "html"},
+		},
+		{
+			name:       "invalid --output returns error",
+			args:       []string{"url", "--output=pdf"},
+			isTerminal: false,
+			wantErr:    true,
+		},
+		{
 			name:       "--window=2h",
 			args:       []string{"url", "--window=2h"},
 			isTerminal: false,

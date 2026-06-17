@@ -16,6 +16,7 @@ import (
 	"github.com/stefanpenner/otel-explorer/pkg/analyzer"
 	"github.com/stefanpenner/otel-explorer/pkg/core"
 	"github.com/stefanpenner/otel-explorer/pkg/enrichment"
+	"github.com/stefanpenner/otel-explorer/pkg/export"
 	otelexport "github.com/stefanpenner/otel-explorer/pkg/export/otel"
 	perfettoexport "github.com/stefanpenner/otel-explorer/pkg/export/perfetto"
 	"github.com/stefanpenner/otel-explorer/pkg/export/terminal"
@@ -104,7 +105,8 @@ type config struct {
 	otelStdout       bool
 	otelGRPCEndpoint string
 	tuiMode          bool
-	outputFormat     string // "stdout" or "markdown"
+	outputFormat     string // stdout, markdown, otel, json, xlsx, doc, html
+	outFile          string // destination for binary formats (xlsx/doc); default chosen per format
 	clearCache       bool
 	window           time.Duration
 	showHelp         bool
@@ -229,9 +231,13 @@ func parseArgs(args []string, terminal bool) (config, error) {
 		}
 		if strings.HasPrefix(arg, "--output=") {
 			cfg.outputFormat = strings.TrimPrefix(arg, "--output=")
-			if cfg.outputFormat != "stdout" && cfg.outputFormat != "markdown" && cfg.outputFormat != "otel" {
-				return cfg, fmt.Errorf("invalid --output value: %s (must be 'stdout', 'markdown', or 'otel')", cfg.outputFormat)
+			if !validOutputFormat(cfg.outputFormat) {
+				return cfg, fmt.Errorf("invalid --output value: %s (must be 'stdout', 'markdown', 'otel', 'json', 'xlsx', 'doc', or 'html')", cfg.outputFormat)
 			}
+			continue
+		}
+		if strings.HasPrefix(arg, "--out=") {
+			cfg.outFile = strings.TrimPrefix(arg, "--out=")
 			continue
 		}
 		if strings.HasPrefix(arg, "--trace=") {
@@ -299,9 +305,13 @@ func parseArgs(args []string, terminal bool) (config, error) {
 		}
 		if strings.HasPrefix(arg, "--format=") {
 			cfg.trendsFormat = strings.TrimPrefix(arg, "--format=")
-			if cfg.trendsFormat != "terminal" && cfg.trendsFormat != "json" {
-				return cfg, fmt.Errorf("invalid --format value: %s (must be 'terminal' or 'json')", cfg.trendsFormat)
+			if !validTrendsFormat(cfg.trendsFormat) {
+				return cfg, fmt.Errorf("invalid --format value: %s (must be 'terminal', 'json', 'xlsx', 'doc', or 'html')", cfg.trendsFormat)
 			}
+			continue
+		}
+		if strings.HasPrefix(arg, "--out=") {
+			cfg.outFile = strings.TrimPrefix(arg, "--out=")
 			continue
 		}
 		if strings.HasPrefix(arg, "--branch=") {
@@ -455,7 +465,7 @@ func main() {
 	// Handle trends mode
 	if cfg.trendsMode {
 		if cfg.trendsRepo == "" {
-			printErrorMsg("Trends mode requires a repository in format 'owner/repo'\n\n  Usage: ote trends owner/repo [--days=30] [--format=terminal|json]\n\n  Run 'ote --help' for more information.")
+			printErrorMsg("Trends mode requires a repository in format 'owner/repo'\n\n  Usage: ote trends owner/repo [--days=30] [--format=terminal|json|xlsx|doc|html]\n\n  Run 'ote --help' for more information.")
 			os.Exit(1)
 		}
 
@@ -510,7 +520,13 @@ func main() {
 		// Output results go to stdout (the spinner above stays on stderr) so
 		// `ote trends owner/repo --format=json | jq .` and `> out.json` work.
 		utils.SetColorEnabled(colorsEnabledFor(os.Stdout))
-		if err := output.OutputTrends(os.Stdout, analysis, cfg.trendsFormat); err != nil {
+		if isExportFormat(cfg.trendsFormat) {
+			rep := export.BuildTrendReport(analysis, generatedAt())
+			if err := emitReport(rep, cfg.trendsFormat, cfg.outFile); err != nil {
+				printError(err, "output failed")
+				os.Exit(1)
+			}
+		} else if err := output.OutputTrends(os.Stdout, analysis, cfg.trendsFormat); err != nil {
 			printError(err, "output failed")
 			os.Exit(1)
 		}
@@ -1068,6 +1084,12 @@ func main() {
 	}
 
 	switch cfg.outputFormat {
+	case "json", "xlsx", "doc", "html":
+		rep := export.BuildRunReport(results, combined, globalEarliest, globalLatest, generatedAt())
+		if err := emitReport(rep, cfg.outputFormat, cfg.outFile); err != nil {
+			printError(err, "writing report")
+			hadError = true
+		}
 	case "otel":
 		exporter, err := otelexport.NewStdoutExporter(os.Stdout)
 		if err != nil {
@@ -1284,7 +1306,8 @@ func printUsage() {
 	fmt.Println("\nFlags:")
 	fmt.Println("  --tui                     Force interactive TUI mode (default when terminal is available)")
 	fmt.Println("  --no-tui                  Disable interactive TUI, use CLI output instead")
-	fmt.Println("  --output=<format>         Output format: 'stdout', 'markdown', or 'otel' (implies --no-tui)")
+	fmt.Println("  --output=<format>         Output format: stdout, markdown, otel, json, xlsx, doc, html (implies --no-tui)")
+	fmt.Println("  --out=<file>              Destination file for binary formats (xlsx/doc); default: ote-report.<ext>")
 	fmt.Println("  --perfetto=<file.pftrace> Save trace for Perfetto.dev analysis")
 	fmt.Println("  --open-in-perfetto        Automatically open the generated trace in Perfetto UI")
 	fmt.Println("  --otel                    Write OTel spans as JSON to stdout")
@@ -1307,7 +1330,7 @@ func printUsage() {
 	fmt.Println("  help, --help, -h          Show this help message")
 	fmt.Println("\nTrends Mode Flags:")
 	fmt.Println("  --days=<n>                Number of days to analyze (default: 30)")
-	fmt.Println("  --format=<format>         Output format: 'terminal' or 'json' (default: terminal)")
+	fmt.Println("  --format=<format>         Output format: terminal, json, xlsx, doc, html (default: terminal)")
 	fmt.Println("  --branch=<name>           Filter by branch name (e.g., main, master)")
 	fmt.Println("  --workflow=<file>         Filter by workflow file name (e.g., post-merge.yaml)")
 	fmt.Println("  --no-sample               Fetch job details for all runs (disables statistical sampling)")
@@ -1328,9 +1351,13 @@ func printUsage() {
 	fmt.Println("  ote https://github.com/owner/repo/pull/123 --no-tui")
 	fmt.Println("  ote https://github.com/owner/repo/pull/123 --output=stdout")
 	fmt.Println("  ote https://github.com/owner/repo/pull/123 --output=markdown > report.md")
+	fmt.Println("  ote https://github.com/owner/repo/pull/123 --output=json | jq '.run.runs[].jobs[]'")
+	fmt.Println("  ote https://github.com/owner/repo/pull/123 --output=xlsx --out=run.xlsx")
 	fmt.Println("  ote sync owner/repo --days=7      # mirror run/job history into the local store")
 	fmt.Println("  ote trends owner/repo")
 	fmt.Println("  ote trends owner/repo --days=7 --format=json")
+	fmt.Println("  ote trends owner/repo --format=xlsx --out=trends.xlsx")
+	fmt.Println("  ote trends owner/repo --format=html > trends.html")
 	fmt.Println("  ote trends owner/repo --branch=main --workflow=post-merge.yaml")
 	fmt.Println("  ote trace.json                      # auto-detects OTel or Chrome Tracing format")
 	fmt.Println("  ote chrome-profile.json spans.json   # multiple trace files as args")
