@@ -24,6 +24,7 @@ const cacheVersion = "v4"
 type CachedTransport struct {
 	Base     http.RoundTripper
 	CacheDir string
+	Stats    *apiStats // optional; counts requests served from cache without a network call
 }
 
 func NewCachedTransport(base http.RoundTripper, cacheDir string) *CachedTransport {
@@ -49,6 +50,9 @@ func (t *CachedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// we can revalidate it conditionally instead of refetching the full body.
 	stored, fresh := t.readFromCache(cachePath, req)
 	if fresh {
+		if t.Stats != nil {
+			t.Stats.cacheHits.Add(1)
+		}
 		return stored, nil
 	}
 

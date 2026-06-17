@@ -27,6 +27,7 @@ go_test(
         "ids_test.go",
         "logs_test.go",
         "otel_test.go",
+        "stats_test.go",
     ],
     embed = [":githubapi"],
     deps = [

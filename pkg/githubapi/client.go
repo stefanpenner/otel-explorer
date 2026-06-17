@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -58,6 +59,57 @@ type Client struct {
 	httpClient *http.Client
 	semaphore  chan struct{}
 	limiter    *rateLimiter
+	stats      *apiStats
+}
+
+// apiStats counts GitHub API traffic for the run so the UI can show progress
+// and rate-limit impact. networkRequests counts requests that reached GitHub
+// (cache misses and conditional revalidations); cacheHits counts requests
+// served entirely from the local cache with no network call.
+type apiStats struct {
+	networkRequests atomic.Int64
+	cacheHits       atomic.Int64
+}
+
+// RequestStats is a point-in-time snapshot of API traffic and rate-limit state.
+type RequestStats struct {
+	NetworkRequests    int
+	CacheHits          int
+	RateLimitRemaining int
+	RateLimitReset     time.Time
+	RateLimitKnown     bool // false until a GitHub response has reported the limit
+}
+
+// RequestStats returns the running API-traffic snapshot for this client.
+func (c *Client) RequestStats() RequestStats {
+	s := RequestStats{}
+	if c.stats != nil {
+		s.NetworkRequests = int(c.stats.networkRequests.Load())
+		s.CacheHits = int(c.stats.cacheHits.Load())
+	}
+	if c.limiter != nil {
+		s.RateLimitRemaining, s.RateLimitReset, s.RateLimitKnown = c.limiter.snapshot()
+	}
+	return s
+}
+
+// Summary renders a one-line human summary for stderr.
+func (s RequestStats) Summary() string {
+	plural := "s"
+	if s.NetworkRequests == 1 {
+		plural = ""
+	}
+	out := fmt.Sprintf("GitHub API: %d request%s", s.NetworkRequests, plural)
+	if s.CacheHits > 0 {
+		out += fmt.Sprintf(" · %d served from cache", s.CacheHits)
+	}
+	if s.RateLimitKnown {
+		out += fmt.Sprintf(" · %d rate-limit remaining", s.RateLimitRemaining)
+		if !s.RateLimitReset.IsZero() {
+			out += fmt.Sprintf(" (resets %s)", s.RateLimitReset.Local().Format("15:04"))
+		}
+	}
+	return out
 }
 
 type Option func(*Client)
@@ -87,6 +139,7 @@ func NewClient(context Context, opts ...Option) *Client {
 	client := &Client{
 		context: context,
 		limiter: &rateLimiter{},
+		stats:   &apiStats{},
 	}
 	for _, opt := range opts {
 		opt(client)
@@ -111,11 +164,14 @@ func NewClient(context Context, opts ...Option) *Client {
 			Base:      base,
 			Limiter:   client.limiter,
 			Semaphore: client.semaphore,
+			Stats:     client.stats,
 		}
 
 		// Add caching
 		if client.context.CacheDir != "" {
-			base = NewCachedTransport(base, client.context.CacheDir)
+			ct := NewCachedTransport(base, client.context.CacheDir)
+			ct.Stats = client.stats
+			base = ct
 		}
 
 		// Add OTel instrumentation
@@ -322,6 +378,14 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 	}
 }
 
+// snapshot reports the last-seen rate-limit state. known is false until a
+// GitHub response has populated it (reset stays zero before then).
+func (r *rateLimiter) snapshot() (remaining int, reset time.Time, known bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.remaining, r.resetTime, !r.resetTime.IsZero()
+}
+
 func (r *rateLimiter) updateFromHeaders(headers http.Header) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -341,9 +405,15 @@ type RateLimitedTransport struct {
 	Base      http.RoundTripper
 	Limiter   *rateLimiter
 	Semaphore chan struct{}
+	Stats     *apiStats
 }
 
 func (t *RateLimitedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// This transport sits behind the cache, so reaching it means the request
+	// is going to GitHub (a cache miss or a conditional revalidation).
+	if t.Stats != nil {
+		t.Stats.networkRequests.Add(1)
+	}
 	t.Semaphore <- struct{}{}
 	defer func() { <-t.Semaphore }()
 

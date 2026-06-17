@@ -92,6 +92,25 @@ func printErrorMsg(message string) {
 	fmt.Fprintf(os.Stderr, "%sError: %s%s\n", colorRed, message, colorReset)
 }
 
+// wireAPIMeter feeds the client's live API-request count and remaining rate
+// limit into the progress spinner.
+func wireAPIMeter(p *tui.Progress, c *githubapi.Client) {
+	p.SetStatsProvider(func() (requests, remaining int) {
+		s := c.RequestStats()
+		remaining = -1
+		if s.RateLimitKnown {
+			remaining = s.RateLimitRemaining
+		}
+		return s.NetworkRequests, remaining
+	})
+}
+
+// printAPIMeter writes the final API-traffic summary to stderr, leaving stdout
+// clean for analysis output / JSON / pipes.
+func printAPIMeter(c *githubapi.Client) {
+	fmt.Fprintln(os.Stderr, c.RequestStats().Summary())
+}
+
 type config struct {
 	urls             []string
 	traceFiles       []string // --trace=<file.json> OTel trace files
@@ -511,6 +530,7 @@ func main() {
 			// Setup progress spinner for trends mode
 			progress := tui.NewProgress(1, os.Stderr)
 			progress.Start()
+			wireAPIMeter(progress, client)
 			progress.StartURL(0, cfg.trendsRepo)
 
 			// Perform trend analysis
@@ -530,6 +550,8 @@ func main() {
 				os.Exit(1)
 			}
 		}
+
+		printAPIMeter(client)
 
 		// Output results go to stdout (the spinner above stays on stderr) so
 		// `ote trends owner/repo --format=json | jq .` and `> out.json` work.
@@ -893,6 +915,7 @@ func main() {
 		ghClient = client
 		progress := tui.NewProgress(len(args), os.Stderr)
 		progress.Start()
+		wireAPIMeter(progress, client)
 
 		ingestor := polling.NewPollingIngestor(client, args, progress, analyzer.AnalyzeOptions{
 			Window:      cfg.window,
@@ -904,6 +927,7 @@ func main() {
 
 		progress.Finish()
 		progress.Wait()
+		printAPIMeter(client)
 
 		if err != nil {
 			printError(err, "ingestion failed")

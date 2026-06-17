@@ -49,6 +49,10 @@ type setDetailMsg struct {
 
 type processRunMsg struct{}
 
+type setStatsMsg struct {
+	f func() (requests, remaining int)
+}
+
 type finishMsg struct{}
 
 type progressModel struct {
@@ -61,6 +65,7 @@ type progressModel struct {
 	detail         string
 	done           bool
 	spinner        spinner.Model
+	statsFunc      func() (requests, remaining int)
 }
 
 func NewProgress(totalURLs int, output io.Writer) *Progress {
@@ -109,6 +114,13 @@ func (p *Progress) ProcessRun() {
 	p.program.Send(processRunMsg{})
 }
 
+// SetStatsProvider registers a callback the spinner polls each frame to show a
+// live API-request count and remaining rate limit. remaining < 0 means unknown
+// (not yet reported by GitHub) and is omitted from the display.
+func (p *Progress) SetStatsProvider(f func() (requests, remaining int)) {
+	p.program.Send(setStatsMsg{f: f})
+}
+
 func (p *Progress) Finish() {
 	p.program.Send(finishMsg{})
 	p.once.Do(func() {
@@ -139,6 +151,9 @@ func (m progressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case processRunMsg:
 		m.currentRun++
 		return m, nil
+	case setStatsMsg:
+		m.statsFunc = typed.f
+		return m, nil
 	case finishMsg:
 		m.done = true
 		return m, tea.Quit
@@ -156,7 +171,17 @@ func (m progressModel) View() string {
 	}
 
 	header := headerStyle.Render(fmt.Sprintf("🚀 OTel Analyzer (%d/%d URLs)", m.currentURL, m.totalURLs))
-	
+
+	if m.statsFunc != nil {
+		if reqs, remaining := m.statsFunc(); reqs > 0 {
+			api := fmt.Sprintf(" · %d API reqs", reqs)
+			if remaining >= 0 {
+				api += fmt.Sprintf(" · %d left", remaining)
+			}
+			header += infoStyle.Render(api)
+		}
+	}
+
 	runProgress := ""
 	if m.currentURLRuns > 0 {
 		runProgress = infoStyle.Render(fmt.Sprintf(" [%d/%d runs]", m.currentRun, m.currentURLRuns))
