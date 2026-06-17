@@ -18,11 +18,11 @@ import (
 func TestRunnerSpanDedup(t *testing.T) {
 	var runID int64 = 99999
 	var attempt int64 = 1
-	jobName, stepName := "build", "Run tests"
+	jobName, stepName, stepNumber := "build", "Run tests", 3
 
 	tid := githubapi.NewTraceID(runID, attempt)
 	jobSID := githubapi.NewJobSpanID(runID, attempt, jobName)
-	stepSID := githubapi.NewStepSpanID(runID, attempt, jobName, stepName)
+	stepSID := githubapi.NewStepSpanID(runID, attempt, jobName, stepNumber, stepName)
 
 	parentSC := trace.NewSpanContext(trace.SpanContextConfig{
 		TraceID: tid, SpanID: jobSID, TraceFlags: trace.FlagsSampled,

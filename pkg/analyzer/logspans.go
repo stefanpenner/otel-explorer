@@ -64,7 +64,7 @@ func IngestStepLogs(
 			}
 
 			// Parent is the step span (shared runner ID contract)
-			stepSID := githubapi.NewStepSpanID(runID, runAttempt, job.Name, step.Name)
+			stepSID := githubapi.NewStepSpanID(runID, runAttempt, job.Name, step.Number, step.Name)
 			stepSC := oteltrace.NewSpanContext(oteltrace.SpanContextConfig{
 				TraceID:    traceID,
 				SpanID:     stepSID,

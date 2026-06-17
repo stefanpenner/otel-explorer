@@ -36,8 +36,9 @@ func NewSpanIDFromString(s string) trace.SpanID {
 // the GitHub Actions runner also has (run id, run attempt, job display name), so
 // runner-emitted OTLP job spans merge with API-reconstructed ones.
 //
-// Shared contract (mirrored in the runner's OTelTracer.cs):
-//   md5("job-{runID}-{runAttempt}-{jobName}")[:8]
+// Shared contract (mirrored in the runner's OTelTraceExporter.cs):
+//
+//	md5("job-{runID}-{runAttempt}-{jobName}")[:8]
 func NewJobSpanID(runID int64, runAttempt int64, jobName string) trace.SpanID {
 	if runAttempt == 0 {
 		runAttempt = 1
@@ -46,10 +47,13 @@ func NewJobSpanID(runID int64, runAttempt int64, jobName string) trace.SpanID {
 }
 
 // NewStepSpanID returns a deterministic step SpanID matching the runner contract:
-//   md5("step-{runID}-{runAttempt}-{jobName}-{stepName}")[:8]
-func NewStepSpanID(runID int64, runAttempt int64, jobName string, stepName string) trace.SpanID {
+//
+//	md5("step-{runID}-{runAttempt}-{jobName}-{stepNumber}-{stepName}")[:8]
+//
+// The 1-based step number disambiguates two steps that share a display name.
+func NewStepSpanID(runID int64, runAttempt int64, jobName string, stepNumber int, stepName string) trace.SpanID {
 	if runAttempt == 0 {
 		runAttempt = 1
 	}
-	return NewSpanIDFromString(fmt.Sprintf("step-%d-%d-%s-%s", runID, runAttempt, jobName, stepName))
+	return NewSpanIDFromString(fmt.Sprintf("step-%d-%d-%s-%d-%s", runID, runAttempt, jobName, stepNumber, stepName))
 }

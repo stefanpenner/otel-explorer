@@ -1047,7 +1047,7 @@ func processStep(step githubapi.Step, job githubapi.Job, run githubapi.WorkflowR
 
 	stepURL := fmt.Sprintf("%s#step:%d:1", jobURL, step.Number)
 
-	stepSID := githubapi.NewStepSpanID(run.ID, run.RunAttempt, job.Name, step.Name)
+	stepSID := githubapi.NewStepSpanID(run.ID, run.RunAttempt, job.Name, step.Number, step.Name)
 	stepSC := trace.NewSpanContext(trace.SpanContextConfig{
 		TraceID:    traceID,
 		SpanID:     stepSID,
