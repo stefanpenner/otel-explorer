@@ -23,8 +23,11 @@ go_test(
     name = "githubapi_test",
     srcs = [
         "cache_test.go",
+        "client_test.go",
         "ids_test.go",
+        "logs_test.go",
         "otel_test.go",
+        "stats_test.go",
     ],
     embed = [":githubapi"],
     deps = [

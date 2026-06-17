@@ -48,8 +48,10 @@ func linkName(name string, urls []string, maxVisible int) string {
 	if nameMax < 4 {
 		nameMax = 4
 	}
-	if len(name) > nameMax {
-		name = name[:nameMax-3] + "..."
+	// Truncate on rune boundaries: job names are arbitrary user strings and
+	// byte slicing could split a multi-byte UTF-8 character mid-sequence.
+	if runes := []rune(name); len(runes) > nameMax {
+		name = string(runes[:nameMax-3]) + "..."
 	}
 	return name + suffix
 }
@@ -99,18 +101,24 @@ func OutputTrends(w io.Writer, analysis *analyzer.TrendAnalysis, format string) 
 	if analysis.Sampling.Enabled {
 		jobText := labelStyle.Render("Job details sampled: ") +
 			numStyle.Render(fmt.Sprintf("%d/%d", analysis.Sampling.SampleSize, analysis.Sampling.TotalRuns)) +
-			dimStyle.Render(fmt.Sprintf(" (%.0f%% confidence, ±%.0f%% margin)",
-				analysis.Sampling.Confidence*100, analysis.Sampling.MarginOfError*100))
+			dimStyle.Render(fmt.Sprintf(" (%d workflows, %d/%d obs targets)",
+				analysis.Sampling.WorkflowCount, analysis.Sampling.MajorTarget, analysis.Sampling.MinorTarget))
 		fmt.Fprintln(w, headerLine(jobText))
 	}
-	if analysis.Sampling.Rationale != "" {
-		fmt.Fprintln(w, headerLine(dimStyle.Render(analysis.Sampling.Rationale)))
-	}
+	// The sampling Rationale restates the run count and sample size already
+	// shown above; it is preserved on the struct (for JSON consumers) but not
+	// rendered into the header box to avoid a duplicate sampling line.
 	fmt.Fprintln(w, botBorder)
 
 	// Summary statistics
 	trendSection(w, "Summary Statistics")
 	renderTrendSummary(w, analysis.Summary)
+
+	// Facet comparison (only when --facet was requested)
+	if analysis.Facets != nil && len(analysis.Facets.Rows) > 0 {
+		trendSection(w, "Facet Comparison: "+facetTitle(analysis.Facets.Dimensions))
+		renderFacetComparison(w, analysis.Facets)
+	}
 
 	// Duration trend chart
 	if len(analysis.DurationTrend) > 0 {
@@ -124,10 +132,22 @@ func OutputTrends(w io.Writer, analysis *analyzer.TrendAnalysis, format string) 
 		renderSuccessRateChart(w, analysis.SuccessRateTrend)
 	}
 
+	// Statistically typical run (median Gantt with percentile bands)
+	if analysis.Typical != nil && len(analysis.Typical.Workflows) > 0 {
+		trendSection(w, "Typical Run")
+		renderTypicalRun(w, analysis.Typical)
+	}
+
 	// Top jobs by duration
 	if len(analysis.JobTrends) > 0 {
 		trendSection(w, "Job Performance Summary")
 		renderJobTrends(w, analysis.JobTrends)
+	}
+
+	// Hour-of-day patterns (only present with enough data, e.g. store-backed)
+	if analysis.Hourly != nil {
+		trendSection(w, "Hourly Patterns")
+		renderHourlyPatterns(w, analysis.Hourly)
 	}
 
 	// Queue time analysis
@@ -199,10 +219,103 @@ func renderTrendSummary(w io.Writer, summary analyzer.TrendSummary) {
 		t.Row("Flaky Jobs Detected", warningStyle.Render(fmt.Sprintf("%d", summary.MostFlakyJobsCount)))
 	}
 
+	// Retry burn: compute spent on re-run attempts is pure waste signal.
+	if summary.RerunRuns > 0 {
+		t.Row("Retry Burn", warningStyle.Render(fmt.Sprintf("%d re-runs, %s",
+			summary.RerunRuns, utils.HumanizeTime(float64(summary.RerunComputeMs)/1000.0))))
+	}
+
 	fmt.Fprintln(w, t)
 
 	if summary.TrendDescription != "" {
 		fmt.Fprintf(w, "\n  %s\n", dimStyle.Render(summary.TrendDescription))
+	}
+}
+
+// facetTitle returns a human label for a facet dimension.
+func facetDimLabel(dim analyzer.FacetDimension) string {
+	switch dim {
+	case analyzer.FacetBranch:
+		return "Branch"
+	case analyzer.FacetEvent:
+		return "Event"
+	case analyzer.FacetRunner:
+		return "Runner"
+	default:
+		return string(dim)
+	}
+}
+
+// facetTitle joins the crossed dimension labels, e.g. "Branch × Event".
+func facetTitle(dims []analyzer.FacetDimension) string {
+	labels := make([]string, len(dims))
+	for i, d := range dims {
+		labels[i] = facetDimLabel(d)
+	}
+	return strings.Join(labels, " × ")
+}
+
+// renderFacetComparison prints one compact table comparing the facet buckets,
+// with one column per crossed dimension. Run-level facets (branch, event) show
+// a Flaky column; including runner makes it job-level and shows Avg Queue.
+func renderFacetComparison(w io.Writer, fc *analyzer.FacetComparison) {
+	fmt.Fprintln(w)
+
+	jobLevel := fc.Level == "job"
+	nDims := len(fc.Dimensions)
+	countHeader, lastHeader := "Runs", "Flaky"
+	if jobLevel {
+		countHeader, lastHeader = "Jobs", "Avg Queue"
+		if fc.Estimated {
+			countHeader = "Jobs~" // population estimate from sampled runs
+		}
+	}
+
+	headers := make([]string, 0, nDims+5)
+	for _, d := range fc.Dimensions {
+		headers = append(headers, facetDimLabel(d))
+	}
+	headers = append(headers, countHeader, "Avg", "Median", "Success", lastHeader)
+
+	t := table.New().
+		Border(lipgloss.RoundedBorder()).
+		BorderStyle(borderStyle).
+		StyleFunc(func(row, col int) lipgloss.Style {
+			if row == table.HeaderRow {
+				return labelStyle.Bold(true)
+			}
+			if col < nDims { // dimension key columns: left-aligned
+				return lipgloss.NewStyle()
+			}
+			return lipgloss.NewStyle().Align(lipgloss.Right)
+		}).
+		Headers(headers...)
+
+	for _, r := range fc.Rows {
+		last := fmt.Sprintf("%d", r.FlakyJobs)
+		if jobLevel {
+			last = utils.HumanizeTime(r.AvgQueueSec)
+		}
+		cells := make([]string, 0, nDims+5)
+		cells = append(cells, r.Keys...)
+		cells = append(cells,
+			fmt.Sprintf("%d", r.Count),
+			utils.HumanizeTime(r.AvgDurationSec),
+			utils.HumanizeTime(r.MedianDurationSec),
+			colorForSuccessRate(r.SuccessRatePct).Render(fmt.Sprintf("%.1f%%", r.SuccessRatePct)),
+			last,
+		)
+		t.Row(cells...)
+	}
+
+	fmt.Fprintln(w, t)
+
+	if fc.Estimated {
+		fmt.Fprintf(w, "\n  %s\n", dimStyle.Render("Jobs~ = population estimate extrapolated from sampled runs; durations & rates are sample-based."))
+	}
+
+	if fc.Truncated > 0 {
+		fmt.Fprintf(w, "\n  %s\n", dimStyle.Render(fmt.Sprintf("… and %d more combinations (showing the %d busiest)", fc.Truncated, len(fc.Rows))))
 	}
 }
 
@@ -285,7 +398,7 @@ func renderJobTrends(w io.Writer, trends []analyzer.JobTrend) {
 }
 
 func renderFlakyJobs(w io.Writer, flakyJobs []analyzer.FlakyJob) {
-	fmt.Fprintf(w, "\n  %s Found %d flaky jobs (>10%% failure rate):\n\n",
+	fmt.Fprintf(w, "\n  %s Found %d flaky jobs (>10%% flake rate, or pass+fail on the same commit):\n\n",
 		warningStyle.Render("!"),
 		len(flakyJobs))
 
@@ -301,19 +414,25 @@ func renderFlakyJobs(w io.Writer, flakyJobs []analyzer.FlakyJob) {
 			}
 			return lipgloss.NewStyle().Align(lipgloss.Right)
 		}).
-		Headers("Job Name", "Total Runs", "Failures", "Flake Rate", "Recent (10)")
+		Headers("Job Name", "Runs", "Failures", "Flake Rate", "Score", "Same-SHA", "Recent (10)")
 
 	for _, job := range flakyJobs {
 		flakeRateColor := utils.YellowText
 		if job.FlakeRate > 30 {
 			flakeRateColor = utils.RedText
 		}
+		sameSHA := "-"
+		if job.SameSHAFlakes > 0 {
+			sameSHA = utils.RedText(fmt.Sprintf("%d", job.SameSHAFlakes))
+		}
 
 		t.Row(
-			linkName(job.Name, job.URLs, 48),
+			linkName(job.Name, job.URLs, 44),
 			fmt.Sprintf("%d", job.TotalRuns),
 			fmt.Sprintf("%d", job.FailureCount),
 			flakeRateColor(fmt.Sprintf("%.1f%%", job.FlakeRate)),
+			fmt.Sprintf("%.2f", job.TransitionScore),
+			sameSHA,
 			fmt.Sprintf("%d", job.RecentFailures),
 		)
 	}
@@ -355,6 +474,32 @@ func generateASCIIChart(points []analyzer.DataPoint, width, height int, valueTyp
 
 	var sb strings.Builder
 
+	// Map each column to the data point nearest in time, so days without runs
+	// occupy proportional horizontal space and the first/last date labels
+	// describe a genuinely linear time axis. Points are sorted chronologically.
+	pointForCol := make([]int, width)
+	startTs := points[0].Timestamp.UnixMilli()
+	endTs := points[len(points)-1].Timestamp.UnixMilli()
+	span := float64(endTs - startTs)
+	nearest := 0
+	for col := 0; col < width; col++ {
+		if span <= 0 || width == 1 {
+			// Degenerate time range: fall back to index-based mapping.
+			idx := int(math.Round(float64(col) / math.Max(float64(width-1), 1) * float64(len(points)-1)))
+			if idx >= len(points) {
+				idx = len(points) - 1
+			}
+			pointForCol[col] = idx
+			continue
+		}
+		target := float64(startTs) + float64(col)/float64(width-1)*span
+		for nearest < len(points)-1 &&
+			math.Abs(float64(points[nearest+1].Timestamp.UnixMilli())-target) <= math.Abs(target-float64(points[nearest].Timestamp.UnixMilli())) {
+			nearest++
+		}
+		pointForCol[col] = nearest
+	}
+
 	// Build chart from top to bottom
 	for row := height - 1; row >= 0; row-- {
 		// Calculate value threshold for this row
@@ -366,13 +511,7 @@ func generateASCIIChart(points []analyzer.DataPoint, width, height int, valueTyp
 
 		// Plot points
 		for col := 0; col < width; col++ {
-			// Map column to data point
-			pointIdx := int(math.Round(float64(col) / float64(width-1) * float64(len(points)-1)))
-			if pointIdx >= len(points) {
-				pointIdx = len(points) - 1
-			}
-
-			value := points[pointIdx].Value
+			value := points[pointForCol[col]].Value
 
 			// Determine if we should plot here
 			nextThreshold := minVal + (float64(row+1)/float64(height-1))*(maxVal-minVal)
@@ -497,8 +636,8 @@ func renderRegressions(w io.Writer, regressions []analyzer.JobRegression) {
 	for _, reg := range regressions {
 		t.Row(
 			linkName(reg.Name, reg.URLs, 58),
-			utils.HumanizeTime(reg.OldAvgDuration),
-			utils.HumanizeTime(reg.NewAvgDuration),
+			utils.FormatTrendDuration(reg.OldAvgDuration),
+			utils.FormatTrendDuration(reg.NewAvgDuration),
 			failureStyle.Render(fmt.Sprintf("+%.1f%%", reg.PercentIncrease)),
 		)
 	}
@@ -537,9 +676,11 @@ func renderRegressions(w io.Writer, regressions []analyzer.JobRegression) {
 				labelStyle.Render("Diff:    "),
 				utils.MakeClickableLink(cp.DiffURL, shortSHA(cp.BeforeSHA)+"..."+shortSHA(cp.AfterSHA)))
 		}
+		// cp.Index is the 0-based index of the first post-shift observation;
+		// "observation N of M" is a 1-based ordinal phrase.
 		fmt.Fprintf(w, "     %s  %s\n",
 			labelStyle.Render("Position:"),
-			dimStyle.Render(fmt.Sprintf("observation %d of %d", cp.Index, cp.TotalPoints)))
+			dimStyle.Render(fmt.Sprintf("observation %d of %d", cp.Index+1, cp.TotalPoints)))
 	}
 
 	fmt.Fprintf(w, "\n  %s Investigate these jobs for:\n", subheaderStyle.Render("i"))
@@ -569,8 +710,8 @@ func renderImprovements(w io.Writer, improvements []analyzer.JobImprovement) {
 	for _, imp := range improvements {
 		t.Row(
 			linkName(imp.Name, imp.URLs, 58),
-			utils.HumanizeTime(imp.OldAvgDuration),
-			utils.HumanizeTime(imp.NewAvgDuration),
+			utils.FormatTrendDuration(imp.OldAvgDuration),
+			utils.FormatTrendDuration(imp.NewAvgDuration),
 			successStyle.Render(fmt.Sprintf("-%.1f%%", imp.PercentDecrease)),
 		)
 	}
@@ -609,9 +750,11 @@ func renderImprovements(w io.Writer, improvements []analyzer.JobImprovement) {
 				labelStyle.Render("Diff:    "),
 				utils.MakeClickableLink(cp.DiffURL, shortSHA(cp.BeforeSHA)+"..."+shortSHA(cp.AfterSHA)))
 		}
+		// cp.Index is the 0-based index of the first post-shift observation;
+		// "observation N of M" is a 1-based ordinal phrase.
 		fmt.Fprintf(w, "     %s  %s\n",
 			labelStyle.Render("Position:"),
-			dimStyle.Render(fmt.Sprintf("observation %d of %d", cp.Index, cp.TotalPoints)))
+			dimStyle.Render(fmt.Sprintf("observation %d of %d", cp.Index+1, cp.TotalPoints)))
 	}
 }
 

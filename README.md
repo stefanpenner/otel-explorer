@@ -117,12 +117,37 @@ Trend Direction           Improving (-20.7%)
 Flaky Jobs Detected                          1
 ```
 
-Trend analysis covers success rates, duration percentiles, per-job breakdowns, flaky detection (>10% failure rate), and trend direction. For large repos, it uses stratified temporal sampling to keep API usage reasonable — run-level metrics are always exact, job-level analysis is sampled at 95% confidence / ±10% margin by default.
+Trend analysis covers success rates, duration percentiles, per-job breakdowns, flaky detection (>10% failure rate), and trend direction. Run-level metrics are always exact (run listings are cheap). Job-level detail is sampled **per workflow**: every workflow gets up to 50 temporally-stratified observations (20 for workflows under 1% of total compute), so per-job percentiles stay honest while API cost scales with the number of workflows instead of the size of the window. Targets follow `--margin` (`0.10` → 50/20; `0.05` → 100/40) and were calibrated against full-scan ground truth on nodejs/node and rails/rails with `cmd/sample-eval`: worst-job p50 error ≲10% and p95 error ≲30% at the defaults, versus up to 84% p95 error for a same-size global sample. Job fetches run 8-way concurrent, well inside GitHub's secondary rate limits.
+
+### Typical Run
+
+For busy repos (hundreds of commits a week), no single run is representative. The **Typical Run** section aggregates the sampled runs into the *statistically typical* pipeline, grouped per workflow: each job is drawn at its median start offset, with the bar shaded from median duration (`█`) through p75 (`▓`) to p95 (`░`) so the right tail — the variance that actually hurts — is visible at a glance:
+
+```
+▸ CI  9/75 runs sampled — run p50 6m 25s  p95 10m 19s
+                          0──────────────────────────────────────12m
+build                     ████████▓▓░░                            → p50 3m   p95 4m 12s
+test (linux)                      ██████████████▓▓▓▓░░░░          ⚠ p50 5m   p95 8m 40s
+test (macos)                      ████████████▓▓░                 → p50 4m   p95 5m 30s
+deploy-preview                                  ███▓░             → p50 1m   in 40% of runs  92% pass
+```
+
+Each segment also reports its presence rate (how often it appears at all), pass rate, and trend direction; skipped and cancelled jobs are excluded so they can't pollute the statistics. The header shows how many distinct commits the sample covered — a 1,000-commit week summarizes from ~90 sampled runs while still bounding the error statistically.
 
 ```bash
 ote trends owner/repo --no-sample               # exact, more API calls
-ote trends owner/repo --confidence=0.99 --margin=0.05  # tune sampling
+ote trends owner/repo --margin=0.05            # tighter sampling (100/40 obs targets)
 ```
+
+### Incremental sync
+
+For repos you analyze repeatedly, mirror the run/job history into a local SQLite store (`~/.local/share/ote/ote.db`):
+
+```bash
+ote sync owner/repo --days=7
+```
+
+Syncs are incremental: completed runs never change, so a re-sync lists only what's newer than the stored watermark and fetches job detail only for runs the store doesn't hold — a rails/rails week costs ~90s once, then ~10s and zero job-detail API calls to stay current. Once a repo is synced, `ote trends` automatically analyzes from the store: **exact** job detail for every run (no sampling), full commit coverage, ~10s end-to-end. Branch/workflow filters and `--no-sample`/`--dump-runs` still use the API path.
 
 ## OpenTelemetry
 

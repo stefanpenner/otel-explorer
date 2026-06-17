@@ -5,8 +5,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/stefanpenner/otel-explorer/pkg/analyzer"
 	"github.com/stefanpenner/otel-explorer/pkg/enrichment"
 	"github.com/stretchr/testify/assert"
@@ -1956,6 +1958,15 @@ func TestSearchEdgeCases(t *testing.T) {
 	})
 }
 
+// makeFlatEntries builds n simple inspector flat entries for scroll tests.
+func makeFlatEntries(n int) []FlatInspectorEntry {
+	entries := make([]FlatInspectorEntry, n)
+	for i := range entries {
+		entries[i] = FlatInspectorEntry{Node: &InspectorNode{Label: fmt.Sprintf("k%d", i), Value: "v"}}
+	}
+	return entries
+}
+
 func TestMouseClick(t *testing.T) {
 	t.Parallel()
 
@@ -1965,16 +1976,56 @@ func TestMouseClick(t *testing.T) {
 		m.height = 40
 		m.width = 120
 
-		// Header is 8 lines (or 9 with enrichment), clicking at Y=8 should select first item
+		// Items start right after the header lines (zero-based mouse Y),
+		// so clicking the first item row selects item 0.
+		firstItemRow := m.headerLineCount()
 		newModel, _ := m.Update(tea.MouseMsg{
 			X:      10,
-			Y:      8,
+			Y:      firstItemRow,
 			Button: tea.MouseButtonLeft,
 			Action: tea.MouseActionRelease,
 		})
 		m = newModel.(Model)
-
 		assert.Equal(t, 0, m.cursor)
+
+		// Clicking 3 rows below selects item 3
+		newModel, _ = m.Update(tea.MouseMsg{
+			X:      10,
+			Y:      firstItemRow + 3,
+			Button: tea.MouseButtonLeft,
+			Action: tea.MouseActionRelease,
+		})
+		m = newModel.(Model)
+		assert.Equal(t, 3, m.cursor)
+	})
+
+	t.Run("click matches rendered row positions", func(t *testing.T) {
+		m := createTestModel()
+		m.mouseEnabled = true
+		m.height = 40
+		m.width = 120
+
+		// Verify the handler's layout math against the actual rendered View:
+		// the row containing the second visible item's name should select it.
+		lines := strings.Split(m.View(), "\n")
+		secondName := m.visibleItems[1].DisplayName
+		rowOfSecond := -1
+		for i, line := range lines {
+			if strings.Contains(line, secondName) {
+				rowOfSecond = i
+				break
+			}
+		}
+		assert.NotEqual(t, -1, rowOfSecond, "second item should be rendered")
+
+		newModel, _ := m.Update(tea.MouseMsg{
+			X:      10,
+			Y:      rowOfSecond,
+			Button: tea.MouseButtonLeft,
+			Action: tea.MouseActionRelease,
+		})
+		m = newModel.(Model)
+		assert.Equal(t, 1, m.cursor)
 	})
 
 	t.Run("click clears selection", func(t *testing.T) {
@@ -1986,13 +2037,14 @@ func TestMouseClick(t *testing.T) {
 
 		newModel, _ := m.Update(tea.MouseMsg{
 			X:      10,
-			Y:      9,
+			Y:      m.headerLineCount() + 1,
 			Button: tea.MouseButtonLeft,
 			Action: tea.MouseActionRelease,
 		})
 		m = newModel.(Model)
 
 		assert.Equal(t, -1, m.selectionStart)
+		assert.Equal(t, 1, m.cursor)
 	})
 
 	t.Run("out-of-range Y does not panic or change cursor", func(t *testing.T) {
@@ -2050,6 +2102,8 @@ func TestMouseClick(t *testing.T) {
 		m.cursor = 0
 		m.openDetailModal()
 		m.modalScroll = 0
+		// Make the content tall enough that scrolling is possible
+		m.inspectorFlat = makeFlatEntries(100)
 
 		newModel, _ := m.Update(tea.MouseMsg{
 			Button: tea.MouseButtonWheelDown,
@@ -2057,6 +2111,39 @@ func TestMouseClick(t *testing.T) {
 		m = newModel.(Model)
 
 		assert.Equal(t, 1, m.modalScroll)
+	})
+
+	t.Run("wheel down in modal clamps at max scroll", func(t *testing.T) {
+		m := createTestModel()
+		m.cursor = 0
+		m.openDetailModal()
+		m.inspectorFlat = makeFlatEntries(100)
+		maxScroll := m.modalMaxScroll()
+		assert.Greater(t, maxScroll, 0)
+		m.modalScroll = maxScroll
+
+		newModel, _ := m.Update(tea.MouseMsg{
+			Button: tea.MouseButtonWheelDown,
+		})
+		m = newModel.(Model)
+
+		// Overscroll must not accumulate past the end of the content
+		assert.Equal(t, maxScroll, m.modalScroll)
+	})
+
+	t.Run("wheel down in modal with short content does not scroll", func(t *testing.T) {
+		m := createTestModel()
+		m.cursor = 0
+		m.openDetailModal()
+		m.inspectorFlat = makeFlatEntries(2)
+		m.modalScroll = 0
+
+		newModel, _ := m.Update(tea.MouseMsg{
+			Button: tea.MouseButtonWheelDown,
+		})
+		m = newModel.(Model)
+
+		assert.Equal(t, 0, m.modalScroll)
 	})
 
 	t.Run("wheel up in main view moves cursor up", func(t *testing.T) {
@@ -2685,5 +2772,141 @@ func TestSpanIndex(t *testing.T) {
 		assert.NotNil(t, idx.ByID["child1"])
 		assert.NotNil(t, idx.ByID["child2"])
 		assert.Len(t, idx.ByParentID["root"], 2)
+	})
+}
+
+func TestLogFetchResultMsg(t *testing.T) {
+	t.Parallel()
+
+	t.Run("failed fetch does not mark job as fetched so retry is possible", func(t *testing.T) {
+		m := createTestModel()
+		m.logFetchingJobID = 42
+		m.logFetchInline = &logFetchState{itemID: "x", phase: "Fetching logs..."}
+
+		newModel, _ := m.Update(LogFetchResultMsg{err: fmt.Errorf("boom")})
+		m = newModel.(Model)
+
+		assert.False(t, m.logFetchedJobIDs[42])
+		assert.Equal(t, int64(0), m.logFetchingJobID)
+		assert.Nil(t, m.logFetchInline)
+		assert.Contains(t, m.reloadError, "Log fetch failed")
+	})
+
+	t.Run("successful fetch marks job as fetched", func(t *testing.T) {
+		m := createTestModel()
+		m.logFetchingJobID = 42
+
+		newModel, _ := m.Update(LogFetchResultMsg{})
+		m = newModel.(Model)
+
+		assert.True(t, m.logFetchedJobIDs[42])
+		assert.Equal(t, int64(0), m.logFetchingJobID)
+	})
+
+	t.Run("stale result with no fetch in flight is ignored", func(t *testing.T) {
+		m := createTestModel()
+		m.logFetchingJobID = 0
+
+		newModel, _ := m.Update(LogFetchResultMsg{})
+		m = newModel.(Model)
+
+		assert.Empty(t, m.logFetchedJobIDs)
+	})
+}
+
+func TestReloadResetsLogFetchState(t *testing.T) {
+	t.Parallel()
+
+	m := createTestModel()
+	m.logFetchedJobIDs = map[int64]bool{42: true}
+	m.logFetchingJobID = 7
+	m.logFetchInline = &logFetchState{itemID: "x"}
+
+	now := time.Now()
+	newModel, _ := m.Update(ReloadResultMsg{
+		spans:       nil,
+		globalStart: now,
+		globalEnd:   now.Add(time.Minute),
+	})
+	m = newModel.(Model)
+
+	assert.Nil(t, m.logFetchedJobIDs)
+	assert.Equal(t, int64(0), m.logFetchingJobID)
+	assert.Nil(t, m.logFetchInline)
+}
+
+func TestInspectorSearchBackspaceMultibyte(t *testing.T) {
+	t.Parallel()
+
+	m := createTestModel()
+	m.openDetailModal()
+	m.inspectorSearching = true
+	m.inspectorSearchQuery = "café"
+
+	newModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	m = newModel.(Model)
+
+	assert.Equal(t, "caf", m.inspectorSearchQuery)
+	assert.True(t, utf8.ValidString(m.inspectorSearchQuery))
+}
+
+func TestBarWidths(t *testing.T) {
+	t.Parallel()
+
+	const contentWidth = 80
+
+	t.Run("error bar interior width matches contentWidth", func(t *testing.T) {
+		m := createTestModel()
+		m.reloadError = "boom"
+		bar := m.renderErrorBar(contentWidth)
+		// interior + 2 border characters
+		assert.Equal(t, contentWidth+2, lipgloss.Width(bar))
+	})
+
+	t.Run("error bar truncates long unicode errors rune-safely", func(t *testing.T) {
+		m := createTestModel()
+		m.reloadError = strings.Repeat("日本語エラー", 30)
+		bar := m.renderErrorBar(contentWidth)
+		assert.Equal(t, contentWidth+2, lipgloss.Width(bar))
+		assert.True(t, utf8.ValidString(bar))
+	})
+
+	t.Run("search bar width with multibyte query", func(t *testing.T) {
+		m := createTestModel()
+		m.isSearching = true
+		m.searchQuery = "café"
+		bar := m.renderSearchBar(contentWidth)
+		assert.Equal(t, contentWidth+2, lipgloss.Width(bar))
+	})
+}
+
+func TestTinyTerminalViewport(t *testing.T) {
+	t.Parallel()
+
+	t.Run("pageSize clamps to 1 when space is insufficient", func(t *testing.T) {
+		m := createTestModel()
+		m.height = 10
+		m.isSearching = true
+		m.searchQuery = "x"
+		m.reloadError = "boom"
+		// headerLines = 7, footer = 3 => 0 rows available; clamp to 1, not 10
+		assert.Equal(t, 1, m.pageSize())
+	})
+
+	t.Run("contentHeight matches View layout on normal terminal", func(t *testing.T) {
+		m := createTestModel()
+		m.height = 40
+		assert.Equal(t, 40-m.headerLineCount()-3, m.contentHeight())
+	})
+
+	t.Run("View does not render a phantom 10-row viewport", func(t *testing.T) {
+		m := createTestModel()
+		m.height = 10
+		m.isSearching = true
+		m.searchQuery = "x"
+		m.reloadError = "boom"
+		lines := strings.Split(m.View(), "\n")
+		// header (7) + 1 content row + footer (3); previously this was 20+
+		assert.LessOrEqual(t, len(lines), 11)
 	})
 }

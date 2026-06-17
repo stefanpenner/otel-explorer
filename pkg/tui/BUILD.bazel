@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "tui",
@@ -10,4 +10,11 @@ go_library(
         "@com_github_charmbracelet_bubbletea//:bubbletea",
         "@com_github_charmbracelet_lipgloss//:lipgloss",
     ],
+)
+
+go_test(
+    name = "tui_test",
+    srcs = ["progress_test.go"],
+    embed = [":tui"],
+    deps = ["@com_github_charmbracelet_bubbles//spinner"],
 )

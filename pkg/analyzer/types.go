@@ -3,6 +3,7 @@ package analyzer
 import (
 	"sort"
 
+	"github.com/stefanpenner/otel-explorer/pkg/githubapi"
 	"github.com/stefanpenner/otel-explorer/pkg/utils"
 )
 
@@ -123,6 +124,10 @@ type URLResult struct {
 	CommitPushedAtMs       *int64
 	AllCommitRunsCount     int
 	AllCommitRunsComputeMs int64
+	// RawRuns are the workflow runs this analysis fetched, shared (not copied)
+	// from the fetch stage. Callers use them to seed the local store with
+	// completed runs (see CollectCompletedRunData); not used for rendering.
+	RawRuns []githubapi.WorkflowRun
 }
 
 type TraceEvent struct {
@@ -156,6 +161,11 @@ type CombinedTimelineJob struct {
 
 func SortJobEvents(events []JobEvent) {
 	sort.Slice(events, func(i, j int) bool {
+		if events[i].Ts == events[j].Ts {
+			// End before start at the same timestamp, so back-to-back jobs
+			// are not counted as concurrent (matches CalculateConcurrency).
+			return events[i].Type == "end" && events[j].Type == "start"
+		}
 		return events[i].Ts < events[j].Ts
 	})
 }

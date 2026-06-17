@@ -3,3 +3,5 @@ out.json
 .gha-cache
 /otel-explorer
 bazel-*
+/sample-eval
+/ote

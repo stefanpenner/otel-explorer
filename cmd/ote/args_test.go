@@ -80,6 +80,48 @@ func TestParseArgs(t *testing.T) {
 			want:       config{urls: []string{"url"}, otelGRPCEndpoint: "host:9999"},
 		},
 		{
+			name:       "--output=json",
+			args:       []string{"url", "--output=json"},
+			isTerminal: false,
+			want:       config{urls: []string{"url"}, outputFormat: "json"},
+		},
+		{
+			name:       "--output=xlsx with --out",
+			args:       []string{"url", "--output=xlsx", "--out=report.xlsx"},
+			isTerminal: false,
+			want:       config{urls: []string{"url"}, outputFormat: "xlsx", outFile: "report.xlsx"},
+		},
+		{
+			name:       "--output=doc",
+			args:       []string{"url", "--output=doc"},
+			isTerminal: false,
+			want:       config{urls: []string{"url"}, outputFormat: "doc"},
+		},
+		{
+			name:       "--output=html",
+			args:       []string{"url", "--output=html"},
+			isTerminal: false,
+			want:       config{urls: []string{"url"}, outputFormat: "html"},
+		},
+		{
+			name:       "--output=slack",
+			args:       []string{"url", "--output=slack"},
+			isTerminal: false,
+			want:       config{urls: []string{"url"}, outputFormat: "slack"},
+		},
+		{
+			name:       "--output=slack with --slack-webhook",
+			args:       []string{"url", "--output=slack", "--slack-webhook=https://hooks.slack.com/x"},
+			isTerminal: false,
+			want:       config{urls: []string{"url"}, outputFormat: "slack", slackWebhook: "https://hooks.slack.com/x"},
+		},
+		{
+			name:       "invalid --output returns error",
+			args:       []string{"url", "--output=pdf"},
+			isTerminal: false,
+			wantErr:    true,
+		},
+		{
 			name:       "--window=2h",
 			args:       []string{"url", "--window=2h"},
 			isTerminal: false,
@@ -174,28 +216,76 @@ func TestParseArgs(t *testing.T) {
 			wantErr:    true,
 		},
 		{
+			name:       "--output then --tui still disables TUI (order independent)",
+			args:       []string{"url", "--output=markdown", "--tui"},
+			isTerminal: true,
+			want:       config{urls: []string{"url"}, outputFormat: "markdown"},
+		},
+		{
+			name:       "--tui then --output disables TUI (order independent)",
+			args:       []string{"url", "--tui", "--output=markdown"},
+			isTerminal: true,
+			want:       config{urls: []string{"url"}, outputFormat: "markdown"},
+		},
+		{
+			name:       "--listen with --output returns error",
+			args:       []string{"--listen", "--output=markdown"},
+			isTerminal: false,
+			wantErr:    true,
+		},
+		{
+			name:       "--tempo with --trace-id is accepted",
+			args:       []string{"--tempo=http://localhost:3200", "--trace-id=abc"},
+			isTerminal: false,
+			want:       config{},
+		},
+		{
+			name:       "--tempo and --jaeger together returns error",
+			args:       []string{"--tempo=http://a", "--jaeger=http://b", "--trace-id=abc"},
+			isTerminal: false,
+			wantErr:    true,
+		},
+		{
+			name:       "--tempo without --trace-id returns error",
+			args:       []string{"--tempo=http://localhost:3200"},
+			isTerminal: false,
+			wantErr:    true,
+		},
+		{
+			name:       "--jaeger without --trace-id returns error",
+			args:       []string{"--jaeger=http://localhost:16686"},
+			isTerminal: false,
+			wantErr:    true,
+		},
+		{
 			name:       "--no-sample flag in trends mode",
 			args:       []string{"trends", "owner/repo", "--no-sample"},
 			isTerminal: false,
 			want:       config{trendsMode: true, trendsRepo: "owner/repo", trendsNoSample: true},
 		},
 		{
-			name:       "--confidence flag",
+			name:       "--confidence flag is deprecated but still accepted",
 			args:       []string{"trends", "owner/repo", "--confidence=0.99"},
 			isTerminal: false,
-			want:       config{trendsMode: true, trendsRepo: "owner/repo", trendsConfidence: 0.99},
+			want:       config{trendsMode: true, trendsRepo: "owner/repo"},
+		},
+		{
+			name:       "trends subcommand after global flags",
+			args:       []string{"--clear-cache", "trends", "owner/repo"},
+			isTerminal: false,
+			want:       config{trendsMode: true, trendsRepo: "owner/repo", clearCache: true},
+		},
+		{
+			name:       "trends subcommand after flag with days",
+			args:       []string{"--clear-cache", "trends", "owner/repo", "--days=7"},
+			isTerminal: false,
+			want:       config{trendsMode: true, trendsRepo: "owner/repo", clearCache: true, trendsDays: 7},
 		},
 		{
 			name:       "--margin flag",
 			args:       []string{"trends", "owner/repo", "--margin=0.05"},
 			isTerminal: false,
 			want:       config{trendsMode: true, trendsRepo: "owner/repo", trendsMargin: 0.05},
-		},
-		{
-			name:       "--confidence=0 returns error",
-			args:       []string{"trends", "owner/repo", "--confidence=0"},
-			isTerminal: false,
-			wantErr:    true,
 		},
 		{
 			name:       "--margin=1.5 returns error",
@@ -257,11 +347,107 @@ func TestParseArgs(t *testing.T) {
 			if got.trendsNoSample != tt.want.trendsNoSample {
 				t.Errorf("trendsNoSample = %v, want %v", got.trendsNoSample, tt.want.trendsNoSample)
 			}
-			if tt.want.trendsConfidence != 0 && got.trendsConfidence != tt.want.trendsConfidence {
-				t.Errorf("trendsConfidence = %v, want %v", got.trendsConfidence, tt.want.trendsConfidence)
-			}
 			if tt.want.trendsMargin != 0 && got.trendsMargin != tt.want.trendsMargin {
 				t.Errorf("trendsMargin = %v, want %v", got.trendsMargin, tt.want.trendsMargin)
+			}
+		})
+	}
+}
+
+func TestParseArgsDays(t *testing.T) {
+	tests := []struct {
+		name     string
+		arg      string
+		wantDays int
+		wantErr  bool
+	}{
+		{name: "valid days", arg: "--days=7", wantDays: 7},
+		{name: "trailing garbage rejected", arg: "--days=7days", wantErr: true},
+		{name: "trailing letter rejected", arg: "--days=30x", wantErr: true},
+		{name: "zero rejected", arg: "--days=0", wantErr: true},
+		{name: "negative rejected", arg: "--days=-5", wantErr: true},
+		{name: "non-numeric rejected", arg: "--days=abc", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseArgs([]string{"trends", "owner/repo", tt.arg}, false)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for %s, got nil (days=%d)", tt.arg, got.trendsDays)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got.trendsDays != tt.wantDays {
+				t.Errorf("trendsDays = %d, want %d", got.trendsDays, tt.wantDays)
+			}
+		})
+	}
+}
+
+func TestParseTrendsRepo(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantOwner string
+		wantRepo  string
+		wantErr   bool
+	}{
+		{name: "owner/repo", input: "owner/repo", wantOwner: "owner", wantRepo: "repo"},
+		{name: "trailing slash", input: "owner/repo/", wantOwner: "owner", wantRepo: "repo"},
+		{name: "full https URL", input: "https://github.com/owner/repo", wantOwner: "owner", wantRepo: "repo"},
+		{name: "full URL with trailing slash", input: "https://github.com/owner/repo/", wantOwner: "owner", wantRepo: "repo"},
+		{name: "github.com prefix", input: "github.com/owner/repo", wantOwner: "owner", wantRepo: "repo"},
+		{name: "www URL", input: "https://www.github.com/owner/repo", wantOwner: "owner", wantRepo: "repo"},
+		{name: "owner only", input: "owner", wantErr: true},
+		{name: "empty", input: "", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			owner, repo, err := parseTrendsRepo(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got owner=%q repo=%q", owner, repo)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if owner != tt.wantOwner || repo != tt.wantRepo {
+				t.Errorf("got %q/%q, want %q/%q", owner, repo, tt.wantOwner, tt.wantRepo)
+			}
+		})
+	}
+}
+
+func TestLooksLikeGitHubToken(t *testing.T) {
+	tests := []struct {
+		arg  string
+		want bool
+	}{
+		{"ghp_abc123XYZ", true},
+		{"gho_abc123", true},
+		{"ghu_abc123", true},
+		{"ghs_abc123", true},
+		{"ghr_abc123", true},
+		{"github_pat_11ABC", true},
+		{"0123456789abcdef0123456789abcdef01234567", true}, // legacy 40-hex PAT
+		{"owner/repo", false},
+		{"https://github.com/owner/repo/pull/123", false},
+		{"not-a-token", false},
+		{"0123456789abcdef0123456789abcdef0123456", false},  // 39 chars
+		{"0123456789abcdef0123456789abcdef0123456g", false}, // non-hex
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.arg, func(t *testing.T) {
+			if got := looksLikeGitHubToken(tt.arg); got != tt.want {
+				t.Errorf("looksLikeGitHubToken(%q) = %v, want %v", tt.arg, got, tt.want)
 			}
 		})
 	}

@@ -9,7 +9,7 @@ package otlpfile
 //
 // Supported event phases:
 //   - "X" (complete): has ts + dur
-//   - "B"/"E" (begin/end): paired by name+pid+tid
+//   - "B"/"E" (begin/end): an E closes the most recent unclosed B on its thread
 //   - "i"/"I" (instant): zero-duration span
 //   - "M" (metadata): thread_name, process_name
 //
@@ -101,7 +101,8 @@ func chromeEventsToSpans(events []chromeEvent, otherData map[string]any) ([]sdkt
 	}
 
 	// Sort by timestamp to ensure B events come before their E events.
-	sort.Slice(events, func(i, j int) bool {
+	// Stable so a B is not reordered after its E when timestamps are equal.
+	sort.SliceStable(events, func(i, j int) bool {
 		return events[i].Ts < events[j].Ts
 	})
 
@@ -124,13 +125,15 @@ func chromeEventsToSpans(events []chromeEvent, otherData map[string]any) ([]sdkt
 		}
 	}
 
-	// Resolve B/E pairs and collect complete events.
+	// Resolve B/E pairs and collect complete events. Per the Trace Event
+	// Format spec, an E event closes the most recent unclosed B event on the
+	// same thread (its name is optional), so keep a stack of open B events
+	// per (pid,tid) rather than matching by name.
 	type beginKey struct {
-		Name string
-		Pid  string
-		Tid  string
+		Pid string
+		Tid string
 	}
-	begins := make(map[beginKey]chromeEvent)
+	begins := make(map[beginKey][]chromeEvent)
 
 	var resolved []resolvedEvent
 	spanIndex := 0
@@ -144,12 +147,15 @@ func chromeEventsToSpans(events []chromeEvent, otherData map[string]any) ([]sdkt
 			}
 
 		case "B": // Begin
-			key := beginKey{ev.Name, ev.Pid.String(), ev.Tid.String()}
-			begins[key] = ev
+			key := beginKey{ev.Pid.String(), ev.Tid.String()}
+			begins[key] = append(begins[key], ev)
 
 		case "E": // End
-			key := beginKey{ev.Name, ev.Pid.String(), ev.Tid.String()}
-			if begin, ok := begins[key]; ok {
+			key := beginKey{ev.Pid.String(), ev.Tid.String()}
+			if stack := begins[key]; len(stack) > 0 {
+				begin := stack[len(stack)-1]
+				begins[key] = stack[:len(stack)-1]
+
 				merged := begin
 				merged.Dur = ev.Ts - begin.Ts
 				if len(ev.Args) > 0 {
@@ -163,7 +169,6 @@ func chromeEventsToSpans(events []chromeEvent, otherData map[string]any) ([]sdkt
 					resolved = append(resolved, resolvedEvent{ev: merged, index: spanIndex})
 					spanIndex++
 				}
-				delete(begins, key)
 			}
 
 		case "i", "I": // Instant events — always include

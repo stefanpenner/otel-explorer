@@ -2,13 +2,17 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
 go_library(
     name = "ote_lib",
-    srcs = ["main.go"],
+    srcs = [
+        "exportout.go",
+        "main.go",
+    ],
     importpath = "github.com/stefanpenner/otel-explorer/cmd/ote",
     visibility = ["//visibility:private"],
     deps = [
         "//pkg/analyzer",
         "//pkg/core",
         "//pkg/enrichment",
+        "//pkg/export",
         "//pkg/export/otel",
         "//pkg/export/perfetto",
         "//pkg/export/terminal",
@@ -22,6 +26,7 @@ go_library(
         "//pkg/logparse",
         "//pkg/output",
         "//pkg/perfetto",
+        "//pkg/store",
         "//pkg/tui",
         "//pkg/tui/results",
         "//pkg/utils",
@@ -39,6 +44,18 @@ go_binary(
 
 go_test(
     name = "ote_test",
-    srcs = ["args_test.go"],
+    srcs = [
+        "args_test.go",
+        "persist_test.go",
+        "slack_test.go",
+    ],
     embed = [":ote_lib"],
+    deps = [
+        "//pkg/analyzer",
+        "//pkg/export",
+        "//pkg/githubapi",
+        "//pkg/store",
+        "@com_github_stretchr_testify//assert",
+        "@com_github_stretchr_testify//require",
+    ],
 )

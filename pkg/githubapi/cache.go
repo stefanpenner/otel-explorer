@@ -18,12 +18,13 @@ const cacheTTL = 5 * time.Minute
 
 // cacheVersion is incremented to invalidate all existing cached responses.
 // Bump this when response parsing or enrichment logic changes.
-const cacheVersion = "v3"
+const cacheVersion = "v4"
 
 // CachedTransport implements http.RoundTripper and caches GET requests to disk.
 type CachedTransport struct {
 	Base     http.RoundTripper
 	CacheDir string
+	Stats    *apiStats // optional; counts requests served from cache without a network call
 }
 
 func NewCachedTransport(base http.RoundTripper, cacheDir string) *CachedTransport {
@@ -45,15 +46,46 @@ func (t *CachedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	cacheKey := t.getCacheKey(req)
 	cachePath := filepath.Join(t.CacheDir, cacheKey)
 
-	// Try to read from cache
-	if cachedResp := t.getFromCache(cachePath, req); cachedResp != nil {
-		return cachedResp, nil
+	// A fresh entry is served outright. A stale-but-present entry is kept so
+	// we can revalidate it conditionally instead of refetching the full body.
+	stored, fresh := t.readFromCache(cachePath, req)
+	if fresh {
+		if t.Stats != nil {
+			t.Stats.cacheHits.Add(1)
+		}
+		return stored, nil
 	}
 
-	// Not in cache, perform request
-	resp, err := t.Base.RoundTrip(req)
+	// If the stale entry carries validators, ask the server whether it still
+	// holds (If-None-Match / If-Modified-Since). A 304 lets us reuse the body.
+	outReq := req
+	if stored != nil {
+		if validators := revalidationHeaders(stored, req); len(validators) > 0 {
+			outReq = req.Clone(req.Context())
+			for k, v := range validators {
+				outReq.Header.Set(k, v)
+			}
+		}
+	}
+
+	resp, err := t.Base.RoundTrip(outReq)
 	if err != nil {
+		if stored != nil {
+			stored.Body.Close()
+		}
 		return nil, err
+	}
+
+	// Not Modified: the cached body is still valid. Refresh its TTL and serve
+	// it, mapped back to a 200 so callers never see the 304.
+	if resp.StatusCode == http.StatusNotModified && stored != nil {
+		resp.Body.Close()
+		t.touch(cachePath)
+		return stored, nil
+	}
+
+	if stored != nil {
+		stored.Body.Close()
 	}
 
 	// Only cache successful responses
@@ -62,6 +94,20 @@ func (t *CachedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	return resp, nil
+}
+
+// revalidationHeaders returns the conditional request headers derived from a
+// stored response's validators, but only for validators the caller hasn't
+// already set itself.
+func revalidationHeaders(stored *http.Response, req *http.Request) map[string]string {
+	h := map[string]string{}
+	if etag := stored.Header.Get("ETag"); etag != "" && req.Header.Get("If-None-Match") == "" {
+		h["If-None-Match"] = etag
+	}
+	if lm := stored.Header.Get("Last-Modified"); lm != "" && req.Header.Get("If-Modified-Since") == "" {
+		h["If-Modified-Since"] = lm
+	}
+	return h
 }
 
 func (t *CachedTransport) getCacheKey(req *http.Request) string {
@@ -78,33 +124,47 @@ func (t *CachedTransport) getCacheKey(req *http.Request) string {
 	}
 	h.Write([]byte(u))
 	h.Write([]byte(req.Header.Get("Accept")))
+	// Include the auth credential so responses fetched as one identity are
+	// never served to another (the key is a hash, so the token itself is
+	// not exposed on disk).
+	h.Write([]byte(req.Header.Get("Authorization")))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func (t *CachedTransport) getFromCache(path string, req *http.Request) *http.Response {
+// readFromCache parses the cached response for req, if any. The bool reports
+// whether the entry is still fresh (within the TTL). A stale-but-parseable
+// entry is still returned (fresh=false) so the caller can revalidate it with
+// a conditional request rather than refetching the full body.
+func (t *CachedTransport) readFromCache(path string, req *http.Request) (*http.Response, bool) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil
-	}
-
-	// Expire stale entries
-	if time.Since(info.ModTime()) > cacheTTL {
-		_ = os.Remove(path)
-		return nil
+		return nil, false
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 
 	// Parse the cached response
 	resp, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(data)), req)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 
-	return resp
+	// Don't os.Remove stale entries here: another process may be concurrently
+	// renaming a fresh entry into place, and removing would delete it. A stale
+	// file is simply overwritten by the next save (or touched on a 304).
+	fresh := time.Since(info.ModTime()) <= cacheTTL
+	return resp, fresh
+}
+
+// touch resets a cache entry's TTL by bumping its modification time to now,
+// used after a 304 confirms the stored body is still current. Best-effort:
+// a concurrent rename or removal racing with this is harmless.
+func (t *CachedTransport) touch(path string) {
+	now := time.Now()
+	_ = os.Chtimes(path, now, now)
 }
 
 func (t *CachedTransport) saveToCache(path string, resp *http.Response) {
@@ -112,7 +172,7 @@ func (t *CachedTransport) saveToCache(path string, resp *http.Response) {
 		return
 	}
 
-	// We need to dump the response to save it. 
+	// We need to dump the response to save it.
 	// DumpResponse reads and CLOSES the body if it's not already buffered.
 	// But it actually returns the full bytes including the body.
 	dump, err := httputil.DumpResponse(resp, true)
@@ -120,14 +180,36 @@ func (t *CachedTransport) saveToCache(path string, resp *http.Response) {
 		return
 	}
 
-	_ = os.WriteFile(path, dump, 0644)
+	// Write to a temp file and rename it into place. Rename is atomic on
+	// POSIX, so concurrent readers (other goroutines or other ote processes
+	// sharing the cache dir) never observe a torn, partially written entry.
+	t.writeFileAtomic(path, dump)
 
-	// Since DumpResponse consumed the body, we MUST restore it so the 
+	// Since DumpResponse consumed the body, we MUST restore it so the
 	// caller of RoundTrip can still read it.
 	// We parse it back to a temporary response to get the body out.
 	restored, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(dump)), resp.Request)
 	if err == nil {
 		resp.Body = restored.Body
+	}
+}
+
+// writeFileAtomic writes data to a temp file in the cache directory and
+// renames it over path so readers always see a complete entry.
+func (t *CachedTransport) writeFileAtomic(path string, data []byte) {
+	tmp, err := os.CreateTemp(t.CacheDir, "tmp-*")
+	if err != nil {
+		return
+	}
+	_, werr := tmp.Write(data)
+	cerr := tmp.Close()
+	if werr != nil || cerr != nil {
+		_ = os.Remove(tmp.Name())
+		return
+	}
+	_ = os.Chmod(tmp.Name(), 0644)
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		_ = os.Remove(tmp.Name())
 	}
 }
 

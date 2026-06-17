@@ -15,4 +15,8 @@ go_test(
     name = "receiver_test",
     srcs = ["receiver_test.go"],
     embed = [":receiver"],
+    deps = [
+        "@io_opentelemetry_go_proto_otlp//trace/v1:trace",
+        "@org_golang_google_protobuf//proto",
+    ],
 )

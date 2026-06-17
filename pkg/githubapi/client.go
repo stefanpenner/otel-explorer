@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -23,8 +24,8 @@ import (
 )
 
 const (
-	maxRetries          = 5
-	maxRetryDelay       = 2 * time.Minute
+	maxRetries            = 5
+	maxRetryDelay         = 2 * time.Minute
 	defaultMaxConcurrency = 5
 )
 
@@ -58,6 +59,57 @@ type Client struct {
 	httpClient *http.Client
 	semaphore  chan struct{}
 	limiter    *rateLimiter
+	stats      *apiStats
+}
+
+// apiStats counts GitHub API traffic for the run so the UI can show progress
+// and rate-limit impact. networkRequests counts requests that reached GitHub
+// (cache misses and conditional revalidations); cacheHits counts requests
+// served entirely from the local cache with no network call.
+type apiStats struct {
+	networkRequests atomic.Int64
+	cacheHits       atomic.Int64
+}
+
+// RequestStats is a point-in-time snapshot of API traffic and rate-limit state.
+type RequestStats struct {
+	NetworkRequests    int
+	CacheHits          int
+	RateLimitRemaining int
+	RateLimitReset     time.Time
+	RateLimitKnown     bool // false until a GitHub response has reported the limit
+}
+
+// RequestStats returns the running API-traffic snapshot for this client.
+func (c *Client) RequestStats() RequestStats {
+	s := RequestStats{}
+	if c.stats != nil {
+		s.NetworkRequests = int(c.stats.networkRequests.Load())
+		s.CacheHits = int(c.stats.cacheHits.Load())
+	}
+	if c.limiter != nil {
+		s.RateLimitRemaining, s.RateLimitReset, s.RateLimitKnown = c.limiter.snapshot()
+	}
+	return s
+}
+
+// Summary renders a one-line human summary for stderr.
+func (s RequestStats) Summary() string {
+	plural := "s"
+	if s.NetworkRequests == 1 {
+		plural = ""
+	}
+	out := fmt.Sprintf("GitHub API: %d request%s", s.NetworkRequests, plural)
+	if s.CacheHits > 0 {
+		out += fmt.Sprintf(" · %d served from cache", s.CacheHits)
+	}
+	if s.RateLimitKnown {
+		out += fmt.Sprintf(" · %d rate-limit remaining", s.RateLimitRemaining)
+		if !s.RateLimitReset.IsZero() {
+			out += fmt.Sprintf(" (resets %s)", s.RateLimitReset.Local().Format("15:04"))
+		}
+	}
+	return out
 }
 
 type Option func(*Client)
@@ -87,6 +139,7 @@ func NewClient(context Context, opts ...Option) *Client {
 	client := &Client{
 		context: context,
 		limiter: &rateLimiter{},
+		stats:   &apiStats{},
 	}
 	for _, opt := range opts {
 		opt(client)
@@ -97,19 +150,28 @@ func NewClient(context Context, opts ...Option) *Client {
 	}
 
 	if client.httpClient == nil {
-		// Base transport
-		var base http.RoundTripper = http.DefaultTransport
+		// Base transport. Use a header timeout rather than http.Client.Timeout:
+		// Client.Timeout covers reading the full body, so large artifact/log
+		// downloads that take >60s would always fail. ResponseHeaderTimeout
+		// still bounds unresponsive servers; per-call context deadlines bound
+		// the rest.
+		baseTransport := http.DefaultTransport.(*http.Transport).Clone()
+		baseTransport.ResponseHeaderTimeout = 60 * time.Second
+		var base http.RoundTripper = baseTransport
 
 		// Add rate limiting (MUST be behind cache)
 		base = &RateLimitedTransport{
 			Base:      base,
 			Limiter:   client.limiter,
 			Semaphore: client.semaphore,
+			Stats:     client.stats,
 		}
 
 		// Add caching
 		if client.context.CacheDir != "" {
-			base = NewCachedTransport(base, client.context.CacheDir)
+			ct := NewCachedTransport(base, client.context.CacheDir)
+			ct.Stats = client.stats
+			base = ct
 		}
 
 		// Add OTel instrumentation
@@ -117,7 +179,6 @@ func NewClient(context Context, opts ...Option) *Client {
 
 		client.httpClient = &http.Client{
 			Transport: base,
-			Timeout:   60 * time.Second,
 		}
 	}
 
@@ -141,6 +202,7 @@ type WorkflowRun struct {
 	UpdatedAt    string  `json:"updated_at"`
 	HeadSHA      string  `json:"head_sha"`
 	HeadBranch   string  `json:"head_branch"`
+	Event        string  `json:"event"`
 	Repository   RepoRef `json:"repository"`
 }
 
@@ -158,17 +220,18 @@ type JobsResponse struct {
 }
 
 type Job struct {
-	ID          int64  `json:"id"`
-	RunAttempt  int64  `json:"run_attempt"`
-	Name        string `json:"name"`
-	Status      string `json:"status"`
-	Conclusion  string `json:"conclusion"`
-	CreatedAt   string `json:"created_at"`
-	StartedAt   string `json:"started_at"`
-	CompletedAt string `json:"completed_at"`
-	RunnerName  string `json:"runner_name"`
-	HTMLURL     string `json:"html_url"`
-	Steps       []Step `json:"steps"`
+	ID          int64    `json:"id"`
+	RunAttempt  int64    `json:"run_attempt"`
+	Name        string   `json:"name"`
+	Status      string   `json:"status"`
+	Conclusion  string   `json:"conclusion"`
+	CreatedAt   string   `json:"created_at"`
+	StartedAt   string   `json:"started_at"`
+	CompletedAt string   `json:"completed_at"`
+	RunnerName  string   `json:"runner_name"`
+	Labels      []string `json:"labels"`
+	HTMLURL     string   `json:"html_url"`
+	Steps       []Step   `json:"steps"`
 }
 
 type Step struct {
@@ -280,15 +343,47 @@ type rateLimiter struct {
 	resetTime time.Time
 }
 
-func (r *rateLimiter) waitIfNeeded() {
+// waitDuration computes how long the caller must wait before issuing a
+// request. It only reads state under the lock; the caller sleeps outside
+// the critical section so other goroutines are not blocked.
+func (r *rateLimiter) waitDuration() time.Duration {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if r.remaining == 0 && !r.resetTime.IsZero() {
-		if time.Until(r.resetTime) > 0 {
-			time.Sleep(time.Until(r.resetTime) + time.Second)
+		if d := time.Until(r.resetTime); d > 0 {
+			return d + time.Second
 		}
 	}
+	return 0
+}
+
+func (r *rateLimiter) waitIfNeeded(ctx context.Context) error {
+	d := r.waitDuration()
+	if d <= 0 {
+		return nil
+	}
+	return sleepContext(ctx, d)
+}
+
+// sleepContext sleeps for d or until ctx is cancelled, whichever comes first.
+func sleepContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// snapshot reports the last-seen rate-limit state. known is false until a
+// GitHub response has populated it (reset stays zero before then).
+func (r *rateLimiter) snapshot() (remaining int, reset time.Time, known bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.remaining, r.resetTime, !r.resetTime.IsZero()
 }
 
 func (r *rateLimiter) updateFromHeaders(headers http.Header) {
@@ -310,13 +405,21 @@ type RateLimitedTransport struct {
 	Base      http.RoundTripper
 	Limiter   *rateLimiter
 	Semaphore chan struct{}
+	Stats     *apiStats
 }
 
 func (t *RateLimitedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// This transport sits behind the cache, so reaching it means the request
+	// is going to GitHub (a cache miss or a conditional revalidation).
+	if t.Stats != nil {
+		t.Stats.networkRequests.Add(1)
+	}
 	t.Semaphore <- struct{}{}
 	defer func() { <-t.Semaphore }()
 
-	t.Limiter.waitIfNeeded()
+	if err := t.Limiter.waitIfNeeded(req.Context()); err != nil {
+		return nil, err
+	}
 	resp, err := t.Base.RoundTrip(req)
 	if err != nil {
 		return nil, err
@@ -326,9 +429,16 @@ func (t *RateLimitedTransport) RoundTrip(req *http.Request) (*http.Response, err
 	for attempt := 0; attempt < maxRetries && shouldRetry(resp); attempt++ {
 		delay := retryDelay(attempt, resp)
 		fmt.Fprintf(os.Stderr, "Rate limited by GitHub API, retrying in %s (attempt %d/%d)\n", delay.Round(time.Millisecond), attempt+1, maxRetries)
+		// Drain a bounded amount before closing so the keep-alive
+		// connection can be reused for the retry.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		_ = resp.Body.Close()
-		time.Sleep(delay)
-		t.Limiter.waitIfNeeded()
+		if err := sleepContext(req.Context(), delay); err != nil {
+			return nil, err
+		}
+		if err := t.Limiter.waitIfNeeded(req.Context()); err != nil {
+			return nil, err
+		}
 		resp, err = t.Base.RoundTrip(req)
 		if err != nil {
 			return nil, err
@@ -378,6 +488,12 @@ func waitDurationFromHeaders(resp *http.Response) time.Duration {
 func retryDelay(attempt int, resp *http.Response) time.Duration {
 	if resp != nil {
 		if d := waitDurationFromHeaders(resp); d > 0 {
+			// Clamp header-derived delays (Retry-After / x-ratelimit-reset
+			// can be up to an hour out) so a single retry never stalls the
+			// transport longer than maxRetryDelay.
+			if d > maxRetryDelay {
+				d = maxRetryDelay
+			}
 			return d
 		}
 	}
@@ -656,15 +772,21 @@ func (c *Client) FetchCommitAssociatedPRs(ctx context.Context, owner, repo, sha 
 	defer span.End()
 
 	endpoint := fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/%s/pulls?per_page=100", owner, repo, sha)
-	resp, err := fetchWithAuth(ctx, c, endpoint, "application/vnd.github+json")
-	if err != nil {
-		return nil, err
+	var all []PullAssociated
+	nextURL := endpoint
+	for nextURL != "" {
+		resp, err := fetchWithAuth(ctx, c, nextURL, "application/vnd.github+json")
+		if err != nil {
+			return nil, err
+		}
+		var prs []PullAssociated
+		if err := decodeJSON(resp, &prs); err != nil {
+			return nil, err
+		}
+		all = append(all, prs...)
+		nextURL = parseNextLink(resp.Header.Get("Link"))
 	}
-	var prs []PullAssociated
-	if err := decodeJSON(resp, &prs); err != nil {
-		return nil, err
-	}
-	return prs, nil
+	return all, nil
 }
 
 func (c *Client) FetchCommit(ctx context.Context, baseURL, sha string) (*CommitResponse, error) {
@@ -815,7 +937,7 @@ func fetchCommentsPaginated(ctx context.Context, c *Client, urlValue string) ([]
 		if err != nil {
 			return nil, err
 		}
-		
+
 		type Comment struct {
 			ID        int64    `json:"id"`
 			User      UserInfo `json:"user"`
@@ -966,17 +1088,23 @@ func (c *Client) FetchCheckRunsForCommit(ctx context.Context, owner, repo, sha s
 	defer span.End()
 
 	endpoint := fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/%s/check-runs?per_page=100", owner, repo, sha)
-	resp, err := fetchWithAuth(ctx, c, endpoint, "")
-	if err != nil {
-		return nil, err
+	var all []CheckRun
+	nextURL := endpoint
+	for nextURL != "" {
+		resp, err := fetchWithAuth(ctx, c, nextURL, "")
+		if err != nil {
+			return nil, err
+		}
+		var result struct {
+			CheckRuns []CheckRun `json:"check_runs"`
+		}
+		if err := decodeJSON(resp, &result); err != nil {
+			return nil, err
+		}
+		all = append(all, result.CheckRuns...)
+		nextURL = parseNextLink(resp.Header.Get("Link"))
 	}
-	var result struct {
-		CheckRuns []CheckRun `json:"check_runs"`
-	}
-	if err := decodeJSON(resp, &result); err != nil {
-		return nil, err
-	}
-	return result.CheckRuns, nil
+	return all, nil
 }
 
 func (c *Client) FetchAnnotations(ctx context.Context, owner, repo string, checkRunID int64) ([]Annotation, error) {
@@ -988,15 +1116,21 @@ func (c *Client) FetchAnnotations(ctx context.Context, owner, repo string, check
 	defer span.End()
 
 	endpoint := fmt.Sprintf("https://api.github.com/repos/%s/%s/check-runs/%d/annotations?per_page=100", owner, repo, checkRunID)
-	resp, err := fetchWithAuth(ctx, c, endpoint, "")
-	if err != nil {
-		return nil, err
+	var all []Annotation
+	nextURL := endpoint
+	for nextURL != "" {
+		resp, err := fetchWithAuth(ctx, c, nextURL, "")
+		if err != nil {
+			return nil, err
+		}
+		var annotations []Annotation
+		if err := decodeJSON(resp, &annotations); err != nil {
+			return nil, err
+		}
+		all = append(all, annotations...)
+		nextURL = parseNextLink(resp.Header.Get("Link"))
 	}
-	var annotations []Annotation
-	if err := decodeJSON(resp, &annotations); err != nil {
-		return nil, err
-	}
-	return annotations, nil
+	return all, nil
 }
 
 func (c *Client) ListArtifacts(ctx context.Context, owner, repo string, runID int64) ([]Artifact, error) {
@@ -1008,17 +1142,23 @@ func (c *Client) ListArtifacts(ctx context.Context, owner, repo string, runID in
 	defer span.End()
 
 	endpoint := fmt.Sprintf("https://api.github.com/repos/%s/%s/actions/runs/%d/artifacts?per_page=100", owner, repo, runID)
-	resp, err := fetchWithAuth(ctx, c, endpoint, "")
-	if err != nil {
-		return nil, err
+	var all []Artifact
+	nextURL := endpoint
+	for nextURL != "" {
+		resp, err := fetchWithAuth(ctx, c, nextURL, "")
+		if err != nil {
+			return nil, err
+		}
+		var result struct {
+			Artifacts []Artifact `json:"artifacts"`
+		}
+		if err := decodeJSON(resp, &result); err != nil {
+			return nil, err
+		}
+		all = append(all, result.Artifacts...)
+		nextURL = parseNextLink(resp.Header.Get("Link"))
 	}
-	var result struct {
-		Artifacts []Artifact `json:"artifacts"`
-	}
-	if err := decodeJSON(resp, &result); err != nil {
-		return nil, err
-	}
-	return result.Artifacts, nil
+	return all, nil
 }
 
 func (c *Client) DownloadArtifact(ctx context.Context, downloadURL string) ([]byte, error) {

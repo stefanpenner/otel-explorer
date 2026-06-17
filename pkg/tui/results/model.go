@@ -10,6 +10,8 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stefanpenner/otel-explorer/pkg/analyzer"
 	"github.com/stefanpenner/otel-explorer/pkg/enrichment"
 	"github.com/stefanpenner/otel-explorer/pkg/utils"
@@ -358,16 +360,23 @@ func (m Model) Init() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case LogFetchResultMsg:
-		if m.logFetchedJobIDs == nil {
-			m.logFetchedJobIDs = make(map[int64]bool)
+		fetchedJobID := m.logFetchingJobID
+		if fetchedJobID == 0 {
+			// No fetch in flight (e.g. the model was reloaded while a fetch
+			// was running); discard the stale result.
+			return m, nil
 		}
-		m.logFetchedJobIDs[m.logFetchingJobID] = true
 		m.logFetchingJobID = 0
 		m.logFetchInline = nil
 		if msg.err != nil {
+			// Don't mark the job as fetched on failure so the user can retry.
 			m.reloadError = fmt.Sprintf("Log fetch failed: %v", msg.err)
 			return m, nil
 		}
+		if m.logFetchedJobIDs == nil {
+			m.logFetchedJobIDs = make(map[int64]bool)
+		}
+		m.logFetchedJobIDs[fetchedJobID] = true
 		m.reloadError = ""
 		if len(msg.newSpans) > 0 {
 			m.spans = append(m.spans, msg.newSpans...)
@@ -390,7 +399,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.reloadError = "" // clear previous error on success
+		// Reset log fetch state so previously fetched jobs can be re-fetched
+		// against the fresh data, and any in-flight fetch result is ignored.
+		m.logFetchedJobIDs = nil
+		m.logFetchingJobID = 0
+		m.logFetchInline = nil
 		// Update model with new data
+		m.spans = msg.spans
 		m.globalStart = msg.globalStart
 		m.globalEnd = msg.globalEnd
 		m.chartStart = msg.globalStart
@@ -489,7 +504,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				case tea.KeyBackspace:
 					if len(m.inspectorSearchQuery) > 0 {
-						m.inspectorSearchQuery = m.inspectorSearchQuery[:len(m.inspectorSearchQuery)-1]
+						_, size := utf8.DecodeLastRuneInString(m.inspectorSearchQuery)
+						m.inspectorSearchQuery = m.inspectorSearchQuery[:len(m.inspectorSearchQuery)-size]
 						m.updateInspectorSearch()
 					}
 					return m, nil
@@ -732,13 +748,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.searchQuery = m.searchQuery[:len(m.searchQuery)-size]
 				}
 				m.applySearchFilter()
-				m.rebuildItems()
+				// Only the filter changed; skip the full tree rebuild.
+				m.rebuildVisibleItems()
 				return m, nil
 			default:
 				if msg.Type == tea.KeyRunes {
 					m.searchQuery += string(msg.Runes)
 					m.applySearchFilter()
-					m.rebuildItems()
+					// Only the filter changed; skip the full tree rebuild.
+					m.rebuildVisibleItems()
 				}
 				return m, nil
 			}
@@ -968,7 +986,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.modalScroll--
 				}
 			case tea.MouseButtonWheelDown:
-				m.modalScroll++
+				// Clamp here (where the mutation persists) so overscroll
+				// ticks don't accumulate past the end of the content.
+				if m.modalScroll < m.modalMaxScroll() {
+					m.modalScroll++
+				}
 			case tea.MouseButtonLeft:
 				if msg.Action == tea.MouseActionRelease {
 					// Click outside modal area could close it (optional)
@@ -993,39 +1015,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case tea.MouseButtonLeft:
 			if msg.Action == tea.MouseActionRelease {
-				// Calculate which row was clicked
-				headerLines := 8
-				if m.hasEnrichmentLine() {
-					headerLines++
-				}
-				clickedRow := msg.Y - headerLines
-
-				// Calculate scroll offset
-				availableHeight := m.height - headerLines - 4
-				if availableHeight < 1 {
-					availableHeight = 10
-				}
-
-				startIdx := 0
-				if len(m.visibleItems) > availableHeight {
-					halfHeight := availableHeight / 2
-					startIdx = m.cursor - halfHeight
-					if startIdx < 0 {
-						startIdx = 0
+				// Map the clicked row to an item using the same layout math
+				// as View(). msg.Y is zero-based; items start right after
+				// the header lines.
+				clickedRow := msg.Y - m.headerLineCount()
+				availableHeight := m.contentHeight()
+				if clickedRow >= 0 && clickedRow < availableHeight {
+					itemIdx := m.scrollWindowStart(availableHeight) + clickedRow
+					if itemIdx < len(m.visibleItems) {
+						m.selectionStart = -1
+						m.cursor = itemIdx
 					}
-					if startIdx+availableHeight > len(m.visibleItems) {
-						startIdx = len(m.visibleItems) - availableHeight
-						if startIdx < 0 {
-							startIdx = 0
-						}
-					}
-				}
-
-				// Convert click position to item index
-				itemIdx := startIdx + clickedRow
-				if itemIdx >= 0 && itemIdx < len(m.visibleItems) {
-					m.selectionStart = -1
-					m.cursor = itemIdx
 				}
 			}
 		}
@@ -1056,23 +1056,10 @@ func (m Model) View() string {
 
 	// Calculate available height for items
 	// Header: topBorder + statsLine1 + statsLine2 + timeAxis + blankLine = 5
+	// (plus optional enrichment/search/error lines)
 	// Footer: breadcrumb + statusLine + bottomBorder = 3
-	headerLines := 5
-	footerLines := 3
-	if m.hasEnrichmentLine() {
-		headerLines++ // queue/retry/billable line
-	}
 	searchActive := m.isSearching || m.searchQuery != ""
-	if searchActive {
-		headerLines++ // search bar takes one line
-	}
-	if m.reloadError != "" {
-		headerLines++ // error bar takes one line
-	}
-	availableHeight := height - headerLines - footerLines
-	if availableHeight < 1 {
-		availableHeight = 10
-	}
+	availableHeight := m.contentHeight()
 
 	// Determine if scrolling is needed
 	totalItems := len(m.visibleItems)
@@ -1108,24 +1095,15 @@ func (m Model) View() string {
 		b.WriteString("\n")
 	}
 
-	// Determine scroll window
+	// Determine scroll window (centered on cursor)
 	startIdx := 0
 	endIdx := totalItems
 
 	if needsScroll {
-		// Center cursor in view
-		halfHeight := availableHeight / 2
-		startIdx = m.cursor - halfHeight
-		if startIdx < 0 {
-			startIdx = 0
-		}
+		startIdx = m.scrollWindowStart(availableHeight)
 		endIdx = startIdx + availableHeight
 		if endIdx > totalItems {
 			endIdx = totalItems
-			startIdx = endIdx - availableHeight
-			if startIdx < 0 {
-				startIdx = 0
-			}
 		}
 	}
 
@@ -1224,11 +1202,10 @@ func (m Model) View() string {
 	}
 
 	if m.showDetailModal {
-		modal, maxScroll := m.renderDetailModal(height-4, width-10)
-		// Clamp scroll to valid range
-		if m.modalScroll > maxScroll {
-			m.modalScroll = maxScroll
-		}
+		// renderDetailModal clamps the scroll it uses internally; Update is
+		// responsible for clamping the persisted m.modalScroll (View has a
+		// value receiver, so assignments here would not persist).
+		modal, _ := m.renderDetailModal(height-4, width-10)
 		return placeModalCentered(modal, width, height)
 	}
 
@@ -1307,22 +1284,11 @@ func (m *Model) addAncestors(parentID string) {
 	m.searchAncIDs[parentID] = true
 	m.expandedState[parentID] = true
 
-	// Find the parent item to continue up
-	var findParent func(items []*TreeItem) string
-	findParent = func(items []*TreeItem) string {
-		for _, item := range items {
-			if item.ID == parentID {
-				return item.ParentID
-			}
-			if found := findParent(item.Children); found != "" {
-				return found
-			}
+	// Find the parent item to continue up (O(1) via the span index)
+	if m.spanIndex != nil {
+		if parent, ok := m.spanIndex.ByID[parentID]; ok {
+			m.addAncestors(parent.ParentID)
 		}
-		return ""
-	}
-	grandparentID := findParent(m.treeItems)
-	if grandparentID != "" {
-		m.addAncestors(grandparentID)
 	}
 }
 
@@ -1364,10 +1330,11 @@ func (m *Model) jumpToNext(pred func(TreeItem) bool) {
 	}
 }
 
-// pageSize returns the number of visible rows in the viewport.
-func (m *Model) pageSize() int {
+// headerLineCount returns the number of lines rendered above the item rows:
+// topBorder + statsLine1 + statsLine2 + timeAxis + blankLine = 5, plus
+// optional enrichment, search bar, and error bar lines.
+func (m Model) headerLineCount() int {
 	headerLines := 5
-	footerLines := 3
 	if m.hasEnrichmentLine() {
 		headerLines++
 	}
@@ -1377,11 +1344,47 @@ func (m *Model) pageSize() int {
 	if m.reloadError != "" {
 		headerLines++
 	}
-	available := m.height - headerLines - footerLines
+	return headerLines
+}
+
+// contentHeight returns the number of item rows between the header and footer,
+// matching View()'s layout. It never exceeds the space actually available.
+func (m Model) contentHeight() int {
+	height := m.height
+	if height < 10 {
+		height = 10 // View() enforces the same minimum
+	}
+	footerLines := 3 // breadcrumb + statusLine + bottomBorder
+	available := height - m.headerLineCount() - footerLines
 	if available < 1 {
-		available = 10
+		available = 1
 	}
 	return available
+}
+
+// scrollWindowStart returns the index of the first rendered item for the given
+// viewport height, matching View()'s centered-scroll computation.
+func (m Model) scrollWindowStart(availableHeight int) int {
+	totalItems := len(m.visibleItems)
+	if totalItems <= availableHeight {
+		return 0
+	}
+	startIdx := m.cursor - availableHeight/2
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	if startIdx+availableHeight > totalItems {
+		startIdx = totalItems - availableHeight
+	}
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	return startIdx
+}
+
+// pageSize returns the number of visible rows in the viewport.
+func (m *Model) pageSize() int {
+	return m.contentHeight()
 }
 
 // logicalEndCol returns the timeline column position for the logical end marker.
@@ -1607,14 +1610,14 @@ func (m Model) renderSearchBar(contentWidth int) string {
 		countStr = SearchCountStyle.Render(countPlain)
 	}
 
-	// Calculate padding
+	// Calculate padding (display columns, not bytes)
 	prefixWidth := 3 // " / "
-	queryWidth := len(m.searchQuery)
+	queryWidth := lipgloss.Width(m.searchQuery)
 	cursorWidth := 0
 	if m.isSearching {
 		cursorWidth = 1
 	}
-	countWidth := len(countPlain)
+	countWidth := lipgloss.Width(countPlain)
 
 	padWidth := contentWidth - prefixWidth - queryWidth - cursorWidth - countWidth
 	if padWidth < 1 {
@@ -1628,12 +1631,13 @@ func (m Model) renderSearchBar(contentWidth int) string {
 func (m Model) renderErrorBar(contentWidth int) string {
 	errMsg := m.reloadError
 	prefix := " ✗ Reload failed: "
-	maxMsg := contentWidth - len(prefix) - 2 // account for borders
-	if len(errMsg) > maxMsg && maxMsg > 3 {
-		errMsg = errMsg[:maxMsg-3] + "..."
+	// Measure in display columns (not bytes) and truncate rune-safely.
+	maxMsg := contentWidth - lipgloss.Width(prefix) - 2 // account for borders
+	if lipgloss.Width(errMsg) > maxMsg && maxMsg > 3 {
+		errMsg = ansi.Truncate(errMsg, maxMsg-3, "") + "..."
 	}
 	text := prefix + errMsg
-	textWidth := len(text)
+	textWidth := lipgloss.Width(text)
 	padWidth := contentWidth - textWidth
 	if padWidth < 0 {
 		padWidth = 0

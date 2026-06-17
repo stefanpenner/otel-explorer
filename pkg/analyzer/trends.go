@@ -2,12 +2,16 @@ package analyzer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"math"
 	"math/rand"
+	"os"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/stefanpenner/otel-explorer/pkg/githubapi"
@@ -16,12 +20,14 @@ import (
 
 // SamplingInfo describes whether and how sampling was applied
 type SamplingInfo struct {
-	Enabled        bool
-	SampleSize     int     // job-level sample count
-	TotalRuns      int     // total runs fetched from API
-	Confidence     float64
-	MarginOfError  float64
-	Rationale      string  // human-readable "why we think" explanation
+	Enabled       bool
+	SampleSize    int // job-level sample count
+	TotalRuns     int // total runs fetched from API
+	WorkflowCount int // distinct workflows in the window
+	MajorTarget   int // per-workflow observation target (≥1% compute share)
+	MinorTarget   int // per-workflow observation target (minor workflows)
+	MarginOfError float64
+	Rationale     string // human-readable "why we think" explanation
 }
 
 // TrendAnalysis holds the result of analyzing historical workflow trends for a repository.
@@ -38,6 +44,9 @@ type TrendAnalysis struct {
 	TopRegressions   []JobRegression
 	TopImprovements  []JobImprovement
 	QueueTimeStats   QueueTimeStats
+	Typical          *TypicalRun
+	Hourly           *HourlyPatterns
+	Facets           *FacetComparison // set only when faceting was requested
 }
 
 // Changepoint identifies the approximate point in time where a job's duration shifted.
@@ -104,6 +113,8 @@ type TrendSummary struct {
 	TrendDescription   string // human-readable explanation of the trend
 	PercentChange      float64
 	MostFlakyJobsCount int
+	RerunRuns          int   // runs that were re-run attempts (attempt > 1)
+	RerunComputeMs     int64 // compute spent on those re-run attempts — retry burn
 }
 
 // DataPoint represents a single data point in a trend
@@ -127,26 +138,38 @@ type JobTrend struct {
 
 // FlakyJob represents a job with inconsistent outcomes
 type FlakyJob struct {
-	Name           string
-	URLs           []string // sample recent failure URLs (newest first)
-	TotalRuns      int
-	SuccessCount   int
-	FailureCount   int
-	FlakeRate      float64 // percentage of failures
-	RecentFailures int     // failures in last 10 runs
-	LastFailure    time.Time
+	Name            string
+	URLs            []string // sample recent failure URLs (newest first)
+	TotalRuns       int
+	SuccessCount    int
+	FailureCount    int
+	FlakeRate       float64 // percentage of failures among decisive outcomes
+	RecentFailures  int     // failures in last 10 runs
+	LastFailure     time.Time
+	SameSHAFlakes   int     // commits where this job both passed and failed (definitive flakiness)
+	TransitionScore float64 // 0..1: pass/fail state changes over chronological observations (Buildkite-style)
 }
 
 // RunData represents simplified workflow run data
 type RunData struct {
-	ID         int64
-	HeadSHA    string
-	Status     string
-	Conclusion string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-	Duration   int64 // milliseconds
-	Jobs       []JobData
+	ID           int64
+	Attempt      int64 // run attempt number; >1 means this is a re-run
+	WorkflowName string
+	HeadSHA      string
+	Branch       string // head_branch the run executed against (for branch faceting)
+	Event        string // trigger event: push, pull_request, schedule, … (for event faceting)
+	Status       string
+	Conclusion   string
+	CreatedAt    time.Time
+	StartedAt    time.Time // effective start of this attempt (RunStartedAt for retries)
+	UpdatedAt    time.Time
+	Duration     int64 // milliseconds
+	Jobs         []JobData
+	// JobsFetched is true once a jobs response was retrieved for this run
+	// (even an empty one). It distinguishes a run we sampled that genuinely has
+	// no jobs from one we never fetched, so job-level facets can extrapolate
+	// population counts correctly. Not persisted in dumps (older dumps lack it).
+	JobsFetched bool `json:"-"`
 }
 
 // JobData represents simplified job data
@@ -159,15 +182,28 @@ type JobData struct {
 	CreatedAt   time.Time
 	StartedAt   time.Time
 	CompletedAt time.Time
-	Duration    int64 // milliseconds
-	QueueTime   int64 // milliseconds
+	Duration    int64    // milliseconds
+	QueueTime   int64    // milliseconds
+	RunnerName  string   // specific runner instance that executed the job
+	Labels      []string // runner labels requested (e.g. ubuntu-24.04) — for runner faceting
 }
 
 // TrendOptions configures the trend analysis behavior
 type TrendOptions struct {
-	NoSample    bool
-	Confidence  float64 // e.g. 0.95 for 95%
-	MarginOfError float64 // e.g. 0.10 for ±10%
+	NoSample      bool
+	MarginOfError float64          // e.g. 0.10 for ±10% — drives per-workflow observation targets
+	DumpRunsPath  string           // when set, write the fetched RunData as JSON for offline analysis
+	Facets        []FacetDimension // when set, slice the analysis into a (possibly crossed) facet comparison
+}
+
+// RunDump is the on-disk format written by TrendOptions.DumpRunsPath: the raw
+// per-run (and, where fetched, per-job) data backing a trend analysis. Use
+// with --no-sample to capture a complete ground-truth dataset.
+type RunDump struct {
+	Owner string
+	Repo  string
+	Days  int
+	Runs  []RunData
 }
 
 // AnalyzeTrends analyzes historical trends for a repository using GitHub API.
@@ -178,10 +214,6 @@ func AnalyzeTrends(ctx context.Context, client githubapi.GitHubProvider, owner, 
 	endTime := time.Now()
 	startTime := endTime.Add(-time.Duration(days) * 24 * time.Hour)
 
-	confidence := opts.Confidence
-	if confidence <= 0 {
-		confidence = 0.95
-	}
 	marginOfError := opts.MarginOfError
 	if marginOfError <= 0 {
 		marginOfError = 0.10
@@ -201,7 +233,6 @@ func AnalyzeTrends(ctx context.Context, client githubapi.GitHubProvider, owner, 
 	}
 
 	sampling := SamplingInfo{
-		Confidence:    confidence,
 		MarginOfError: marginOfError,
 	}
 
@@ -226,30 +257,49 @@ func AnalyzeTrends(ctx context.Context, client githubapi.GitHubProvider, owner, 
 		return nil, fmt.Errorf("no workflow runs found for %s/%s in the last %d days", owner, repo, days)
 	}
 
-	// Convert all runs to RunData (no job fetching yet)
-	runData := convertRuns(runs)
+	// Keep only completed runs. Queued/in-progress runs have no conclusion
+	// (dragging down success rates) and only partial durations, and because
+	// they always cluster at the recent end of the window they would
+	// systematically bias the first-half/second-half trend comparison.
+	completed := runs[:0]
+	for _, run := range runs {
+		if run.Status == "completed" {
+			completed = append(completed, run)
+		}
+	}
+	runs = completed
 
-	// Determine job-level sampling.
-	// Stratified temporal sampling guarantees even distribution across the
-	// time range, so the margin of error can be used directly without the
-	// extra tightening that uniform random sampling required.
+	if len(runs) == 0 {
+		return nil, fmt.Errorf("no completed workflow runs found for %s/%s in the last %d days", owner, repo, days)
+	}
+
+	// Convert all runs to RunData (no job fetching yet)
+	runData := ConvertRuns(runs)
+
+	// Determine job-level sampling. Allocation is per workflow rather than
+	// global: a global sample spreads observations so thinly across jobs
+	// that per-job percentiles (especially tails) become noise. Targets are
+	// derived from the margin knob and calibrated with cmd/sample-eval
+	// against full-scan ground truth.
 	totalRuns := len(runData)
 	sampling.TotalRuns = totalRuns
-	jobMargin := marginOfError
-	sampleSize := calculateSampleSize(totalRuns, confidence, jobMargin)
-
-	// Ensure a minimum sample floor so rare jobs still get observations.
-	if sampleSize < 80 {
-		sampleSize = min(80, totalRuns)
-	}
+	majorTarget, minorTarget := JobSampleTargets(marginOfError)
+	sampleIndices := SelectSampleIndices(runs, majorTarget, minorTarget)
+	sampling.WorkflowCount = countWorkflows(runs)
+	sampling.MajorTarget = majorTarget
+	sampling.MinorTarget = minorTarget
 
 	// Only sample when it saves ≥25% of API calls; otherwise the marginal
 	// savings aren't worth the per-job accuracy loss on borderline trends.
-	if !opts.NoSample && sampleSize < totalRuns*3/4 {
+	if !opts.NoSample && len(sampleIndices) < totalRuns*3/4 {
 		sampling.Enabled = true
-		sampling.SampleSize = sampleSize
+		sampling.SampleSize = len(sampleIndices)
 	} else {
 		sampling.SampleSize = totalRuns
+		sampleIndices = make([]int, totalRuns)
+		for i := range sampleIndices {
+			sampleIndices[i] = i
+		}
 	}
 
 	// Generate rationale
@@ -257,21 +307,28 @@ func AnalyzeTrends(ctx context.Context, client githubapi.GitHubProvider, owner, 
 
 	if reporter != nil {
 		reporter.SetURLRuns(sampling.SampleSize)
+		reporter.SetPhase("Fetching job details")
 		if sampling.Enabled {
-			reporter.SetPhase("Fetching job details")
-			reporter.SetDetail(fmt.Sprintf("sampling %d/%d runs — %.0f%% confidence, ±%.0f%% margin",
-				sampling.SampleSize, sampling.TotalRuns,
-				sampling.Confidence*100, sampling.MarginOfError*100))
+			reporter.SetDetail(fmt.Sprintf("sampling %d/%d runs across %d workflows — %d/%d obs targets (±%.0f%% margin)",
+				sampling.SampleSize, sampling.TotalRuns, sampling.WorkflowCount,
+				majorTarget, minorTarget, sampling.MarginOfError*100))
 		} else {
-			reporter.SetPhase("Fetching job details")
 			reporter.SetDetail(fmt.Sprintf("%d runs", totalRuns))
 		}
 	}
 
 	// Fetch jobs for sampled runs
-	sampleIndices := stratifiedSampleIndices(runs, sampling.SampleSize)
-	if err := fetchJobsForRuns(ctx, client, runData, runs, sampleIndices, reporter); err != nil {
+	fetchedRuns, err := fetchJobsForRuns(ctx, client, runData, runs, sampleIndices, reporter)
+	if err != nil {
 		return nil, fmt.Errorf("failed to fetch job data: %w", err)
+	}
+	// Record the achieved sample size so the output reflects reality when
+	// transient fetch errors dropped some sampled runs, and warn that the
+	// stated confidence/margin may no longer hold.
+	if fetchedRuns < sampling.SampleSize {
+		sampling.Rationale += fmt.Sprintf(" Warning: job details were fetched for only %d of %d sampled runs; job-level statistics may not meet the stated confidence/margin.",
+			fetchedRuns, sampling.SampleSize)
+		sampling.SampleSize = fetchedRuns
 	}
 
 	if reporter != nil {
@@ -285,15 +342,70 @@ func AnalyzeTrends(ctx context.Context, client githubapi.GitHubProvider, owner, 
 		return runData[i].CreatedAt.Before(runData[j].CreatedAt)
 	})
 
+	if opts.DumpRunsPath != "" {
+		if err := dumpRuns(opts.DumpRunsPath, owner, repo, days, runData); err != nil {
+			return nil, fmt.Errorf("failed to dump runs: %w", err)
+		}
+	}
+
+	analysis := analyzeRunData(owner, repo, runData, sampling, TimeRange{Start: startTime, End: endTime, Days: days})
+	if len(opts.Facets) > 0 {
+		defaultBranch := ""
+		for _, d := range opts.Facets {
+			if d == FacetBranch {
+				// Branch classification needs the repo's trunk; one cheap call.
+				if meta, err := client.FetchRepository(ctx, fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo)); err == nil && meta != nil {
+					defaultBranch = meta.DefaultBranch
+				}
+				break
+			}
+		}
+		analysis.Facets = computeFacets(runData, opts.Facets, defaultBranch)
+	}
+	return analysis, nil
+}
+
+// AnalyzeTrendsFromRuns runs the full trend analysis over locally stored
+// runs — exact job detail, no API calls, no sampling. Incomplete runs are
+// filtered out the same way the API path filters them.
+func AnalyzeTrendsFromRuns(owner, repo string, days int, runs []RunData) *TrendAnalysis {
+	completed := make([]RunData, 0, len(runs))
+	for _, run := range runs {
+		if run.Status == "completed" {
+			// Store-backed runs carry exact job detail (ote sync fetches all
+			// jobs), so every run counts as fetched — no extrapolation.
+			run.JobsFetched = true
+			completed = append(completed, run)
+		}
+	}
+	sort.Slice(completed, func(i, j int) bool {
+		return completed[i].CreatedAt.Before(completed[j].CreatedAt)
+	})
+	withJobs := 0
+	for _, run := range completed {
+		if len(run.Jobs) > 0 {
+			withJobs++
+		}
+	}
+	sampling := SamplingInfo{
+		SampleSize: withJobs,
+		TotalRuns:  len(completed),
+		Rationale: fmt.Sprintf("%s runs loaded from the local store (exact job detail for %d; run `ote sync` to refresh).",
+			formatCount(len(completed)), withJobs),
+	}
+	endTime := time.Now()
+	return analyzeRunData(owner, repo, completed, sampling,
+		TimeRange{Start: endTime.Add(-time.Duration(days) * 24 * time.Hour), End: endTime, Days: days})
+}
+
+// analyzeRunData computes the full TrendAnalysis over chronologically
+// sorted, completed runs.
+func analyzeRunData(owner, repo string, runData []RunData, sampling SamplingInfo, window TimeRange) *TrendAnalysis {
 	analysis := &TrendAnalysis{
-		Owner: owner,
-		Repo:  repo,
-		TimeRange: TimeRange{
-			Start: startTime,
-			End:   endTime,
-			Days:  days,
-		},
-		Sampling: sampling,
+		Owner:     owner,
+		Repo:      repo,
+		TimeRange: window,
+		Sampling:  sampling,
 	}
 
 	// Calculate summary statistics (uses all runs — run-level data)
@@ -332,39 +444,13 @@ func AnalyzeTrends(ctx context.Context, client githubapi.GitHubProvider, owner, 
 	// Calculate queue time statistics (uses sampled job data)
 	analysis.QueueTimeStats = calculateQueueTimeStats(runData)
 
-	return analysis, nil
-}
+	// Aggregate sampled jobs into the statistically typical run
+	analysis.Typical = computeTypicalRun(runData)
 
-// calculateSampleSize computes the minimum sample size for a finite population
-// using the standard formula: n = n₀ / (1 + (n₀-1)/N)
-// where n₀ = Z² × p × (1-p) / E²
-func calculateSampleSize(totalRuns int, confidence, marginOfError float64) int {
-	if totalRuns <= 0 {
-		return 0
-	}
+	// Hour-of-day patterns (needs a large dataset; usually store-backed)
+	analysis.Hourly = computeHourlyPatterns(runData)
 
-	// Z-score lookup for common confidence levels
-	z := 1.96 // default 95%
-	switch {
-	case confidence >= 0.99:
-		z = 2.576
-	case confidence >= 0.98:
-		z = 2.326
-	case confidence >= 0.95:
-		z = 1.96
-	case confidence >= 0.90:
-		z = 1.645
-	}
-
-	p := 0.5 // maximum variance
-	n0 := (z * z * p * (1 - p)) / (marginOfError * marginOfError)
-	n := n0 / (1 + (n0-1)/float64(totalRuns))
-
-	size := int(math.Ceil(n))
-	if size > totalRuns {
-		size = totalRuns
-	}
-	return size
+	return analysis
 }
 
 // stratifiedSampleIndices selects indices spread evenly across time buckets.
@@ -507,8 +593,8 @@ func generateRationale(s SamplingInfo) string {
 	parts := []string{fmt.Sprintf("%s runs analyzed.", formatCount(s.TotalRuns))}
 
 	if s.Enabled {
-		parts = append(parts, fmt.Sprintf("%d sampled for job details (%.0f%% confidence, ±%.0f%% margin).",
-			s.SampleSize, s.Confidence*100, s.MarginOfError*100))
+		parts = append(parts, fmt.Sprintf("%d sampled for job details across %d workflows (%d obs per major workflow, %d minor; temporally stratified).",
+			s.SampleSize, s.WorkflowCount, s.MajorTarget, s.MinorTarget))
 	} else {
 		parts = append(parts, "Full job details fetched for all runs.")
 	}
@@ -532,75 +618,160 @@ func formatCount(n int) string {
 	return string(result)
 }
 
-// convertRuns converts WorkflowRun data to RunData without fetching jobs
-func convertRuns(runs []githubapi.WorkflowRun) []RunData {
+// ConvertRuns converts WorkflowRun data to RunData without fetching jobs.
+func ConvertRuns(runs []githubapi.WorkflowRun) []RunData {
 	runData := make([]RunData, len(runs))
 	for i, run := range runs {
 		createdAt, _ := utils.ParseTime(run.CreatedAt)
 		updatedAt, _ := utils.ParseTime(run.UpdatedAt)
-		rd := RunData{
-			ID:         run.ID,
-			HeadSHA:    run.HeadSHA,
-			Status:     run.Status,
-			Conclusion: run.Conclusion,
-			CreatedAt:  createdAt,
-			UpdatedAt:  updatedAt,
+		attempt := run.RunAttempt
+		if attempt == 0 {
+			attempt = 1
 		}
-		if !createdAt.IsZero() && !updatedAt.IsZero() {
-			rd.Duration = updatedAt.Sub(createdAt).Milliseconds()
+		rd := RunData{
+			ID:           run.ID,
+			Attempt:      attempt,
+			WorkflowName: run.Name,
+			HeadSHA:      run.HeadSHA,
+			Branch:       run.HeadBranch,
+			Event:        run.Event,
+			Status:       run.Status,
+			Conclusion:   run.Conclusion,
+			CreatedAt:    createdAt,
+			UpdatedAt:    updatedAt,
+		}
+		// For retried runs, CreatedAt is from the original attempt, so
+		// UpdatedAt-CreatedAt would also span the idle gap between attempts.
+		// Use RunStartedAt as the effective start of this attempt.
+		startAt := createdAt
+		if run.RunAttempt > 1 && run.RunStartedAt != "" {
+			if retryStart, ok := utils.ParseTime(run.RunStartedAt); ok {
+				startAt = retryStart
+			}
+		}
+		rd.StartedAt = startAt
+		if !startAt.IsZero() && !updatedAt.IsZero() {
+			rd.Duration = updatedAt.Sub(startAt).Milliseconds()
 		}
 		runData[i] = rd
 	}
 	return runData
 }
 
-// fetchJobsForRuns fetches job details for runs at the given indices
-func fetchJobsForRuns(ctx context.Context, client githubapi.GitHubProvider, runData []RunData, runs []githubapi.WorkflowRun, indices []int, reporter ProgressReporter) error {
-	for _, idx := range indices {
-		run := runs[idx]
-		jobsURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/actions/runs/%d/jobs",
-			run.Repository.Owner.Login, run.Repository.Name, run.ID)
-		jobs, err := client.FetchJobsPaginated(ctx, jobsURL)
-		if reporter != nil {
-			reporter.ProcessRun()
-		}
-		if err != nil {
-			continue
-		}
-		for _, job := range jobs {
-			// Skip jobs from previous retry attempts to avoid double-counting
-			if job.RunAttempt != 0 && job.RunAttempt != run.RunAttempt {
-				continue
-			}
-			createdAt, _ := utils.ParseTime(job.CreatedAt)
-			startedAt, _ := utils.ParseTime(job.StartedAt)
-			completedAt, _ := utils.ParseTime(job.CompletedAt)
-
-			duration := int64(0)
-			if !startedAt.IsZero() && !completedAt.IsZero() {
-				duration = completedAt.Sub(startedAt).Milliseconds()
-			}
-
-			queueTime := int64(0)
-			if !createdAt.IsZero() && !startedAt.IsZero() {
-				queueTime = startedAt.Sub(createdAt).Milliseconds()
-			}
-
-			runData[idx].Jobs = append(runData[idx].Jobs, JobData{
-				ID:          job.ID,
-				Name:        job.Name,
-				URL:         job.HTMLURL,
-				Status:      job.Status,
-				Conclusion:  job.Conclusion,
-				CreatedAt:   createdAt,
-				StartedAt:   startedAt,
-				CompletedAt: completedAt,
-				Duration:    duration,
-				QueueTime:   queueTime,
-			})
+// CollectCompletedRunData converts the completed runs in `runs` to store-ready
+// RunData and fetches their job detail, so a normal analysis can seed the local
+// store with the same records `ote sync` would (job fetches are served from the
+// HTTP cache the analysis already populated). In-progress and queued runs are
+// skipped: their timings are not yet final and would pollute the typical-run
+// baseline. Returns nil when nothing is completed, without touching the client.
+func CollectCompletedRunData(ctx context.Context, client githubapi.GitHubProvider, runs []githubapi.WorkflowRun, reporter ProgressReporter) []RunData {
+	var completed []githubapi.WorkflowRun
+	for _, run := range runs {
+		if run.Status == "completed" {
+			completed = append(completed, run)
 		}
 	}
-	return nil
+	if len(completed) == 0 {
+		return nil
+	}
+	runData := ConvertRuns(completed)
+	indices := make([]int, len(completed))
+	for i := range completed {
+		indices[i] = i
+	}
+	_, _ = fetchJobsForRuns(ctx, client, runData, completed, indices, reporter)
+	return runData
+}
+
+// fetchJobsForRuns fetches job details for runs at the given indices.
+// It returns the number of runs whose job details were successfully fetched;
+// individual fetch errors are skipped, but a cancelled/expired context aborts.
+// jobFetchWorkers bounds concurrent job-detail requests. GitHub's secondary
+// limits allow 100 concurrent / 900 points-min; 8 stays far inside both
+// while cutting wall time ~8x versus serial fetching.
+const jobFetchWorkers = 8
+
+func fetchJobsForRuns(ctx context.Context, client githubapi.GitHubProvider, runData []RunData, runs []githubapi.WorkflowRun, indices []int, reporter ProgressReporter) (int, error) {
+	var (
+		fetched atomic.Int64
+		wg      sync.WaitGroup
+		sem     = make(chan struct{}, jobFetchWorkers)
+	)
+	for _, idx := range indices {
+		if ctx.Err() != nil {
+			break
+		}
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			fetchJobsForRun(ctx, client, runData, runs[idx], idx, reporter, &fetched)
+		}(idx)
+	}
+	wg.Wait()
+	if ctx.Err() != nil {
+		return int(fetched.Load()), fmt.Errorf("job fetching aborted: %w", ctx.Err())
+	}
+	return int(fetched.Load()), nil
+}
+
+// fetchJobsForRun fetches one run's jobs and fills runData[idx]. Each
+// goroutine writes only its own runData element, so no locking is needed.
+func fetchJobsForRun(ctx context.Context, client githubapi.GitHubProvider, runData []RunData, run githubapi.WorkflowRun, idx int, reporter ProgressReporter, fetched *atomic.Int64) {
+	jobsURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/actions/runs/%d/jobs",
+		run.Repository.Owner.Login, run.Repository.Name, run.ID)
+	jobs, err := client.FetchJobsPaginated(ctx, jobsURL)
+	if reporter != nil {
+		reporter.ProcessRun()
+	}
+	if err != nil {
+		return
+	}
+	fetched.Add(1)
+	runData[idx].JobsFetched = true
+	runData[idx].Jobs = append(runData[idx].Jobs, ConvertJobs(jobs, run.RunAttempt)...)
+}
+
+// ConvertJobs converts API jobs into JobData, skipping jobs from previous
+// retry attempts to avoid double-counting. runAttempt 0 accepts all
+// attempts (used when the caller has no listing context for the run).
+func ConvertJobs(jobs []githubapi.Job, runAttempt int64) []JobData {
+	var out []JobData
+	for _, job := range jobs {
+		if runAttempt != 0 && job.RunAttempt != 0 && job.RunAttempt != runAttempt {
+			continue
+		}
+		createdAt, _ := utils.ParseTime(job.CreatedAt)
+		startedAt, _ := utils.ParseTime(job.StartedAt)
+		completedAt, _ := utils.ParseTime(job.CompletedAt)
+
+		duration := int64(0)
+		if !startedAt.IsZero() && !completedAt.IsZero() {
+			duration = completedAt.Sub(startedAt).Milliseconds()
+		}
+
+		queueTime := int64(0)
+		if !createdAt.IsZero() && !startedAt.IsZero() {
+			queueTime = startedAt.Sub(createdAt).Milliseconds()
+		}
+
+		out = append(out, JobData{
+			ID:          job.ID,
+			Name:        job.Name,
+			URL:         job.HTMLURL,
+			Status:      job.Status,
+			Conclusion:  job.Conclusion,
+			CreatedAt:   createdAt,
+			StartedAt:   startedAt,
+			CompletedAt: completedAt,
+			Duration:    duration,
+			QueueTime:   queueTime,
+			RunnerName:  job.RunnerName,
+			Labels:      job.Labels,
+		})
+	}
+	return out
 }
 
 // calculateTrendSummary computes summary statistics
@@ -611,6 +782,8 @@ func calculateTrendSummary(runs []RunData) TrendSummary {
 
 	durations := make([]float64, 0, len(runs))
 	successCount := 0
+	rerunRuns := 0
+	var rerunComputeMs int64
 
 	for _, run := range runs {
 		if run.Duration > 0 {
@@ -619,6 +792,12 @@ func calculateTrendSummary(runs []RunData) TrendSummary {
 		}
 		if run.Conclusion == "success" {
 			successCount++
+		}
+		if run.Attempt > 1 {
+			rerunRuns++
+			if run.Duration > 0 {
+				rerunComputeMs += run.Duration
+			}
 		}
 	}
 
@@ -658,6 +837,8 @@ func calculateTrendSummary(runs []RunData) TrendSummary {
 
 	return TrendSummary{
 		TotalRuns:        len(runs),
+		RerunRuns:        rerunRuns,
+		RerunComputeMs:   rerunComputeMs,
 		AvgDuration:      avgDuration,
 		MedianDuration:   medianDuration,
 		P95Duration:      p95Duration,
@@ -807,18 +988,18 @@ func analyzeJobTrends(runs []RunData) []JobTrend {
 
 // detectFlakyJobs identifies jobs with inconsistent outcomes
 func detectFlakyJobs(runs []RunData) []FlakyJob {
-	jobMap := make(map[string][]JobData)
+	jobMap := make(map[string][]flakeObs)
 
 	for _, run := range runs {
 		for _, job := range run.Jobs {
-			jobMap[job.Name] = append(jobMap[job.Name], job)
+			jobMap[job.Name] = append(jobMap[job.Name], flakeObs{job: job, headSHA: run.HeadSHA})
 		}
 	}
 
 	var flakyJobs []FlakyJob
 
-	for name, jobs := range jobMap {
-		if len(jobs) < 5 {
+	for name, obs := range jobMap {
+		if len(obs) < 5 {
 			continue // Not enough data
 		}
 
@@ -827,21 +1008,34 @@ func detectFlakyJobs(runs []RunData) []FlakyJob {
 		var lastFailure time.Time
 		var failureURLs []string
 
-		// Sort jobs by time (most recent first)
-		sort.Slice(jobs, func(i, j int) bool {
-			return jobs[i].CompletedAt.After(jobs[j].CompletedAt)
+		// Sort observations by time (most recent first)
+		sort.Slice(obs, func(i, j int) bool {
+			return obs[i].job.CompletedAt.After(obs[j].job.CompletedAt)
 		})
 
 		recentFailures := 0
 		recentLimit := 10
-		if len(jobs) < recentLimit {
-			recentLimit = len(jobs)
+		if len(obs) < recentLimit {
+			recentLimit = len(obs)
 		}
 
-		for i, job := range jobs {
-			if job.Conclusion == "success" {
+		// Same-SHA divergence: a commit on which this job both passed and
+		// failed proves the job, not the code, is unstable.
+		shaOutcomes := make(map[string]uint8) // bit 1 = success seen, bit 2 = failure seen
+		sameSHAFlakes := 0
+
+		for i, o := range obs {
+			job := o.job
+			switch job.Conclusion {
+			case "success":
 				successCount++
-			} else if job.Conclusion == "failure" {
+				if o.headSHA != "" {
+					if shaOutcomes[o.headSHA]&2 != 0 && shaOutcomes[o.headSHA]&1 == 0 {
+						sameSHAFlakes++
+					}
+					shaOutcomes[o.headSHA] |= 1
+				}
+			case "failure":
 				failureCount++
 				if lastFailure.IsZero() || job.CompletedAt.After(lastFailure) {
 					lastFailure = job.CompletedAt
@@ -849,40 +1043,85 @@ func detectFlakyJobs(runs []RunData) []FlakyJob {
 				if job.URL != "" && len(failureURLs) < 5 {
 					failureURLs = append(failureURLs, job.URL)
 				}
-
 				if i < recentLimit {
 					recentFailures++
+				}
+				if o.headSHA != "" {
+					if shaOutcomes[o.headSHA]&1 != 0 && shaOutcomes[o.headSHA]&2 == 0 {
+						sameSHAFlakes++
+					}
+					shaOutcomes[o.headSHA] |= 2
 				}
 			}
 		}
 
-		if failureCount == 0 {
-			continue // Never failed, not flaky
+		// Flakiness requires mixed outcomes: a job that never failed isn't
+		// flaky, and one that never succeeded is consistently broken, not flaky.
+		if failureCount == 0 || successCount == 0 {
+			continue
 		}
 
-		flakeRate := float64(failureCount) / float64(len(jobs)) * 100
+		// Transition score: pass/fail state changes over chronological
+		// (oldest-first) decisive observations, normalized to 0..1.
+		transitions := 0
+		decisive := 0
+		prev := ""
+		for i := len(obs) - 1; i >= 0; i-- { // obs is newest-first
+			c := obs[i].job.Conclusion
+			if c != "success" && c != "failure" {
+				continue
+			}
+			decisive++
+			if prev != "" && c != prev {
+				transitions++
+			}
+			prev = c
+		}
+		transitionScore := 0.0
+		if decisive > 1 {
+			transitionScore = float64(transitions) / float64(decisive-1)
+		}
 
-		// Only include if flake rate > 10%
-		if flakeRate > 10 {
+		// Rate over decisive outcomes only, so skipped/cancelled/in-progress
+		// observations don't dilute the flake rate.
+		flakeRate := float64(failureCount) / float64(successCount+failureCount) * 100
+
+		// Include on either signal: >10% flake rate, or definitive same-SHA
+		// divergence regardless of rate.
+		if flakeRate > 10 || sameSHAFlakes > 0 {
 			flakyJobs = append(flakyJobs, FlakyJob{
-				Name:           name,
-				URLs:           failureURLs,
-				TotalRuns:      len(jobs),
-				SuccessCount:   successCount,
-				FailureCount:   failureCount,
-				FlakeRate:      flakeRate,
-				RecentFailures: recentFailures,
-				LastFailure:    lastFailure,
+				Name:            name,
+				URLs:            failureURLs,
+				TotalRuns:       len(obs),
+				SuccessCount:    successCount,
+				FailureCount:    failureCount,
+				FlakeRate:       flakeRate,
+				RecentFailures:  recentFailures,
+				LastFailure:     lastFailure,
+				SameSHAFlakes:   sameSHAFlakes,
+				TransitionScore: transitionScore,
 			})
 		}
 	}
 
-	// Sort by flake rate (worst first)
+	// Definitive same-SHA flakes first, then transition score, then rate.
 	sort.Slice(flakyJobs, func(i, j int) bool {
+		if flakyJobs[i].SameSHAFlakes != flakyJobs[j].SameSHAFlakes {
+			return flakyJobs[i].SameSHAFlakes > flakyJobs[j].SameSHAFlakes
+		}
+		if flakyJobs[i].TransitionScore != flakyJobs[j].TransitionScore {
+			return flakyJobs[i].TransitionScore > flakyJobs[j].TransitionScore
+		}
 		return flakyJobs[i].FlakeRate > flakyJobs[j].FlakeRate
 	})
 
 	return flakyJobs
+}
+
+// flakeObs pairs a job observation with the commit it ran on.
+type flakeObs struct {
+	job     JobData
+	headSHA string
 }
 
 // Utility functions
@@ -923,7 +1162,7 @@ func calculatePercentile(values []float64, p int) float64 {
 	copy(sorted, values)
 	sort.Float64s(sorted)
 
-	index := int(math.Ceil(float64(len(sorted)) * float64(p) / 100.0)) - 1
+	index := int(math.Ceil(float64(len(sorted))*float64(p)/100.0)) - 1
 	if index < 0 {
 		index = 0
 	}
@@ -953,19 +1192,24 @@ func detectChangepoint(observations []jobObservation, minSideSize int) *Changepo
 	bestSSR := math.MaxFloat64
 	bestIdx := -1
 
-	for i := minSideSize; i <= n-minSideSize; i++ {
-		leftAvg := avgObservations(observations[:i])
-		rightAvg := avgObservations(observations[i:])
+	// Prefix sums of durations and squared durations make each split's
+	// sum-of-squared-residuals O(1): SSR = Σx² - (Σx)²/n per side,
+	// keeping the whole scan O(n) instead of O(n²).
+	prefixSum := make([]float64, n+1)
+	prefixSq := make([]float64, n+1)
+	for i, o := range observations {
+		prefixSum[i+1] = prefixSum[i] + o.DurationSec
+		prefixSq[i+1] = prefixSq[i] + o.DurationSec*o.DurationSec
+	}
 
-		ssr := 0.0
-		for j := 0; j < i; j++ {
-			d := observations[j].DurationSec - leftAvg
-			ssr += d * d
-		}
-		for j := i; j < n; j++ {
-			d := observations[j].DurationSec - rightAvg
-			ssr += d * d
-		}
+	for i := minSideSize; i <= n-minSideSize; i++ {
+		leftSum := prefixSum[i]
+		leftSSR := prefixSq[i] - leftSum*leftSum/float64(i)
+
+		rightSum := prefixSum[n] - prefixSum[i]
+		rightSSR := (prefixSq[n] - prefixSq[i]) - rightSum*rightSum/float64(n-i)
+
+		ssr := leftSSR + rightSSR
 		if ssr < bestSSR {
 			bestSSR = ssr
 			bestIdx = i
@@ -1041,8 +1285,13 @@ func calculateJobChanges(runs []RunData) ([]JobRegression, []JobImprovement) {
 			continue
 		}
 
-		oldAvg := avgObservations(firstHalf)
-		newAvg := avgObservations(secondHalf)
+		// Snap averages to the table's display grid so the reported percent
+		// change reproduces from the Was/Now columns the user sees.
+		oldAvg := utils.RoundTrendDuration(avgObservations(firstHalf))
+		newAvg := utils.RoundTrendDuration(avgObservations(secondHalf))
+		if oldAvg == 0 {
+			continue
+		}
 		change := newAvg - oldAvg
 		percentChange := (change / oldAvg) * 100
 
@@ -1141,4 +1390,94 @@ func calculateQueueTimeStats(runs []RunData) QueueTimeStats {
 		MedianRunTime:   calculateMedian(runTimes),
 		QueueTimeRatio:  queueRatio,
 	}
+}
+
+// dumpRuns writes the fetched run data (including any job detail) as JSON,
+// for offline analysis such as sampling-strategy evaluation.
+func dumpRuns(path, owner, repo string, days int, runs []RunData) error {
+	data, err := json.MarshalIndent(RunDump{Owner: owner, Repo: repo, Days: days, Runs: runs}, "", " ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+// jobSampleTargets maps the margin-of-error knob to per-workflow observation
+// targets. Calibrated empirically with cmd/sample-eval against full-scan
+// ground truth (nodejs/node, rails/rails): ~50 observations per significant
+// workflow keeps worst-job p50 error ≲10% and p95 error ≲30% at 90% of
+// trials, while trivial workflows need only enough to be represented.
+func JobSampleTargets(marginOfError float64) (major, minor int) {
+	major = int(math.Round(5.0 / marginOfError)) // 0.10 → 50
+	if major < 20 {
+		major = 20
+	}
+	if major > 200 {
+		major = 200
+	}
+	minor = major * 2 / 5 // 0.10 → 20
+	if minor < 10 {
+		minor = 10
+	}
+	return major, minor
+}
+
+// selectSampleIndices chooses which runs get job-detail fetches by sampling
+// each workflow independently: workflows holding ≥1% of total run time get
+// min(N, major) runs, the rest min(N, minor), drawn via deterministic
+// temporal stratification within the workflow. Per-workflow allocation keeps
+// job-level percentiles honest — a global sample starves every individual
+// job of observations — and makes the API cost scale with the number of
+// workflows rather than the size of the window. Returns sorted indices.
+func SelectSampleIndices(runs []githubapi.WorkflowRun, major, minor int) []int {
+	byWorkflow := make(map[string][]int)
+	durations := make(map[string]float64)
+	var totalDuration float64
+	for i, run := range runs {
+		byWorkflow[run.Name] = append(byWorkflow[run.Name], i)
+		created, _ := utils.ParseTime(run.CreatedAt)
+		updated, _ := utils.ParseTime(run.UpdatedAt)
+		if !created.IsZero() && !updated.IsZero() && updated.After(created) {
+			d := updated.Sub(created).Seconds()
+			durations[run.Name] += d
+			totalDuration += d
+		}
+	}
+
+	names := make([]string, 0, len(byWorkflow))
+	for name := range byWorkflow {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var selected []int
+	for _, name := range names {
+		group := byWorkflow[name]
+		target := minor
+		if totalDuration > 0 && durations[name]/totalDuration >= 0.01 {
+			target = major
+		}
+		if target >= len(group) {
+			selected = append(selected, group...)
+			continue
+		}
+		subset := make([]githubapi.WorkflowRun, len(group))
+		for i, idx := range group {
+			subset[i] = runs[idx]
+		}
+		for _, si := range stratifiedSampleIndices(subset, target) {
+			selected = append(selected, group[si])
+		}
+	}
+	sort.Ints(selected)
+	return selected
+}
+
+// countWorkflows returns the number of distinct workflow names in runs.
+func countWorkflows(runs []githubapi.WorkflowRun) int {
+	names := make(map[string]struct{})
+	for _, run := range runs {
+		names[run.Name] = struct{}{}
+	}
+	return len(names)
 }

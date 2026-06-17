@@ -3,6 +3,7 @@ package results
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -19,15 +20,22 @@ const (
 
 // highlightMatch splits name into before/match/after and styles the match portion
 // with charStyle, and the rest with rowStyle. The match is case-insensitive.
+// All matching is done in rune space so multibyte/case-length-changing runes
+// (e.g. Ⱥ -> ⱥ) cannot misalign or overrun the original string.
 func highlightMatch(name, query string, charStyle, rowStyle lipgloss.Style) string {
-	lower := strings.ToLower(name)
-	idx := strings.Index(lower, strings.ToLower(query))
+	nameRunes := []rune(name)
+	lowerName := make([]rune, len(nameRunes))
+	for i, r := range nameRunes {
+		lowerName[i] = unicode.ToLower(r)
+	}
+	lowerQuery := []rune(strings.ToLower(query))
+	idx := runeIndex(lowerName, lowerQuery)
 	if idx < 0 {
 		return rowStyle.Render(name)
 	}
-	before := name[:idx]
-	match := name[idx : idx+len(query)]
-	after := name[idx+len(query):]
+	before := string(nameRunes[:idx])
+	match := string(nameRunes[idx : idx+len(lowerQuery)])
+	after := string(nameRunes[idx+len(lowerQuery):])
 
 	var result string
 	if before != "" {
@@ -38,6 +46,27 @@ func highlightMatch(name, query string, charStyle, rowStyle lipgloss.Style) stri
 		result += rowStyle.Render(after)
 	}
 	return result
+}
+
+// runeIndex returns the index in haystack of the first occurrence of needle,
+// or -1 if needle is not present. An empty needle matches at index 0.
+func runeIndex(haystack, needle []rune) int {
+	if len(needle) == 0 {
+		return 0
+	}
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		found := true
+		for j, r := range needle {
+			if haystack[i+j] != r {
+				found = false
+				break
+			}
+		}
+		if found {
+			return i
+		}
+	}
+	return -1
 }
 
 // hyperlink wraps text in OSC 8 terminal hyperlink escape sequence.
@@ -1127,14 +1156,14 @@ func renderInspectorLine(entry FlatInspectorEntry, isSelected bool, maxValueWidt
 		value := entry.Node.Value
 		if entry.Node.IsURL {
 			value = hyperlink(value, value)
-		} else if len(value) > maxValueWidth && maxValueWidth > 3 {
-			value = value[:maxValueWidth-3] + "..."
+		} else if lipgloss.Width(value) > maxValueWidth && maxValueWidth > 3 {
+			value = ansi.Truncate(value, maxValueWidth, "...")
 		}
 		line = indent + indicator + label + " " + ModalValueStyle.Render(value)
 	} else if entry.Node.Value != "" {
 		value := entry.Node.Value
-		if len(value) > maxValueWidth && maxValueWidth > 3 {
-			value = value[:maxValueWidth-3] + "..."
+		if lipgloss.Width(value) > maxValueWidth && maxValueWidth > 3 {
+			value = ansi.Truncate(value, maxValueWidth, "...")
 		}
 		line = indent + indicator + ModalValueStyle.Render(value)
 	} else {
@@ -1166,8 +1195,8 @@ func (m Model) renderInspectorSidebar(maxHeight int) string {
 
 	for i, section := range m.inspectorNodes {
 		label := SectionLabel(section)
-		if len(label) > sidebarWidth-4 {
-			label = label[:sidebarWidth-7] + "..."
+		if lipgloss.Width(label) > sidebarWidth-4 {
+			label = ansi.Truncate(label, sidebarWidth-4, "...")
 		}
 
 		isSelected := i == m.inspectorSidebarIdx
@@ -1215,15 +1244,15 @@ func (m Model) renderInspectorBreadcrumb() string {
 	var parts []string
 	for _, entry := range m.inspectorBreadcrumb {
 		name := entry.item.DisplayName
-		if len(name) > 20 {
-			name = name[:17] + "..."
+		if lipgloss.Width(name) > 20 {
+			name = ansi.Truncate(name, 20, "...")
 		}
 		parts = append(parts, ModalBreadcrumbStyle.Render(name))
 	}
 	// Current item
 	curName := m.modalItem.DisplayName
-	if len(curName) > 20 {
-		curName = curName[:17] + "..."
+	if lipgloss.Width(curName) > 20 {
+		curName = ansi.Truncate(curName, 20, "...")
 	}
 	parts = append(parts, ModalBreadcrumbActiveStyle.Render(curName))
 	sep := ModalBreadcrumbSepStyle.Render(" › ")
@@ -1296,13 +1325,47 @@ func (m Model) renderInspectorHeader(maxWidth int) string {
 	if item.Hints.URL != "" {
 		urlText := item.Hints.URL
 		if lipgloss.Width(urlText) > maxWidth-4 {
-			urlText = urlText[:maxWidth-7] + "…"
+			urlText = ansi.Truncate(urlText, maxWidth-4, "…")
 		}
 		urlLine := hyperlink(item.Hints.URL, FooterStyle.Render(urlText))
 		header += "\n" + urlLine
 	}
 
 	return header
+}
+
+// modalContentHeight returns the number of content lines visible in the
+// detail modal for the given modal maxHeight, mirroring renderDetailModal.
+func (m Model) modalContentHeight(maxHeight int) int {
+	contentMaxHeight := maxHeight - 4 // 2 for border, 2 for padding
+	contentMaxHeight -= 4            // header (name + badges + separator) + footer
+	if m.modalItem != nil && m.modalItem.Hints.URL != "" {
+		contentMaxHeight-- // URL line in header
+	}
+	if len(m.inspectorBreadcrumb) > 0 {
+		contentMaxHeight-- // breadcrumb line
+	}
+	if m.inspectorSearching || m.inspectorSearchQuery != "" {
+		contentMaxHeight-- // search bar
+	}
+	if contentMaxHeight < 5 {
+		contentMaxHeight = 5
+	}
+	return contentMaxHeight
+}
+
+// modalMaxScroll returns the maximum useful modalScroll value for the current
+// window size, matching renderDetailModal's internal clamping.
+func (m Model) modalMaxScroll() int {
+	height := m.height
+	if height < 10 {
+		height = 10 // View() enforces the same minimum
+	}
+	maxScroll := len(m.inspectorFlat) - m.modalContentHeight(height-4)
+	if maxScroll < 0 {
+		return 0
+	}
+	return maxScroll
 }
 
 // renderDetailModal renders the two-pane detail modal for an item.
@@ -1315,21 +1378,8 @@ func (m Model) renderDetailModal(maxHeight, maxWidth int) (string, int) {
 	flat := m.inspectorFlat
 
 	// Calculate available height for content
-	contentMaxHeight := maxHeight - 4 // 2 for border, 2 for padding
-	contentMaxHeight -= 4 // header (name + badges + separator) + footer
-	if m.modalItem != nil && m.modalItem.Hints.URL != "" {
-		contentMaxHeight-- // URL line in header
-	}
+	contentMaxHeight := m.modalContentHeight(maxHeight)
 	hasBreadcrumb := len(m.inspectorBreadcrumb) > 0
-	if hasBreadcrumb {
-		contentMaxHeight-- // breadcrumb line
-	}
-	if m.inspectorSearching || m.inspectorSearchQuery != "" {
-		contentMaxHeight-- // search bar
-	}
-	if contentMaxHeight < 5 {
-		contentMaxHeight = 5
-	}
 
 	// Build search match set for highlighting
 	searchMatchSet := make(map[int]bool)

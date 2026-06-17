@@ -4,8 +4,10 @@ package receiver
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -16,6 +18,10 @@ import (
 	"github.com/stefanpenner/otel-explorer/pkg/ingest/otlpfile"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
+
+// maxRequestBodyBytes caps OTLP request bodies (compressed and decompressed)
+// to bound memory use; oversized requests get 413.
+const maxRequestBodyBytes = 128 * 1024 * 1024 // 128MB
 
 // Receiver accepts OTLP/HTTP trace data and accumulates spans.
 type Receiver struct {
@@ -95,10 +101,35 @@ func (r *Receiver) handleTraces(w http.ResponseWriter, req *http.Request) {
 	}
 
 	defer req.Body.Close()
+	req.Body = http.MaxBytesReader(w, req.Body, maxRequestBodyBytes)
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
+	}
+
+	// Per the OTLP/HTTP spec the body may be gzip-compressed.
+	if req.Header.Get("Content-Encoding") == "gzip" {
+		gr, gzErr := gzip.NewReader(bytes.NewReader(body))
+		if gzErr != nil {
+			http.Error(w, "invalid gzip body", http.StatusBadRequest)
+			return
+		}
+		body, gzErr = io.ReadAll(io.LimitReader(gr, maxRequestBodyBytes+1))
+		gr.Close()
+		if gzErr != nil {
+			http.Error(w, "failed to decompress body", http.StatusBadRequest)
+			return
+		}
+		if len(body) > maxRequestBodyBytes {
+			http.Error(w, "decompressed body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 	}
 
 	contentType := req.Header.Get("Content-Type")
@@ -107,20 +138,10 @@ func (r *Receiver) handleTraces(w http.ResponseWriter, req *http.Request) {
 
 	switch {
 	case contentType == "application/x-protobuf":
-		// Binary protobuf OTLP — fall back to JSON parser on failure
-		spans, err = otlpfile.ParseProtobuf(bytes.NewReader(body))
-		if err != nil || len(spans) == 0 {
-			var jsonErr error
-			spans, jsonErr = otlpfile.Parse(bytes.NewReader(body))
-			if jsonErr != nil {
-				// Report the original protobuf error since that was the intended format
-				if err == nil {
-					err = jsonErr
-				}
-			} else {
-				err = nil
-			}
-		}
+		// OTLP/HTTP binary protobuf: the body is a bare serialized
+		// ExportTraceServiceRequest with no length prefix (the length-prefixed
+		// fileexporter format handled by ParseProtobuf does not apply here).
+		spans, err = otlpfile.ParseProtobufRequest(body)
 	default:
 		// JSON format (OTLP JSON or stdouttrace)
 		spans, err = otlpfile.Parse(bytes.NewReader(body))
