@@ -44,35 +44,37 @@ type RunReport struct {
 
 // RunSummary aggregates across every analyzed run.
 type RunSummary struct {
-	TotalRuns         int     `json:"total_runs"`
-	SuccessfulRuns    int     `json:"successful_runs"`
-	FailedRuns        int     `json:"failed_runs"`
-	TotalJobs         int     `json:"total_jobs"`
-	FailedJobs        int     `json:"failed_jobs"`
-	TotalSteps        int     `json:"total_steps"`
-	SuccessRatePct    float64 `json:"success_rate_pct"`
-	JobSuccessRatePct float64 `json:"job_success_rate_pct"`
-	MaxConcurrency    int     `json:"max_concurrency"`
-	WallClockMs       int64   `json:"wall_clock_ms"`
+	TotalRuns         int      `json:"total_runs"`
+	SuccessfulRuns    int      `json:"successful_runs"`
+	FailedRuns        int      `json:"failed_runs"`
+	TotalJobs         int      `json:"total_jobs"`
+	FailedJobs        int      `json:"failed_jobs"`
+	TotalSteps        int      `json:"total_steps"`
+	SuccessRatePct    *float64 `json:"success_rate_pct"`     // null = unknown (untyped traces)
+	JobSuccessRatePct *float64 `json:"job_success_rate_pct"` // null = unknown
+	MaxConcurrency    int      `json:"max_concurrency"`
+	WallClockMs       int64    `json:"wall_clock_ms"`
 }
 
 // Run is a single analyzed workflow run (or PR/commit aggregate).
 type Run struct {
-	Repo              string  `json:"repo"`
-	Identifier        string  `json:"identifier"`
-	Type              string  `json:"type"`
-	Branch            string  `json:"branch,omitempty"`
-	HeadSHA           string  `json:"head_sha,omitempty"`
-	DisplayName       string  `json:"display_name,omitempty"`
-	URL               string  `json:"url,omitempty"`
-	TotalJobs         int     `json:"total_jobs"`
-	FailedJobs        int     `json:"failed_jobs"`
-	TotalSteps        int     `json:"total_steps"`
-	JobSuccessRatePct float64 `json:"job_success_rate_pct"`
-	AvgQueueMs        int64   `json:"avg_queue_ms"`
-	MaxQueueMs        int64   `json:"max_queue_ms"`
-	Jobs              []Job   `json:"jobs"`
-	Steps             []Step  `json:"steps,omitempty"`
+	Repo              string   `json:"repo"`
+	Identifier        string   `json:"identifier"`
+	Type              string   `json:"type"`
+	Branch            string   `json:"branch,omitempty"`
+	HeadSHA           string   `json:"head_sha,omitempty"`
+	DisplayName       string   `json:"display_name,omitempty"`
+	URL               string   `json:"url,omitempty"`
+	TotalJobs         int      `json:"total_jobs"`
+	FailedJobs        int      `json:"failed_jobs"`
+	TotalSteps        int      `json:"total_steps"`
+	JobSuccessRatePct *float64 `json:"job_success_rate_pct"` // null = unknown
+	AvgQueueMs        int64    `json:"avg_queue_ms"`
+	MaxQueueMs        int64    `json:"max_queue_ms"`
+	Jobs              []Job    `json:"jobs"`
+	Steps             []Step   `json:"steps,omitempty"`
+
+	conclusion string // run outcome, used only to derive summary counts
 }
 
 // Job is one job within a run.

@@ -50,8 +50,8 @@ func renderRunSheets(r *RunReport, sheet func(string, []string, [][]any) error) 
 		{"Total jobs", r.Summary.TotalJobs},
 		{"Failed jobs", r.Summary.FailedJobs},
 		{"Total steps", r.Summary.TotalSteps},
-		{"Success rate %", round1(r.Summary.SuccessRatePct)},
-		{"Job success rate %", round1(r.Summary.JobSuccessRatePct)},
+		{"Success rate", pctText(r.Summary.SuccessRatePct)},
+		{"Job success rate", pctText(r.Summary.JobSuccessRatePct)},
 		{"Max concurrency", r.Summary.MaxConcurrency},
 		{"Wall clock (sec)", round1(float64(r.Summary.WallClockMs) / 1000)},
 	}

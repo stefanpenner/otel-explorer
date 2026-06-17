@@ -1100,7 +1100,10 @@ func main() {
 
 	switch cfg.outputFormat {
 	case "json", "xlsx", "doc", "html":
-		rep := export.BuildRunReport(results, combined, globalEarliest, globalLatest, generatedAt())
+		// Trace files / receiver inputs have no URL results; reconstruct runs
+		// from spans so those inputs still produce a populated report.
+		spanRuns := analyzer.RunsFromSpans(spans, enricher)
+		rep := export.BuildRunReport(results, spanRuns, combined, globalEarliest, globalLatest, generatedAt())
 		if err := emitReport(rep, cfg.outputFormat, cfg.outFile); err != nil {
 			printError(err, "writing report")
 			hadError = true

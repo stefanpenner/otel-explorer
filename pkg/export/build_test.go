@@ -1,6 +1,7 @@
 package export
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -35,7 +36,7 @@ func TestBuildRunReport(t *testing.T) {
 		SuccessRate: "100.0", JobSuccessRate: "50.0", MaxConcurrency: 2,
 	}
 
-	rep := BuildRunReport(results, combined, 1000, 4000, "2026-06-17T00:00:00Z")
+	rep := BuildRunReport(results, nil, combined, 1000, 4000, "2026-06-17T00:00:00Z")
 
 	assert.Equal(t, SchemaVersion, rep.SchemaVersion)
 	assert.Equal(t, KindRunAnalysis, rep.Kind)
@@ -48,15 +49,18 @@ func TestBuildRunReport(t *testing.T) {
 	assert.Equal(t, 1, s.SuccessfulRuns)
 	assert.Equal(t, 2, s.TotalJobs)
 	assert.Equal(t, 1, s.FailedJobs)
-	assert.InDelta(t, 100.0, s.SuccessRatePct, 0.01)
-	assert.InDelta(t, 50.0, s.JobSuccessRatePct, 0.01)
+	require.NotNil(t, s.SuccessRatePct)
+	assert.InDelta(t, 100.0, *s.SuccessRatePct, 0.01)
+	require.NotNil(t, s.JobSuccessRatePct)
+	assert.InDelta(t, 50.0, *s.JobSuccessRatePct, 0.01)
 	assert.Equal(t, int64(3000), s.WallClockMs)
 
 	require.Len(t, rep.Run.Runs, 1)
 	run := rep.Run.Runs[0]
 	assert.Equal(t, "o/r", run.Repo)
 	assert.Equal(t, "pr", run.Type)
-	assert.InDelta(t, 50.0, run.JobSuccessRatePct, 0.01)
+	require.NotNil(t, run.JobSuccessRatePct)
+	assert.InDelta(t, 50.0, *run.JobSuccessRatePct, 0.01)
 	assert.Equal(t, int64(1500), run.AvgQueueMs)
 	require.Len(t, run.Jobs, 2)
 	assert.Equal(t, int64(3000), run.Jobs[0].DurationMs)
@@ -64,6 +68,51 @@ func TestBuildRunReport(t *testing.T) {
 	require.Len(t, run.Steps, 1)
 	assert.Equal(t, "build", run.Steps[0].Job)
 	assert.Equal(t, int64(500), run.Steps[0].DurationMs)
+}
+
+func TestBuildRunReport_FallsBackToSpanRuns(t *testing.T) {
+	// No URL results (trace-file input) → runs come from span reconstruction.
+	spanRuns := []analyzer.SpanRun{{
+		Identifier: "999", Name: "CI", URL: "https://run", Conclusion: "success",
+		Jobs: []analyzer.SpanJob{
+			{Name: "build", Conclusion: "success", StartMs: 1000, EndMs: 4000, Required: true, URL: "u1",
+				Steps: []analyzer.SpanStep{{Name: "checkout", DurationMs: 500, URL: "s1"}}},
+			{Name: "test", Conclusion: "failure", StartMs: 2000, EndMs: 5000},
+		},
+	}}
+	combined := analyzer.CombinedMetrics{TotalRuns: 1, TotalJobs: 2, TotalSteps: 1, MaxConcurrency: 2}
+
+	rep := BuildRunReport(nil, spanRuns, combined, 1000, 5000, "2026-06-17T00:00:00Z")
+	require.NotNil(t, rep.Run)
+	require.Len(t, rep.Run.Runs, 1, "span runs populate the report when results are empty")
+
+	run := rep.Run.Runs[0]
+	assert.Equal(t, "CI", run.DisplayName)
+	assert.Equal(t, "999", run.Identifier)
+	require.Len(t, run.Jobs, 2)
+	assert.Equal(t, int64(3000), run.Jobs[0].DurationMs)
+	assert.True(t, run.Jobs[0].Required)
+	assert.Equal(t, 1, run.FailedJobs)
+	require.NotNil(t, run.JobSuccessRatePct)
+	assert.InDelta(t, 50.0, *run.JobSuccessRatePct, 0.01)
+	require.Len(t, run.Steps, 1)
+	assert.Equal(t, "checkout", run.Steps[0].Name)
+
+	assert.Equal(t, 1, rep.Run.Summary.SuccessfulRuns)
+	assert.Equal(t, 1, rep.Run.Summary.FailedJobs)
+	assert.Equal(t, int64(4000), rep.Run.Summary.WallClockMs)
+
+	// The internal run-level conclusion must not serialize; the job-level
+	// conclusion field must.
+	blob, err := json.Marshal(rep)
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(blob, &m))
+	run0 := m["run"].(map[string]any)["runs"].([]any)[0].(map[string]any)
+	_, hasRunConclusion := run0["conclusion"]
+	assert.False(t, hasRunConclusion, "unexported run conclusion must not leak into JSON")
+	job0 := run0["jobs"].([]any)[0].(map[string]any)
+	assert.Equal(t, "success", job0["conclusion"], "job conclusion is serialized")
 }
 
 func TestBuildTrendReport(t *testing.T) {

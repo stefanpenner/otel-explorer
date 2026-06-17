@@ -25,6 +25,7 @@ go_test(
     name = "export_test",
     srcs = [
         "build_test.go",
+        "golden_test.go",
         "render_test.go",
     ],
     embed = [":export"],

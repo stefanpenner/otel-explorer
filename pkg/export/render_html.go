@@ -55,9 +55,9 @@ func runHTMLView(rep *Report) htmlView {
 		Title:       "CI Run Analysis",
 		Repo:        rep.Meta.Repo,
 		GeneratedAt: rep.Meta.GeneratedAt,
-		Lead: sprintf("%d run(s), %d jobs (%d failed) · job success %.1f%% · wall clock %s",
+		Lead: sprintf("%d run(s), %d jobs (%d failed) · job success %s · wall clock %s",
 			r.Summary.TotalRuns, r.Summary.TotalJobs, r.Summary.FailedJobs,
-			r.Summary.JobSuccessRatePct, humanSec(float64(r.Summary.WallClockMs)/1000)),
+			pctText(r.Summary.JobSuccessRatePct), humanSec(float64(r.Summary.WallClockMs)/1000)),
 	}
 
 	v.Sections = append(v.Sections, htmlSection{Title: "Summary", Level: 2, Table: &htmlTable{
@@ -66,7 +66,7 @@ func runHTMLView(rep *Report) htmlView {
 			[2]string{"Total runs", itoa(r.Summary.TotalRuns)},
 			[2]string{"Successful / failed", sprintf("%d / %d", r.Summary.SuccessfulRuns, r.Summary.FailedRuns)},
 			[2]string{"Total jobs / failed", sprintf("%d / %d", r.Summary.TotalJobs, r.Summary.FailedJobs)},
-			[2]string{"Job success rate", sprintf("%.1f%%", r.Summary.JobSuccessRatePct)},
+			[2]string{"Job success rate", pctText(r.Summary.JobSuccessRatePct)},
 			[2]string{"Max concurrency", itoa(r.Summary.MaxConcurrency)},
 			[2]string{"Wall clock", humanSec(float64(r.Summary.WallClockMs) / 1000)},
 		),

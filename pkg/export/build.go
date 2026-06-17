@@ -8,69 +8,49 @@ import (
 	"github.com/stefanpenner/otel-explorer/pkg/analyzer"
 )
 
-// parsePct parses analyzer's formatted rate strings (e.g. "92.3", "92.3%", or
-// "–" for unknown) into a float percent; unknown/unparseable yields 0.
-func parsePct(s string) float64 {
+// parseRatePtr parses analyzer's formatted rate strings (e.g. "92.3", "92.3%")
+// into a percent pointer. An empty/unparseable string ("–" or "" for untyped
+// traces) yields nil — unknown, distinct from a real 0%.
+func parseRatePtr(s string) *float64 {
 	s = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(s), "%"))
 	v, err := strconv.ParseFloat(s, 64)
 	if err != nil {
-		return 0
+		return nil
 	}
-	return v
+	return &v
 }
 
-// BuildRunReport projects the single-run/URL analysis results into a Report.
-// generatedAt should be an RFC3339 timestamp supplied by the caller (kept out
-// of this function so it stays deterministic and testable).
-func BuildRunReport(results []analyzer.URLResult, combined analyzer.CombinedMetrics, globalEarliestMs, globalLatestMs int64, generatedAt string) *Report {
-	rr := &RunReport{Runs: []Run{}} // never nil, so `.run.runs[]` is jq-safe
+// ratePtr returns num/den as a percent pointer, or nil when den is zero
+// (no denominator → unknown rather than 0%).
+func ratePtr(num, den int) *float64 {
+	if den <= 0 {
+		return nil
+	}
+	v := float64(num) / float64(den) * 100
+	return &v
+}
 
+// BuildRunReport projects single-run/URL analysis into a Report. It prefers
+// the GitHub URL results; when those are empty (trace files, the OTLP receiver,
+// trace backends) it falls back to runs reconstructed from spans, so those
+// inputs still produce a fully populated report. generatedAt should be an
+// RFC3339 timestamp supplied by the caller (kept out of this function so it
+// stays deterministic and testable).
+func BuildRunReport(results []analyzer.URLResult, spanRuns []analyzer.SpanRun, combined analyzer.CombinedMetrics, globalEarliestMs, globalLatestMs int64, generatedAt string) *Report {
+	rr := &RunReport{Runs: []Run{}} // never nil, so `.run.runs[]` is jq-safe
 	var repo string
-	for _, res := range results {
-		if repo == "" && res.Owner != "" {
-			repo = res.Owner + "/" + res.Repo
-		}
-		m := res.Metrics
-		run := Run{
-			Repo:              res.Owner + "/" + res.Repo,
-			Identifier:        res.Identifier,
-			Type:              res.Type,
-			Branch:            res.BranchName,
-			HeadSHA:           res.HeadSHA,
-			DisplayName:       res.DisplayName,
-			URL:               res.DisplayURL,
-			TotalJobs:         m.TotalJobs,
-			FailedJobs:        m.FailedJobs,
-			TotalSteps:        m.TotalSteps,
-			JobSuccessRatePct: pct(m.TotalJobs-m.FailedJobs, m.TotalJobs),
-			AvgQueueMs:        int64(m.AvgQueueTime),
-			MaxQueueMs:        int64(m.MaxQueueTime),
-		}
-		for _, j := range m.JobTimeline {
-			dur := j.EndTime - j.StartTime
-			if dur < 0 {
-				dur = 0
+
+	if len(results) > 0 {
+		for _, res := range results {
+			if repo == "" && res.Owner != "" {
+				repo = res.Owner + "/" + res.Repo
 			}
-			run.Jobs = append(run.Jobs, Job{
-				Name:       j.Name,
-				Status:     j.Status,
-				Conclusion: j.Conclusion,
-				StartMs:    j.StartTime,
-				EndMs:      j.EndTime,
-				DurationMs: dur,
-				Required:   j.IsRequired,
-				URL:        j.URL,
-			})
+			rr.Runs = append(rr.Runs, runFromURLResult(res))
 		}
-		for _, s := range m.StepDurations {
-			run.Steps = append(run.Steps, Step{
-				Job:        s.JobName,
-				Name:       s.Name,
-				DurationMs: int64(s.Duration),
-				URL:        s.URL,
-			})
+	} else {
+		for _, sr := range spanRuns {
+			rr.Runs = append(rr.Runs, runFromSpanRun(sr))
 		}
-		rr.Runs = append(rr.Runs, run)
 	}
 
 	rr.Summary = RunSummary{
@@ -78,8 +58,8 @@ func BuildRunReport(results []analyzer.URLResult, combined analyzer.CombinedMetr
 		TotalJobs:         combined.TotalJobs,
 		TotalSteps:        combined.TotalSteps,
 		MaxConcurrency:    combined.MaxConcurrency,
-		SuccessRatePct:    parsePct(combined.SuccessRate),
-		JobSuccessRatePct: parsePct(combined.JobSuccessRate),
+		SuccessRatePct:    parseRatePtr(combined.SuccessRate),
+		JobSuccessRatePct: parseRatePtr(combined.JobSuccessRate),
 		WallClockMs:       maxInt64(globalLatestMs-globalEarliestMs, 0),
 	}
 	// Derive run/job pass/fail counts from the per-run metrics.
@@ -89,6 +69,18 @@ func BuildRunReport(results []analyzer.URLResult, combined analyzer.CombinedMetr
 		rr.Summary.FailedRuns += m.FailedRuns
 		rr.Summary.FailedJobs += m.FailedJobs
 	}
+	// Span-derived path: combined lacks per-run pass/fail, so count from runs.
+	if len(results) == 0 {
+		for _, run := range rr.Runs {
+			switch run.conclusion {
+			case "success":
+				rr.Summary.SuccessfulRuns++
+			case "failure":
+				rr.Summary.FailedRuns++
+			}
+			rr.Summary.FailedJobs += run.FailedJobs
+		}
+	}
 
 	return &Report{
 		SchemaVersion: SchemaVersion,
@@ -96,6 +88,80 @@ func BuildRunReport(results []analyzer.URLResult, combined analyzer.CombinedMetr
 		Meta:          Meta{Tool: "ote", GeneratedAt: generatedAt, Repo: repo},
 		Run:           rr,
 	}
+}
+
+func runFromURLResult(res analyzer.URLResult) Run {
+	m := res.Metrics
+	run := Run{
+		Repo:              res.Owner + "/" + res.Repo,
+		Identifier:        res.Identifier,
+		Type:              res.Type,
+		Branch:            res.BranchName,
+		HeadSHA:           res.HeadSHA,
+		DisplayName:       res.DisplayName,
+		URL:               res.DisplayURL,
+		TotalJobs:         m.TotalJobs,
+		FailedJobs:        m.FailedJobs,
+		TotalSteps:        m.TotalSteps,
+		JobSuccessRatePct: ratePtr(m.TotalJobs-m.FailedJobs, m.TotalJobs),
+		AvgQueueMs:        int64(m.AvgQueueTime),
+		MaxQueueMs:        int64(m.MaxQueueTime),
+	}
+	for _, j := range m.JobTimeline {
+		dur := j.EndTime - j.StartTime
+		if dur < 0 {
+			dur = 0
+		}
+		run.Jobs = append(run.Jobs, Job{
+			Name: j.Name, Status: j.Status, Conclusion: j.Conclusion,
+			StartMs: j.StartTime, EndMs: j.EndTime, DurationMs: dur,
+			Required: j.IsRequired, URL: j.URL,
+		})
+	}
+	for _, s := range m.StepDurations {
+		run.Steps = append(run.Steps, Step{Job: s.JobName, Name: s.Name, DurationMs: int64(s.Duration), URL: s.URL})
+	}
+	return run
+}
+
+// runFromSpanRun maps a span-reconstructed run into the report model, computing
+// the per-run totals the URLResult path gets from its metrics.
+func runFromSpanRun(sr analyzer.SpanRun) Run {
+	run := Run{
+		Identifier:  sr.Identifier,
+		Type:        "run",
+		Branch:      sr.Branch,
+		DisplayName: sr.Name,
+		URL:         sr.URL,
+		conclusion:  sr.Conclusion,
+	}
+	var failed, known int
+	for _, j := range sr.Jobs {
+		dur := j.EndMs - j.StartMs
+		if dur < 0 {
+			dur = 0
+		}
+		if j.Conclusion != "" {
+			known++
+		}
+		if j.Conclusion == "failure" || j.Conclusion == "timed_out" {
+			failed++
+		}
+		run.Jobs = append(run.Jobs, Job{
+			Name: j.Name, Status: j.Status, Conclusion: j.Conclusion,
+			StartMs: j.StartMs, EndMs: j.EndMs, DurationMs: dur,
+			Required: j.Required, URL: j.URL,
+		})
+		for _, s := range j.Steps {
+			run.Steps = append(run.Steps, Step{Job: j.Name, Name: s.Name, DurationMs: s.DurationMs, URL: s.URL})
+		}
+	}
+	run.TotalJobs = len(sr.Jobs)
+	run.FailedJobs = failed
+	run.TotalSteps = len(run.Steps)
+	// Rate over jobs with a known outcome; nil when none are known (untyped).
+	run.JobSuccessRatePct = ratePtr(known-failed, known)
+	return run
 }
 
 // BuildTrendReport projects a trend analysis into a Report.
@@ -228,11 +294,12 @@ func first(s []string) string {
 	return s[0]
 }
 
-func pct(num, den int) float64 {
-	if den == 0 {
-		return 0
+// pctText renders a nullable percent for human formats: "—" when unknown.
+func pctText(p *float64) string {
+	if p == nil {
+		return "—"
 	}
-	return float64(num) / float64(den) * 100
+	return strconv.FormatFloat(round1(*p), 'f', -1, 64) + "%"
 }
 
 func maxInt64(a, b int64) int64 {

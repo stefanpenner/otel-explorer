@@ -13,6 +13,8 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
+func f64(v float64) *float64 { return &v }
+
 // sampleRunReport builds a small but representative run-analysis Report.
 func sampleRunReport() *Report {
 	return &Report{
@@ -20,10 +22,10 @@ func sampleRunReport() *Report {
 		Meta: Meta{Tool: "ote", GeneratedAt: "2026-06-17T00:00:00Z", Repo: "o/r"},
 		Run: &RunReport{
 			Summary: RunSummary{TotalRuns: 1, SuccessfulRuns: 1, TotalJobs: 2, FailedJobs: 1,
-				TotalSteps: 1, SuccessRatePct: 100, JobSuccessRatePct: 50, MaxConcurrency: 2, WallClockMs: 3000},
+				TotalSteps: 1, SuccessRatePct: f64(100), JobSuccessRatePct: f64(50), MaxConcurrency: 2, WallClockMs: 3000},
 			Runs: []Run{{
 				Repo: "o/r", Identifier: "42", Type: "pr", DisplayName: "PR #42",
-				TotalJobs: 2, FailedJobs: 1, JobSuccessRatePct: 50,
+				TotalJobs: 2, FailedJobs: 1, JobSuccessRatePct: f64(50),
 				Jobs: []Job{
 					{Name: "build", Status: "completed", Conclusion: "success", DurationMs: 3000, Required: true, URL: "u1"},
 					{Name: "test", Status: "completed", Conclusion: "failure", DurationMs: 1000, URL: "u2"},
@@ -85,6 +87,33 @@ func TestRenderXLSX_OpensWithExpectedSheetsAndCells(t *testing.T) {
 	assert.Equal(t, "Job", h)
 	v, _ := f.GetCellValue("Jobs", "C2")
 	assert.Equal(t, "build", v)
+
+	// Consumer need: durations must be NUMBERS, so Excel/Sheets can sort, sum,
+	// and chart them — not text stored as a (shared/inline) string. Column F is
+	// "Duration (sec)". Plain numbers carry no type attribute (CellTypeUnset),
+	// which is exactly what Excel reads as numeric; strings would not.
+	durType, _ := f.GetCellType("Jobs", "F2")
+	assert.NotContains(t, []excelize.CellType{excelize.CellTypeSharedString, excelize.CellTypeInlineString}, durType, "duration must not be stored as text")
+	dur, _ := f.GetCellValue("Jobs", "F2")
+	assert.Equal(t, "3", dur, "3000ms → 3 sec")
+
+	// Unknown job success rate renders as the em dash, not a misleading 0%.
+	rep := sampleRunReport()
+	rep.Run.Summary.JobSuccessRatePct = nil
+	var buf2 bytes.Buffer
+	require.NoError(t, RenderXLSX(&buf2, rep))
+	f2, err := excelize.OpenReader(&buf2)
+	require.NoError(t, err)
+	defer f2.Close()
+	// Summary sheet is Metric/Value rows; find the "Job success rate" row value.
+	found := ""
+	rows, _ := f2.GetRows("Summary")
+	for _, r := range rows {
+		if len(r) >= 2 && r[0] == "Job success rate" {
+			found = r[1]
+		}
+	}
+	assert.Equal(t, "—", found, "unknown rate shows em dash, not 0%")
 }
 
 func TestRenderXLSX_Trends(t *testing.T) {
@@ -99,24 +128,52 @@ func TestRenderXLSX_Trends(t *testing.T) {
 	assert.Contains(t, sheets, "Flaky Jobs")
 }
 
-func TestRenderDOCX_IsValidZipWithContent(t *testing.T) {
-	var buf bytes.Buffer
-	require.NoError(t, RenderDOCX(&buf, sampleRunReport()))
+func TestRenderTrends_AllFormatsCarryKeyContent(t *testing.T) {
+	rep := sampleTrendReport()
 
-	// A .docx is a zip; word/document.xml must contain our text.
+	var jbuf bytes.Buffer
+	require.NoError(t, RenderJSON(&jbuf, rep))
+	assert.Contains(t, jbuf.String(), `"flaky_jobs"`)
+	assert.Contains(t, jbuf.String(), `"typical_workflows"`)
+
+	var hbuf bytes.Buffer
+	require.NoError(t, RenderHTML(&hbuf, rep))
+	assert.Contains(t, hbuf.String(), "CI Trends")
+	assert.Contains(t, hbuf.String(), "Flakiest jobs")
+	assert.Contains(t, hbuf.String(), "Typical run · CI")
+
+	var dbuf bytes.Buffer
+	require.NoError(t, RenderDOCX(&dbuf, rep))
+	doc := docXML(t, &dbuf)
+	assert.Contains(t, doc, "CI Trends")
+	assert.Contains(t, doc, "Flakiest jobs")
+	assert.Contains(t, doc, "test") // the flaky job name
+}
+
+// docXML extracts word/document.xml from a .docx byte stream.
+func docXML(t *testing.T, buf *bytes.Buffer) string {
+	t.Helper()
 	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
 	require.NoError(t, err)
-	var doc string
 	for _, file := range zr.File {
 		if file.Name == "word/document.xml" {
 			rc, err := file.Open()
 			require.NoError(t, err)
 			b, _ := io.ReadAll(rc)
 			rc.Close()
-			doc = string(b)
+			return string(b)
 		}
 	}
-	require.NotEmpty(t, doc, "word/document.xml not found")
+	t.Fatal("word/document.xml not found")
+	return ""
+}
+
+func TestRenderDOCX_IsValidZipWithContent(t *testing.T) {
+	var buf bytes.Buffer
+	require.NoError(t, RenderDOCX(&buf, sampleRunReport()))
+
+	// A .docx is a zip; word/document.xml must contain our text.
+	doc := docXML(t, &buf)
 	assert.Contains(t, doc, "CI Run Analysis")
 	assert.Contains(t, doc, "build")
 	assert.Contains(t, doc, "Slowest jobs")

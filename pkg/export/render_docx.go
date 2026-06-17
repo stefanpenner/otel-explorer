@@ -29,16 +29,16 @@ func RenderDOCX(w io.Writer, rep *Report) error {
 func renderRunDocx(d *docx.Docx, rep *Report) {
 	r := rep.Run
 	heading(d, fmt.Sprintf("CI Run Analysis — %s", rep.Meta.Repo), 1)
-	para(d, fmt.Sprintf("Generated %s. %d run(s), %d jobs (%d failed), job success rate %.1f%%, wall clock %s.",
+	para(d, fmt.Sprintf("Generated %s. %d run(s), %d jobs (%d failed), job success rate %s, wall clock %s.",
 		rep.Meta.GeneratedAt, r.Summary.TotalRuns, r.Summary.TotalJobs, r.Summary.FailedJobs,
-		r.Summary.JobSuccessRatePct, humanSec(float64(r.Summary.WallClockMs)/1000)))
+		pctText(r.Summary.JobSuccessRatePct), humanSec(float64(r.Summary.WallClockMs)/1000)))
 
 	heading(d, "Summary", 2)
 	addTable(d, []string{"Metric", "Value"}, [][]string{
 		{"Total runs", itoa(r.Summary.TotalRuns)},
 		{"Successful / failed", fmt.Sprintf("%d / %d", r.Summary.SuccessfulRuns, r.Summary.FailedRuns)},
 		{"Total jobs / failed", fmt.Sprintf("%d / %d", r.Summary.TotalJobs, r.Summary.FailedJobs)},
-		{"Job success rate", fmt.Sprintf("%.1f%%", r.Summary.JobSuccessRatePct)},
+		{"Job success rate", pctText(r.Summary.JobSuccessRatePct)},
 		{"Max concurrency", itoa(r.Summary.MaxConcurrency)},
 		{"Wall clock", humanSec(float64(r.Summary.WallClockMs) / 1000)},
 	})
