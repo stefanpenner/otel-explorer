@@ -91,6 +91,76 @@ func TestGenerateASCIIChartTimeAxis(t *testing.T) {
 	}
 }
 
+// TestRenderRegressionsShowsSubMinutePrecision verifies short-duration jobs
+// render with tenth-of-a-second precision so the Change column is reproducible
+// from Was/Now. HumanizeTime would have truncated 8.5s to "8s", making "6s ->
+// 8s" look like +33% next to a +41.7% change.
+func TestRenderRegressionsShowsSubMinutePrecision(t *testing.T) {
+	var buf bytes.Buffer
+	renderRegressions(&buf, []analyzer.JobRegression{{
+		Name:            "lint-pr-url",
+		OldAvgDuration:  6.0,
+		NewAvgDuration:  8.5,
+		PercentIncrease: 41.7,
+	}})
+	out := buf.String()
+	if !strings.Contains(out, "6.0s") || !strings.Contains(out, "8.5s") {
+		t.Errorf("expected sub-minute durations with one decimal, got:\n%s", out)
+	}
+}
+
+func TestRenderImprovementsShowsSubMinutePrecision(t *testing.T) {
+	var buf bytes.Buffer
+	renderImprovements(&buf, []analyzer.JobImprovement{{
+		Name:            "lint-readme",
+		OldAvgDuration:  22.0,
+		NewAvgDuration:  11.0,
+		PercentDecrease: 50.0,
+	}})
+	out := buf.String()
+	if !strings.Contains(out, "22.0s") || !strings.Contains(out, "11.0s") {
+		t.Errorf("expected sub-minute durations with one decimal, got:\n%s", out)
+	}
+}
+
+// TestOutputTrendsHeaderNoSamplingDuplication verifies the header box describes
+// sampling on a single line. The structured "Job details sampled:" line is
+// kept; the redundant rationale sentence (which also restated the total run
+// count) is not rendered into the box.
+func TestOutputTrendsHeaderNoSamplingDuplication(t *testing.T) {
+	analysis := &analyzer.TrendAnalysis{
+		Owner: "nodejs",
+		Repo:  "node",
+		TimeRange: analyzer.TimeRange{
+			Start: time.Date(2026, 6, 10, 0, 0, 0, 0, time.UTC),
+			End:   time.Date(2026, 6, 17, 0, 0, 0, 0, time.UTC),
+			Days:  7,
+		},
+		Summary: analyzer.TrendSummary{TotalRuns: 1000},
+		Sampling: analyzer.SamplingInfo{
+			Enabled:       true,
+			SampleSize:    88,
+			TotalRuns:     1000,
+			WorkflowCount: 3,
+			MajorTarget:   12,
+			MinorTarget:   4,
+			Rationale:     "1,000 runs analyzed. 88 sampled for job details across 3 workflows (12 obs per major workflow, 4 minor; temporally stratified).",
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := OutputTrends(&buf, analysis, "text"); err != nil {
+		t.Fatalf("OutputTrends: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Job details sampled:") {
+		t.Errorf("expected structured sampling line in header, got:\n%s", out)
+	}
+	if strings.Contains(out, "sampled for job details across") {
+		t.Errorf("rationale sentence should not be duplicated into the header box, got:\n%s", out)
+	}
+}
+
 func TestRenderChangepointPositionIsOneBased(t *testing.T) {
 	cp := &analyzer.Changepoint{
 		Date:        time.Date(2026, 1, 4, 0, 0, 0, 0, time.UTC),

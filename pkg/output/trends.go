@@ -105,9 +105,9 @@ func OutputTrends(w io.Writer, analysis *analyzer.TrendAnalysis, format string) 
 				analysis.Sampling.WorkflowCount, analysis.Sampling.MajorTarget, analysis.Sampling.MinorTarget))
 		fmt.Fprintln(w, headerLine(jobText))
 	}
-	if analysis.Sampling.Rationale != "" {
-		fmt.Fprintln(w, headerLine(dimStyle.Render(analysis.Sampling.Rationale)))
-	}
+	// The sampling Rationale restates the run count and sample size already
+	// shown above; it is preserved on the struct (for JSON consumers) but not
+	// rendered into the header box to avoid a duplicate sampling line.
 	fmt.Fprintln(w, botBorder)
 
 	// Summary statistics
@@ -543,8 +543,8 @@ func renderRegressions(w io.Writer, regressions []analyzer.JobRegression) {
 	for _, reg := range regressions {
 		t.Row(
 			linkName(reg.Name, reg.URLs, 58),
-			utils.HumanizeTime(reg.OldAvgDuration),
-			utils.HumanizeTime(reg.NewAvgDuration),
+			utils.FormatTrendDuration(reg.OldAvgDuration),
+			utils.FormatTrendDuration(reg.NewAvgDuration),
 			failureStyle.Render(fmt.Sprintf("+%.1f%%", reg.PercentIncrease)),
 		)
 	}
@@ -617,8 +617,8 @@ func renderImprovements(w io.Writer, improvements []analyzer.JobImprovement) {
 	for _, imp := range improvements {
 		t.Row(
 			linkName(imp.Name, imp.URLs, 58),
-			utils.HumanizeTime(imp.OldAvgDuration),
-			utils.HumanizeTime(imp.NewAvgDuration),
+			utils.FormatTrendDuration(imp.OldAvgDuration),
+			utils.FormatTrendDuration(imp.NewAvgDuration),
 			successStyle.Render(fmt.Sprintf("-%.1f%%", imp.PercentDecrease)),
 		)
 	}

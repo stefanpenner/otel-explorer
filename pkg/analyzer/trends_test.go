@@ -476,6 +476,46 @@ func TestCalculateTrendSummary_ChronologicalOrder(t *testing.T) {
 // correctly identifies regressions and improvements when runs are provided in
 // chronological order. The first half of the slice represents older runs and
 // the second half represents newer runs.
+// TestCalculateJobChanges_PercentReconcilesWithDisplayGrid verifies that the
+// reported percent change is computed from the same display-grid-rounded
+// durations that the table prints, so a reader can reproduce the Change column
+// from Was/Now. Averages here are deliberately off-grid (6.04s, 8.46s) so a
+// full-precision percent (~40.1%) would differ from the grid percent (~41.7%).
+func TestCalculateJobChanges_PercentReconcilesWithDisplayGrid(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+
+	// First half (older): 6000ms, 6080ms -> avg 6.04s -> grid 6.0s
+	// Second half (newer): 8400ms, 8520ms -> avg 8.46s -> grid 8.5s
+	runs := []RunData{
+		makeRunData("success", 10000, now.Add(-8*time.Hour), []JobData{
+			{Name: "lint", Duration: 6000, Conclusion: "success"},
+		}),
+		makeRunData("success", 10000, now.Add(-6*time.Hour), []JobData{
+			{Name: "lint", Duration: 6080, Conclusion: "success"},
+		}),
+		makeRunData("success", 10000, now.Add(-4*time.Hour), []JobData{
+			{Name: "lint", Duration: 8400, Conclusion: "success"},
+		}),
+		makeRunData("success", 10000, now.Add(-2*time.Hour), []JobData{
+			{Name: "lint", Duration: 8520, Conclusion: "success"},
+		}),
+	}
+
+	regressions, _ := calculateJobChanges(runs)
+	assert.Len(t, regressions, 1)
+	reg := regressions[0]
+
+	assert.InDelta(t, 6.0, reg.OldAvgDuration, 1e-9, "old avg should snap to display grid")
+	assert.InDelta(t, 8.5, reg.NewAvgDuration, 1e-9, "new avg should snap to display grid")
+	assert.InDelta(t, 41.667, reg.PercentIncrease, 0.05, "percent should be computed from grid values")
+
+	// The invariant the user cares about: percent reproduces from displayed Was/Now.
+	reproduced := (reg.NewAvgDuration - reg.OldAvgDuration) / reg.OldAvgDuration * 100
+	assert.InDelta(t, reproduced, reg.PercentIncrease, 0.001,
+		"Change must be reproducible from the displayed Was/Now durations")
+}
+
 func TestCalculateJobChanges_ChronologicalOrder(t *testing.T) {
 	t.Parallel()
 	now := time.Now()

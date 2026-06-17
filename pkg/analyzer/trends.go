@@ -1252,8 +1252,13 @@ func calculateJobChanges(runs []RunData) ([]JobRegression, []JobImprovement) {
 			continue
 		}
 
-		oldAvg := avgObservations(firstHalf)
-		newAvg := avgObservations(secondHalf)
+		// Snap averages to the table's display grid so the reported percent
+		// change reproduces from the Was/Now columns the user sees.
+		oldAvg := utils.RoundTrendDuration(avgObservations(firstHalf))
+		newAvg := utils.RoundTrendDuration(avgObservations(secondHalf))
+		if oldAvg == 0 {
+			continue
+		}
 		change := newAvg - oldAvg
 		percentChange := (change / oldAvg) * 100
 

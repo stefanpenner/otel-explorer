@@ -3,6 +3,7 @@ package utils
 import (
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"os/exec"
 	"runtime"
@@ -46,13 +47,39 @@ func HumanizeTime(seconds float64) string {
 	if hours > 0 {
 		parts = append(parts, fmt.Sprintf("%dh", hours))
 	}
-	if minutes > 0 {
+	// Render the minutes placeholder when an interior zero would otherwise be
+	// dropped (e.g. 1h0m3s): "1h 3s" reads ambiguously, so keep "1h 0m 3s".
+	// Trailing zero components are still suppressed.
+	if minutes > 0 || (hours > 0 && secs > 0) {
 		parts = append(parts, fmt.Sprintf("%dm", minutes))
 	}
 	if secs > 0 || len(parts) == 0 {
 		parts = append(parts, fmt.Sprintf("%ds", secs))
 	}
 	return prefix + strings.Join(parts, " ")
+}
+
+// RoundTrendDuration snaps a duration (seconds) to the display grid used by the
+// trend regression/improvement tables: tenths of a second below one minute,
+// whole seconds at or above. Percent changes are computed from these rounded
+// values so the Was/Now columns reproduce the displayed Change.
+func RoundTrendDuration(seconds float64) float64 {
+	if seconds < 60 {
+		return math.Round(seconds*10) / 10
+	}
+	return math.Round(seconds)
+}
+
+// FormatTrendDuration formats a duration for the trend regression/improvement
+// tables. Sub-minute durations show one decimal place so the percentage change
+// is reproducible from the printed value; longer durations use the compact
+// HumanizeTime form.
+func FormatTrendDuration(seconds float64) string {
+	g := RoundTrendDuration(seconds)
+	if g > 0 && g < 60 {
+		return fmt.Sprintf("%.1fs", g)
+	}
+	return HumanizeTime(g)
 }
 
 func ParseGitHubURL(raw string) (ParsedGitHubURL, error) {
