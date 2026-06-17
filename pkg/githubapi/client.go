@@ -23,8 +23,8 @@ import (
 )
 
 const (
-	maxRetries          = 5
-	maxRetryDelay       = 2 * time.Minute
+	maxRetries            = 5
+	maxRetryDelay         = 2 * time.Minute
 	defaultMaxConcurrency = 5
 )
 
@@ -146,6 +146,7 @@ type WorkflowRun struct {
 	UpdatedAt    string  `json:"updated_at"`
 	HeadSHA      string  `json:"head_sha"`
 	HeadBranch   string  `json:"head_branch"`
+	Event        string  `json:"event"`
 	Repository   RepoRef `json:"repository"`
 }
 
@@ -163,17 +164,18 @@ type JobsResponse struct {
 }
 
 type Job struct {
-	ID          int64  `json:"id"`
-	RunAttempt  int64  `json:"run_attempt"`
-	Name        string `json:"name"`
-	Status      string `json:"status"`
-	Conclusion  string `json:"conclusion"`
-	CreatedAt   string `json:"created_at"`
-	StartedAt   string `json:"started_at"`
-	CompletedAt string `json:"completed_at"`
-	RunnerName  string `json:"runner_name"`
-	HTMLURL     string `json:"html_url"`
-	Steps       []Step `json:"steps"`
+	ID          int64    `json:"id"`
+	RunAttempt  int64    `json:"run_attempt"`
+	Name        string   `json:"name"`
+	Status      string   `json:"status"`
+	Conclusion  string   `json:"conclusion"`
+	CreatedAt   string   `json:"created_at"`
+	StartedAt   string   `json:"started_at"`
+	CompletedAt string   `json:"completed_at"`
+	RunnerName  string   `json:"runner_name"`
+	Labels      []string `json:"labels"`
+	HTMLURL     string   `json:"html_url"`
+	Steps       []Step   `json:"steps"`
 }
 
 type Step struct {
@@ -865,7 +867,7 @@ func fetchCommentsPaginated(ctx context.Context, c *Client, urlValue string) ([]
 		if err != nil {
 			return nil, err
 		}
-		
+
 		type Comment struct {
 			ID        int64    `json:"id"`
 			User      UserInfo `json:"user"`

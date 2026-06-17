@@ -60,6 +60,34 @@ func TestStoreRoundTrip(t *testing.T) {
 	assert.Empty(t, got[1].Jobs, "run 2 has no job detail")
 }
 
+func TestStoreRoundTripsFacetFields(t *testing.T) {
+	t.Parallel()
+	st := openTestStore(t)
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	runs := []analyzer.RunData{{
+		ID: 1, WorkflowName: "CI", HeadSHA: "aaa", Branch: "main", Event: "push",
+		Status: "completed", Conclusion: "success",
+		CreatedAt: base, StartedAt: base, UpdatedAt: base.Add(10 * time.Minute), Duration: 600_000,
+		Jobs: []analyzer.JobData{{
+			ID: 11, Name: "build", Status: "completed", Conclusion: "success",
+			CreatedAt: base, StartedAt: base.Add(5 * time.Second), CompletedAt: base.Add(5 * time.Minute),
+			Duration: 295_000, QueueTime: 5_000,
+			RunnerName: "GitHub Actions 12", Labels: []string{"ubuntu-24.04", "self-hosted"},
+		}},
+	}}
+	require.NoError(t, st.UpsertRuns("o", "r", runs))
+
+	got, err := st.LoadRuns("o", "r", base.Add(-time.Hour), base.Add(2*time.Hour))
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "main", got[0].Branch)
+	assert.Equal(t, "push", got[0].Event)
+	require.Len(t, got[0].Jobs, 1)
+	assert.Equal(t, "GitHub Actions 12", got[0].Jobs[0].RunnerName)
+	assert.Equal(t, []string{"ubuntu-24.04", "self-hosted"}, got[0].Jobs[0].Labels)
+}
+
 func TestStoreUpsertIdempotentAndJobReplacing(t *testing.T) {
 	t.Parallel()
 	st := openTestStore(t)

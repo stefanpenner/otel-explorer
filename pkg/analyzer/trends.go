@@ -155,6 +155,8 @@ type RunData struct {
 	Attempt      int64 // run attempt number; >1 means this is a re-run
 	WorkflowName string
 	HeadSHA      string
+	Branch       string // head_branch the run executed against (for branch faceting)
+	Event        string // trigger event: push, pull_request, schedule, … (for event faceting)
 	Status       string
 	Conclusion   string
 	CreatedAt    time.Time
@@ -174,8 +176,10 @@ type JobData struct {
 	CreatedAt   time.Time
 	StartedAt   time.Time
 	CompletedAt time.Time
-	Duration    int64 // milliseconds
-	QueueTime   int64 // milliseconds
+	Duration    int64    // milliseconds
+	QueueTime   int64    // milliseconds
+	RunnerName  string   // specific runner instance that executed the job
+	Labels      []string // runner labels requested (e.g. ubuntu-24.04) — for runner faceting
 }
 
 // TrendOptions configures the trend analysis behavior
@@ -605,6 +609,8 @@ func ConvertRuns(runs []githubapi.WorkflowRun) []RunData {
 			Attempt:      attempt,
 			WorkflowName: run.Name,
 			HeadSHA:      run.HeadSHA,
+			Branch:       run.HeadBranch,
+			Event:        run.Event,
 			Status:       run.Status,
 			Conclusion:   run.Conclusion,
 			CreatedAt:    createdAt,
@@ -736,6 +742,8 @@ func ConvertJobs(jobs []githubapi.Job, runAttempt int64) []JobData {
 			CompletedAt: completedAt,
 			Duration:    duration,
 			QueueTime:   queueTime,
+			RunnerName:  job.RunnerName,
+			Labels:      job.Labels,
 		})
 	}
 	return out

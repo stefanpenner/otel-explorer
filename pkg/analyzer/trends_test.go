@@ -1169,6 +1169,25 @@ func TestFormatCount(t *testing.T) {
 	assert.Equal(t, "1,000,000", formatCount(1000000))
 }
 
+func TestConvertJobsCapturesRunner(t *testing.T) {
+	t.Parallel()
+	jobs := []githubapi.Job{{
+		ID:          11,
+		Name:        "test-linux",
+		Status:      "completed",
+		Conclusion:  "success",
+		CreatedAt:   "2026-01-15T10:00:00Z",
+		StartedAt:   "2026-01-15T10:00:05Z",
+		CompletedAt: "2026-01-15T10:05:05Z",
+		RunnerName:  "GitHub Actions 12",
+		Labels:      []string{"ubuntu-24.04"},
+	}}
+	out := ConvertJobs(jobs, 0)
+	assert.Len(t, out, 1)
+	assert.Equal(t, "GitHub Actions 12", out[0].RunnerName)
+	assert.Equal(t, []string{"ubuntu-24.04"}, out[0].Labels)
+}
+
 func TestConvertRuns(t *testing.T) {
 	t.Parallel()
 
@@ -1195,6 +1214,20 @@ func TestConvertRuns(t *testing.T) {
 		assert.Equal(t, "success", result[0].Conclusion)
 		assert.Equal(t, int64(300000), result[0].Duration) // 5 minutes in ms
 		assert.Empty(t, result[0].Jobs)
+	})
+
+	t.Run("captures branch and event for faceting", func(t *testing.T) {
+		runs := []githubapi.WorkflowRun{{
+			ID:         42,
+			HeadBranch: "main",
+			Event:      "schedule",
+			CreatedAt:  "2026-01-15T10:00:00Z",
+			UpdatedAt:  "2026-01-15T10:05:00Z",
+		}}
+		result := ConvertRuns(runs)
+		assert.Len(t, result, 1)
+		assert.Equal(t, "main", result[0].Branch)
+		assert.Equal(t, "schedule", result[0].Event)
 	})
 
 	t.Run("preserves order", func(t *testing.T) {

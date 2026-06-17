@@ -6,6 +6,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,6 +29,8 @@ CREATE TABLE IF NOT EXISTS runs (
 	repo          TEXT NOT NULL,
 	workflow_name TEXT NOT NULL DEFAULT '',
 	head_sha      TEXT NOT NULL DEFAULT '',
+	head_branch   TEXT NOT NULL DEFAULT '',
+	event         TEXT NOT NULL DEFAULT '',
 	status        TEXT NOT NULL DEFAULT '',
 	conclusion    TEXT NOT NULL DEFAULT '',
 	created_at    INTEGER NOT NULL DEFAULT 0, -- unix ms
@@ -54,6 +57,8 @@ CREATE TABLE IF NOT EXISTS jobs (
 	completed_at  INTEGER NOT NULL DEFAULT 0,
 	duration_ms   INTEGER NOT NULL DEFAULT 0,
 	queue_time_ms INTEGER NOT NULL DEFAULT 0,
+	runner_name   TEXT NOT NULL DEFAULT '',
+	labels        TEXT NOT NULL DEFAULT '', -- JSON array of runner labels
 	PRIMARY KEY (owner, repo, id)
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_run ON jobs(owner, repo, run_id);
@@ -85,12 +90,20 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrating store schema: %w", err)
 	}
-	// Additive migration for databases created before run_attempt existed;
-	// a duplicate-column error means the schema above already provided it.
-	if _, err := db.Exec(`ALTER TABLE runs ADD COLUMN run_attempt INTEGER NOT NULL DEFAULT 1`); err != nil &&
-		!strings.Contains(err.Error(), "duplicate column") {
-		db.Close()
-		return nil, fmt.Errorf("migrating run_attempt column: %w", err)
+	// Additive migrations for databases created before a column existed; a
+	// duplicate-column error means the schema above already provided it.
+	for _, mig := range []struct{ table, col, def string }{
+		{"runs", "run_attempt", "INTEGER NOT NULL DEFAULT 1"},
+		{"runs", "head_branch", "TEXT NOT NULL DEFAULT ''"},
+		{"runs", "event", "TEXT NOT NULL DEFAULT ''"},
+		{"jobs", "runner_name", "TEXT NOT NULL DEFAULT ''"},
+		{"jobs", "labels", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", mig.table, mig.col, mig.def)
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("migrating %s.%s column: %w", mig.table, mig.col, err)
+		}
 	}
 	return &Store{db: db}, nil
 }
@@ -108,11 +121,12 @@ func (s *Store) UpsertRuns(owner, repo string, runs []analyzer.RunData) error {
 	defer tx.Rollback()
 
 	runStmt, err := tx.Prepare(`
-		INSERT INTO runs (id, owner, repo, workflow_name, head_sha, status, conclusion,
+		INSERT INTO runs (id, owner, repo, workflow_name, head_sha, head_branch, event, status, conclusion,
 			created_at, started_at, updated_at, duration_ms, jobs_fetched, run_attempt)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (owner, repo, id) DO UPDATE SET
 			workflow_name=excluded.workflow_name, head_sha=excluded.head_sha,
+			head_branch=excluded.head_branch, event=excluded.event,
 			status=excluded.status, conclusion=excluded.conclusion,
 			created_at=excluded.created_at, started_at=excluded.started_at,
 			updated_at=excluded.updated_at, duration_ms=excluded.duration_ms,
@@ -125,14 +139,15 @@ func (s *Store) UpsertRuns(owner, repo string, runs []analyzer.RunData) error {
 
 	jobStmt, err := tx.Prepare(`
 		INSERT INTO jobs (id, owner, repo, run_id, name, url, status, conclusion,
-			created_at, started_at, completed_at, duration_ms, queue_time_ms)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			created_at, started_at, completed_at, duration_ms, queue_time_ms, runner_name, labels)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (owner, repo, id) DO UPDATE SET
 			run_id=excluded.run_id, name=excluded.name, url=excluded.url,
 			status=excluded.status, conclusion=excluded.conclusion,
 			created_at=excluded.created_at, started_at=excluded.started_at,
 			completed_at=excluded.completed_at, duration_ms=excluded.duration_ms,
-			queue_time_ms=excluded.queue_time_ms`)
+			queue_time_ms=excluded.queue_time_ms,
+			runner_name=excluded.runner_name, labels=excluded.labels`)
 	if err != nil {
 		return err
 	}
@@ -148,7 +163,7 @@ func (s *Store) UpsertRuns(owner, repo string, runs []analyzer.RunData) error {
 			attempt = 1
 		}
 		if _, err := runStmt.Exec(run.ID, owner, repo, run.WorkflowName, run.HeadSHA,
-			run.Status, run.Conclusion, msOf(run.CreatedAt), msOf(run.StartedAt),
+			run.Branch, run.Event, run.Status, run.Conclusion, msOf(run.CreatedAt), msOf(run.StartedAt),
 			msOf(run.UpdatedAt), run.Duration, jobsFetched, attempt); err != nil {
 			return fmt.Errorf("upserting run %d: %w", run.ID, err)
 		}
@@ -163,7 +178,7 @@ func (s *Store) UpsertRuns(owner, repo string, runs []analyzer.RunData) error {
 		for _, job := range run.Jobs {
 			if _, err := jobStmt.Exec(job.ID, owner, repo, run.ID, job.Name, job.URL,
 				job.Status, job.Conclusion, msOf(job.CreatedAt), msOf(job.StartedAt),
-				msOf(job.CompletedAt), job.Duration, job.QueueTime); err != nil {
+				msOf(job.CompletedAt), job.Duration, job.QueueTime, job.RunnerName, encodeLabels(job.Labels)); err != nil {
 				return fmt.Errorf("upserting job %d: %w", job.ID, err)
 			}
 		}
@@ -175,7 +190,7 @@ func (s *Store) UpsertRuns(owner, repo string, runs []analyzer.RunData) error {
 // oldest first.
 func (s *Store) LoadRuns(owner, repo string, since, until time.Time) ([]analyzer.RunData, error) {
 	rows, err := s.db.Query(`
-		SELECT id, workflow_name, head_sha, status, conclusion,
+		SELECT id, workflow_name, head_sha, head_branch, event, status, conclusion,
 			created_at, started_at, updated_at, duration_ms, run_attempt
 		FROM runs WHERE owner=? AND repo=? AND created_at BETWEEN ? AND ?
 		ORDER BY created_at, id`, owner, repo, msOf(since), msOf(until))
@@ -189,7 +204,7 @@ func (s *Store) LoadRuns(owner, repo string, since, until time.Time) ([]analyzer
 	for rows.Next() {
 		var run analyzer.RunData
 		var created, started, updated int64
-		if err := rows.Scan(&run.ID, &run.WorkflowName, &run.HeadSHA, &run.Status,
+		if err := rows.Scan(&run.ID, &run.WorkflowName, &run.HeadSHA, &run.Branch, &run.Event, &run.Status,
 			&run.Conclusion, &created, &started, &updated, &run.Duration, &run.Attempt); err != nil {
 			return nil, err
 		}
@@ -205,7 +220,8 @@ func (s *Store) LoadRuns(owner, repo string, since, until time.Time) ([]analyzer
 
 	jobRows, err := s.db.Query(`
 		SELECT j.id, j.run_id, j.name, j.url, j.status, j.conclusion,
-			j.created_at, j.started_at, j.completed_at, j.duration_ms, j.queue_time_ms
+			j.created_at, j.started_at, j.completed_at, j.duration_ms, j.queue_time_ms,
+			j.runner_name, j.labels
 		FROM jobs j JOIN runs r ON r.owner=j.owner AND r.repo=j.repo AND r.id=j.run_id
 		WHERE j.owner=? AND j.repo=? AND r.created_at BETWEEN ? AND ?
 		ORDER BY j.run_id, j.started_at, j.id`, owner, repo, msOf(since), msOf(until))
@@ -217,13 +233,16 @@ func (s *Store) LoadRuns(owner, repo string, since, until time.Time) ([]analyzer
 	for jobRows.Next() {
 		var job analyzer.JobData
 		var runID, created, started, completed int64
+		var labelsJSON string
 		if err := jobRows.Scan(&job.ID, &runID, &job.Name, &job.URL, &job.Status,
-			&job.Conclusion, &created, &started, &completed, &job.Duration, &job.QueueTime); err != nil {
+			&job.Conclusion, &created, &started, &completed, &job.Duration, &job.QueueTime,
+			&job.RunnerName, &labelsJSON); err != nil {
 			return nil, err
 		}
 		job.CreatedAt = timeOf(created)
 		job.StartedAt = timeOf(started)
 		job.CompletedAt = timeOf(completed)
+		job.Labels = decodeLabels(labelsJSON)
 		if i, ok := index[runID]; ok {
 			runs[i].Jobs = append(runs[i].Jobs, job)
 		}
@@ -266,6 +285,31 @@ func (s *Store) RunsNeedingJobs(owner, repo string, since, until time.Time) ([]i
 	return ids, rows.Err()
 }
 
+// encodeLabels serializes runner labels as a JSON array for storage; an empty
+// slice is stored as "" so unset rows stay compact.
+func encodeLabels(labels []string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(labels)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// decodeLabels reverses encodeLabels; "" (or malformed JSON) yields nil.
+func decodeLabels(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var labels []string
+	if err := json.Unmarshal([]byte(s), &labels); err != nil {
+		return nil
+	}
+	return labels
+}
+
 func msOf(t time.Time) int64 {
 	if t.IsZero() {
 		return 0
@@ -297,17 +341,18 @@ func (s *Store) UpsertJobs(owner, repo string, runID int64, jobs []analyzer.JobD
 	for _, job := range jobs {
 		if _, err := tx.Exec(`
 			INSERT INTO jobs (id, owner, repo, run_id, name, url, status, conclusion,
-				created_at, started_at, completed_at, duration_ms, queue_time_ms)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				created_at, started_at, completed_at, duration_ms, queue_time_ms, runner_name, labels)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (owner, repo, id) DO UPDATE SET
 				run_id=excluded.run_id, name=excluded.name, url=excluded.url,
 				status=excluded.status, conclusion=excluded.conclusion,
 				created_at=excluded.created_at, started_at=excluded.started_at,
 				completed_at=excluded.completed_at, duration_ms=excluded.duration_ms,
-				queue_time_ms=excluded.queue_time_ms`,
+				queue_time_ms=excluded.queue_time_ms,
+				runner_name=excluded.runner_name, labels=excluded.labels`,
 			job.ID, owner, repo, runID, job.Name, job.URL, job.Status, job.Conclusion,
 			msOf(job.CreatedAt), msOf(job.StartedAt), msOf(job.CompletedAt),
-			job.Duration, job.QueueTime); err != nil {
+			job.Duration, job.QueueTime, job.RunnerName, encodeLabels(job.Labels)); err != nil {
 			return fmt.Errorf("upserting job %d: %w", job.ID, err)
 		}
 	}
