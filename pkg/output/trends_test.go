@@ -164,15 +164,15 @@ func TestOutputTrendsHeaderNoSamplingDuplication(t *testing.T) {
 func TestRenderFacetComparisonRunLevel(t *testing.T) {
 	var buf bytes.Buffer
 	renderFacetComparison(&buf, &analyzer.FacetComparison{
-		Dimension: analyzer.FacetBranch,
-		Level:     "run",
+		Dimensions: []analyzer.FacetDimension{analyzer.FacetBranch},
+		Level:      "run",
 		Rows: []analyzer.FacetRow{
-			{Key: "upstream", Count: 120, AvgDurationSec: 600, MedianDurationSec: 540, SuccessRatePct: 95.0, FlakyJobs: 1},
-			{Key: "feature", Count: 880, AvgDurationSec: 720, MedianDurationSec: 300, SuccessRatePct: 41.2, FlakyJobs: 7},
+			{Keys: []string{"upstream"}, Count: 120, AvgDurationSec: 600, MedianDurationSec: 540, SuccessRatePct: 95.0, FlakyJobs: 1},
+			{Keys: []string{"feature"}, Count: 880, AvgDurationSec: 720, MedianDurationSec: 300, SuccessRatePct: 41.2, FlakyJobs: 7},
 		},
 	})
 	out := buf.String()
-	for _, want := range []string{"Bucket", "Runs", "Flaky", "upstream", "feature", "95.0%", "41.2%"} {
+	for _, want := range []string{"Branch", "Runs", "Flaky", "upstream", "feature", "95.0%", "41.2%"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("run-level facet table missing %q, got:\n%s", want, out)
 		}
@@ -185,17 +185,37 @@ func TestRenderFacetComparisonRunLevel(t *testing.T) {
 func TestRenderFacetComparisonJobLevel(t *testing.T) {
 	var buf bytes.Buffer
 	renderFacetComparison(&buf, &analyzer.FacetComparison{
-		Dimension: analyzer.FacetRunner,
-		Level:     "job",
+		Dimensions: []analyzer.FacetDimension{analyzer.FacetRunner},
+		Level:      "job",
 		Rows: []analyzer.FacetRow{
-			{Key: "ubuntu-24.04", Count: 300, AvgDurationSec: 480, MedianDurationSec: 450, SuccessRatePct: 88.0, AvgQueueSec: 12},
-			{Key: "ubuntu-24.04-arm", Count: 120, AvgDurationSec: 510, MedianDurationSec: 500, SuccessRatePct: 86.0, AvgQueueSec: 30},
+			{Keys: []string{"ubuntu-24.04"}, Count: 300, AvgDurationSec: 480, MedianDurationSec: 450, SuccessRatePct: 88.0, AvgQueueSec: 12},
+			{Keys: []string{"ubuntu-24.04-arm"}, Count: 120, AvgDurationSec: 510, MedianDurationSec: 500, SuccessRatePct: 86.0, AvgQueueSec: 30},
 		},
 	})
 	out := buf.String()
 	for _, want := range []string{"Runner", "Jobs", "Avg Queue", "ubuntu-24.04", "ubuntu-24.04-arm"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("job-level facet table missing %q, got:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderFacetComparisonCrossAndTruncation(t *testing.T) {
+	var buf bytes.Buffer
+	renderFacetComparison(&buf, &analyzer.FacetComparison{
+		Dimensions: []analyzer.FacetDimension{analyzer.FacetBranch, analyzer.FacetEvent},
+		Level:      "run",
+		Truncated:  5,
+		Rows: []analyzer.FacetRow{
+			{Keys: []string{"upstream", "push"}, Count: 100, AvgDurationSec: 600, MedianDurationSec: 540, SuccessRatePct: 95.0, FlakyJobs: 1},
+			{Keys: []string{"feature", "pull_request"}, Count: 80, AvgDurationSec: 700, MedianDurationSec: 300, SuccessRatePct: 42.0, FlakyJobs: 4},
+		},
+	})
+	out := buf.String()
+	// Both dimension columns present, plus the crossed key values and the remainder note.
+	for _, want := range []string{"Branch", "Event", "upstream", "push", "feature", "pull_request", "5 more combinations"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("crossed facet table missing %q, got:\n%s", want, out)
 		}
 	}
 }

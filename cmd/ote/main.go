@@ -494,10 +494,9 @@ func main() {
 		// store: an incremental sync brings it current, then the analysis is
 		// exact (full job detail) with near-zero API cost. Branch/workflow
 		// filters and dump/no-sample knobs still use the API path.
-		switch cfg.trendsFacet {
-		case "", string(analyzer.FacetBranch), string(analyzer.FacetEvent), string(analyzer.FacetRunner):
-		default:
-			printError(fmt.Errorf("invalid --facet=%q (expected branch, event, or runner)", cfg.trendsFacet), "trend analysis failed")
+		facets, facetErr := analyzer.ParseFacets(cfg.trendsFacet)
+		if facetErr != nil {
+			printError(facetErr, "trend analysis failed")
 			os.Exit(1)
 		}
 
@@ -520,7 +519,7 @@ func main() {
 				NoSample:      cfg.trendsNoSample,
 				MarginOfError: cfg.trendsMargin,
 				DumpRunsPath:  cfg.trendsDumpRuns,
-				Facet:         analyzer.FacetDimension(cfg.trendsFacet),
+				Facets:        facets,
 			}, progress)
 
 			progress.Finish()
@@ -1351,7 +1350,8 @@ func printUsage() {
 	fmt.Println("  --format=<format>         Output format: terminal, json, xlsx, doc, html (default: terminal)")
 	fmt.Println("  --branch=<name>           Filter by branch name (e.g., main, master)")
 	fmt.Println("  --workflow=<file>         Filter by workflow file name (e.g., post-merge.yaml)")
-	fmt.Println("  --facet=<dimension>       Compare buckets side by side: branch (upstream vs feature), event, runner")
+	fmt.Println("  --facet=<dims>            Bucket comparison table: branch (upstream vs feature), event, runner.")
+	fmt.Println("                            Comma-separate to cross dimensions (--facet=branch,event); 'all' = all three.")
 	fmt.Println("  --no-sample               Fetch job details for all runs (disables statistical sampling)")
 	fmt.Println("  --dump-runs=<file>        Write fetched run/job data as JSON (ground truth with --no-sample)")
 	fmt.Println("  --confidence=<0-1>        Deprecated and ignored; use --margin")
@@ -1378,7 +1378,8 @@ func printUsage() {
 	fmt.Println("  ote trends owner/repo --format=xlsx --out=trends.xlsx")
 	fmt.Println("  ote trends owner/repo --format=html > trends.html")
 	fmt.Println("  ote trends owner/repo --branch=main --workflow=post-merge.yaml")
-	fmt.Println("  ote trends owner/repo --facet=branch   # upstream vs feature comparison")
+	fmt.Println("  ote trends owner/repo --facet=branch         # upstream vs feature comparison")
+	fmt.Println("  ote trends owner/repo --facet=branch,event   # crossed: per branch-bucket × trigger")
 	fmt.Println("  ote trace.json                      # auto-detects OTel or Chrome Tracing format")
 	fmt.Println("  ote chrome-profile.json spans.json   # multiple trace files as args")
 	fmt.Println("  ote --trace=spans.json https://github.com/owner/repo/pull/123")

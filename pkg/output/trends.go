@@ -116,7 +116,7 @@ func OutputTrends(w io.Writer, analysis *analyzer.TrendAnalysis, format string) 
 
 	// Facet comparison (only when --facet was requested)
 	if analysis.Facets != nil && len(analysis.Facets.Rows) > 0 {
-		trendSection(w, "Facet Comparison: "+facetTitle(analysis.Facets.Dimension))
+		trendSection(w, "Facet Comparison: "+facetTitle(analysis.Facets.Dimensions))
 		renderFacetComparison(w, analysis.Facets)
 	}
 
@@ -233,10 +233,10 @@ func renderTrendSummary(w io.Writer, summary analyzer.TrendSummary) {
 }
 
 // facetTitle returns a human label for a facet dimension.
-func facetTitle(dim analyzer.FacetDimension) string {
+func facetDimLabel(dim analyzer.FacetDimension) string {
 	switch dim {
 	case analyzer.FacetBranch:
-		return "Branch (upstream vs feature)"
+		return "Branch"
 	case analyzer.FacetEvent:
 		return "Event"
 	case analyzer.FacetRunner:
@@ -246,17 +246,33 @@ func facetTitle(dim analyzer.FacetDimension) string {
 	}
 }
 
-// renderFacetComparison prints one compact table comparing the facet buckets.
-// Run-level facets (branch, event) show a Flaky column; the job-level runner
-// facet shows Avg Queue instead, and labels its first column / count by job.
+// facetTitle joins the crossed dimension labels, e.g. "Branch × Event".
+func facetTitle(dims []analyzer.FacetDimension) string {
+	labels := make([]string, len(dims))
+	for i, d := range dims {
+		labels[i] = facetDimLabel(d)
+	}
+	return strings.Join(labels, " × ")
+}
+
+// renderFacetComparison prints one compact table comparing the facet buckets,
+// with one column per crossed dimension. Run-level facets (branch, event) show
+// a Flaky column; including runner makes it job-level and shows Avg Queue.
 func renderFacetComparison(w io.Writer, fc *analyzer.FacetComparison) {
 	fmt.Fprintln(w)
 
 	jobLevel := fc.Level == "job"
-	keyHeader, countHeader, lastHeader := "Bucket", "Runs", "Flaky"
+	nDims := len(fc.Dimensions)
+	countHeader, lastHeader := "Runs", "Flaky"
 	if jobLevel {
-		keyHeader, countHeader, lastHeader = "Runner", "Jobs", "Avg Queue"
+		countHeader, lastHeader = "Jobs", "Avg Queue"
 	}
+
+	headers := make([]string, 0, nDims+5)
+	for _, d := range fc.Dimensions {
+		headers = append(headers, facetDimLabel(d))
+	}
+	headers = append(headers, countHeader, "Avg", "Median", "Success", lastHeader)
 
 	t := table.New().
 		Border(lipgloss.RoundedBorder()).
@@ -265,29 +281,35 @@ func renderFacetComparison(w io.Writer, fc *analyzer.FacetComparison) {
 			if row == table.HeaderRow {
 				return labelStyle.Bold(true)
 			}
-			if col == 0 {
+			if col < nDims { // dimension key columns: left-aligned
 				return lipgloss.NewStyle()
 			}
 			return lipgloss.NewStyle().Align(lipgloss.Right)
 		}).
-		Headers(keyHeader, countHeader, "Avg", "Median", "Success", lastHeader)
+		Headers(headers...)
 
 	for _, r := range fc.Rows {
 		last := fmt.Sprintf("%d", r.FlakyJobs)
 		if jobLevel {
 			last = utils.HumanizeTime(r.AvgQueueSec)
 		}
-		t.Row(
-			r.Key,
+		cells := make([]string, 0, nDims+5)
+		cells = append(cells, r.Keys...)
+		cells = append(cells,
 			fmt.Sprintf("%d", r.Count),
 			utils.HumanizeTime(r.AvgDurationSec),
 			utils.HumanizeTime(r.MedianDurationSec),
 			colorForSuccessRate(r.SuccessRatePct).Render(fmt.Sprintf("%.1f%%", r.SuccessRatePct)),
 			last,
 		)
+		t.Row(cells...)
 	}
 
 	fmt.Fprintln(w, t)
+
+	if fc.Truncated > 0 {
+		fmt.Fprintf(w, "\n  %s\n", dimStyle.Render(fmt.Sprintf("… and %d more combinations (showing the %d busiest)", fc.Truncated, len(fc.Rows))))
+	}
 }
 
 func renderDurationChart(w io.Writer, points []analyzer.DataPoint) {
