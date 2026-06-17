@@ -12,13 +12,23 @@ import (
 	"github.com/stefanpenner/otel-explorer/pkg/utils"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
 // Instrumentation identity for all GHA-generated spans.
 const instrumentationName = "github.com/stefanpenner/otel-explorer/pkg/analyzer"
+
+// defaultResource carries service.name for spans we synthesize from GitHub
+// Actions. Without it, exported spans land under "OTLPResourceNoServiceName"
+// in OTLP backends (Jaeger/Tempo). Schemaless avoids schema-URL merge conflicts
+// with resources on ingested (non-GHA) trace spans.
+var defaultResource = resource.NewSchemaless(
+	semconv.ServiceName("github-actions"),
+)
 
 // SpanBuilder accumulates tracetest.SpanStubs and converts them to ReadOnlySpans.
 // Thread-safe for concurrent use by processWorkflowRun goroutines.
@@ -31,6 +41,11 @@ func (b *SpanBuilder) Add(stub tracetest.SpanStub) {
 	// Stamp every span with our instrumentation scope.
 	if stub.InstrumentationScope.Name == "" {
 		stub.InstrumentationScope.Name = instrumentationName
+	}
+	// Stamp a default resource (service.name) when the span doesn't already
+	// carry one. Ingested non-GHA spans keep their original resource.
+	if stub.Resource == nil || stub.Resource.Len() == 0 {
+		stub.Resource = defaultResource
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -84,7 +99,7 @@ func AnalyzeURLs(ctx context.Context, urls []string, client githubapi.GitHubProv
 		if reporter != nil {
 			reporter.StartURL(urlIndex, githubURL)
 		}
-		
+
 		rawData, err := provider.Fetch(ctx, githubURL, urlIndex, reporter, opts)
 		if err != nil {
 			urlErrors = append(urlErrors, URLError{URL: githubURL, Err: err})
@@ -172,7 +187,7 @@ func buildURLResult(ctx context.Context, parsed utils.ParsedGitHubURL, urlIndex 
 	traceEvents := []TraceEvent{}
 	jobStartTimes := []JobEvent{}
 	jobEndTimes := []JobEvent{}
-	
+
 	type runResult struct {
 		metrics     Metrics
 		traceEvents []TraceEvent
@@ -1095,7 +1110,7 @@ func addReviewMarkersToTrace(urlResults []URLResult, events *[]TraceEvent) {
 		if len(result.ReviewEvents) == 0 {
 			continue
 		}
-		
+
 		for _, event := range result.ReviewEvents {
 			originalEventTime := event.TimeMillis()
 			ts := (originalEventTime - result.EarliestTime) * 1000
