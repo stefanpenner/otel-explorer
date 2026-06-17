@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -48,6 +49,10 @@ type FacetComparison struct {
 	Level      string
 	Rows       []FacetRow
 	Truncated  int
+	// Estimated is true when job-level counts were extrapolated from a sampled
+	// subset of runs (i.e. sampling was active). Counts are then population
+	// estimates rather than exact observations.
+	Estimated bool
 }
 
 // FacetRow holds one bucket's headline metrics. Keys holds one value per
@@ -55,7 +60,7 @@ type FacetComparison struct {
 // facets; AvgQueueSec only for job-level (runner) facets.
 type FacetRow struct {
 	Keys              []string
-	Count             int // runs (run-level) or jobs (job-level)
+	Count             int // exact runs (run-level) or estimated population jobs (job-level; see facetJobsCross)
 	AvgDurationSec    float64
 	MedianDurationSec float64
 	SuccessRatePct    float64
@@ -165,17 +170,69 @@ func facetRunsCross(dims []FacetDimension, runs []RunData, defaultBranch string)
 // facetJobsCross groups every fetched job by the tuple of dimension values
 // (run-level dimensions taken from the job's parent run, runner from the job)
 // and computes job-level metrics per bucket.
+//
+// Because job detail is fetched for only a sampled subset of runs — and the
+// sampler allocates different rates per workflow — the raw job count in a
+// bucket understates reality, unevenly across buckets. Count is therefore the
+// *estimated population* count: each observed job is weighted by its workflow's
+// inverse sampling fraction (total completed runs ÷ runs whose jobs we fetched).
+// With no sampling every run carries jobs, weight is 1, and the estimate equals
+// the exact count. Per-job duration/queue/success stats stay sample-based (the
+// sampler keeps those accurate; see cmd/sample-eval) — only the count, which
+// drives the busiest-first ranking and the row cap, is corrected.
 func facetJobsCross(dims []FacetDimension, runs []RunData, defaultBranch string) *FacetComparison {
+	// Per-workflow inverse sampling weight from run-level data (complete). A
+	// run counts toward the denominator once its jobs were fetched, even if it
+	// had none — that keeps a genuinely job-less run (skipped/filtered) from
+	// being mistaken for an unsampled one, which would inflate the estimate.
+	// When no run is marked fetched (hand-built data, older callers), fall back
+	// to "has jobs" so counts equal the raw observation with weight 1.
+	totalByWF := make(map[string]int)
+	fetchedByWF := make(map[string]int)
+	anyFetched := false
+	for _, r := range runs {
+		if r.JobsFetched {
+			anyFetched = true
+			break
+		}
+	}
+	fetchedSignal := func(r RunData) bool {
+		if anyFetched {
+			return r.JobsFetched
+		}
+		return len(r.Jobs) > 0
+	}
+	for _, r := range runs {
+		totalByWF[r.WorkflowName]++
+		if fetchedSignal(r) {
+			fetchedByWF[r.WorkflowName]++
+		}
+	}
+	weightOf := func(wf string) float64 {
+		if s := fetchedByWF[wf]; s > 0 {
+			return float64(totalByWF[wf]) / float64(s)
+		}
+		return 1
+	}
+	estimated := false
+	for wf, total := range totalByWF {
+		if fetchedByWF[wf] > 0 && fetchedByWF[wf] < total {
+			estimated = true
+			break
+		}
+	}
+
 	type agg struct {
 		keys      []string
 		durations []float64
 		queues    []float64
 		success   int
 		decisive  int
-		count     int
+		countEst  float64 // sum of per-job population weights
 	}
 	groups := make(map[string]*agg)
 	for _, r := range runs {
+		w := weightOf(r.WorkflowName)
 		for _, j := range r.Jobs {
 			parts := make([]string, len(dims))
 			for i, d := range dims {
@@ -191,7 +248,7 @@ func facetJobsCross(dims []FacetDimension, runs []RunData, defaultBranch string)
 				a = &agg{keys: parts}
 				groups[jk] = a
 			}
-			a.count++
+			a.countEst += w
 			if j.Duration > 0 {
 				a.durations = append(a.durations, float64(j.Duration)/1000.0)
 			}
@@ -215,14 +272,16 @@ func facetJobsCross(dims []FacetDimension, runs []RunData, defaultBranch string)
 		}
 		rows = append(rows, FacetRow{
 			Keys:              a.keys,
-			Count:             a.count,
+			Count:             int(math.Round(a.countEst)),
 			AvgDurationSec:    average(a.durations),
 			MedianDurationSec: calculateMedian(a.durations),
 			SuccessRatePct:    successRate,
 			AvgQueueSec:       average(a.queues),
 		})
 	}
-	return finishComparison(dims, "job", rows)
+	c := finishComparison(dims, "job", rows)
+	c.Estimated = estimated
+	return c
 }
 
 // finishComparison sorts buckets by descending count (busiest first, tie-broken

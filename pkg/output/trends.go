@@ -266,6 +266,9 @@ func renderFacetComparison(w io.Writer, fc *analyzer.FacetComparison) {
 	countHeader, lastHeader := "Runs", "Flaky"
 	if jobLevel {
 		countHeader, lastHeader = "Jobs", "Avg Queue"
+		if fc.Estimated {
+			countHeader = "Jobs~" // population estimate from sampled runs
+		}
 	}
 
 	headers := make([]string, 0, nDims+5)
@@ -306,6 +309,10 @@ func renderFacetComparison(w io.Writer, fc *analyzer.FacetComparison) {
 	}
 
 	fmt.Fprintln(w, t)
+
+	if fc.Estimated {
+		fmt.Fprintf(w, "\n  %s\n", dimStyle.Render("Jobs~ = population estimate extrapolated from sampled runs; durations & rates are sample-based."))
+	}
 
 	if fc.Truncated > 0 {
 		fmt.Fprintf(w, "\n  %s\n", dimStyle.Render(fmt.Sprintf("… and %d more combinations (showing the %d busiest)", fc.Truncated, len(fc.Rows))))

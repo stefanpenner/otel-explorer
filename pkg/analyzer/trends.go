@@ -165,6 +165,11 @@ type RunData struct {
 	UpdatedAt    time.Time
 	Duration     int64 // milliseconds
 	Jobs         []JobData
+	// JobsFetched is true once a jobs response was retrieved for this run
+	// (even an empty one). It distinguishes a run we sampled that genuinely has
+	// no jobs from one we never fetched, so job-level facets can extrapolate
+	// population counts correctly. Not persisted in dumps (older dumps lack it).
+	JobsFetched bool `json:"-"`
 }
 
 // JobData represents simplified job data
@@ -367,6 +372,9 @@ func AnalyzeTrendsFromRuns(owner, repo string, days int, runs []RunData) *TrendA
 	completed := make([]RunData, 0, len(runs))
 	for _, run := range runs {
 		if run.Status == "completed" {
+			// Store-backed runs carry exact job detail (ote sync fetches all
+			// jobs), so every run counts as fetched — no extrapolation.
+			run.JobsFetched = true
 			completed = append(completed, run)
 		}
 	}
@@ -721,6 +729,7 @@ func fetchJobsForRun(ctx context.Context, client githubapi.GitHubProvider, runDa
 		return
 	}
 	fetched.Add(1)
+	runData[idx].JobsFetched = true
 	runData[idx].Jobs = append(runData[idx].Jobs, ConvertJobs(jobs, run.RunAttempt)...)
 }
 

@@ -145,6 +145,43 @@ func TestComputeFacetsCrossWithRunnerIsJobLevel(t *testing.T) {
 	assert.Equal(t, 1, rowByKeys(t, c, "feature", "ubuntu-24.04").Count)
 }
 
+// TestFacetJobCountsExtrapolateForSampling pins the fix for the headline
+// accuracy bug: when only some runs of a workflow have job detail (sampling),
+// the job-level facet Count must estimate the *population* count, not the raw
+// sample count. Two workflows sampled at different rates would otherwise mis-
+// rank: a busy workflow sampled sparsely looks smaller than reality.
+func TestFacetJobCountsExtrapolateForSampling(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	var runs []RunData
+	// Workflow "big": 10 completed runs, only 2 sampled (have jobs). Each
+	// sampled run has one ubuntu-slim job → population ≈ 10 jobs.
+	for i := 0; i < 10; i++ {
+		r := RunData{WorkflowName: "big", Branch: "main", Event: "push", CreatedAt: base}
+		if i < 2 {
+			r.JobsFetched = true
+			r.Jobs = []JobData{{Conclusion: "success", Duration: 60_000, Labels: []string{"ubuntu-slim"}}}
+		}
+		runs = append(runs, r)
+	}
+	// Workflow "small": 2 completed runs, both sampled. One ubuntu-slim job
+	// each → population = 2 jobs, all observed.
+	for i := 0; i < 2; i++ {
+		runs = append(runs, RunData{WorkflowName: "small", Branch: "main", Event: "push", CreatedAt: base,
+			JobsFetched: true,
+			Jobs:        []JobData{{Conclusion: "success", Duration: 60_000, Labels: []string{"ubuntu-slim"}}}})
+	}
+
+	c := computeFacets(runs, []FacetDimension{FacetRunner}, "main")
+	require.NotNil(t, c)
+	row := rowByKeys(t, c, "ubuntu-slim")
+	// Raw sample = 4 jobs; extrapolated population = big(2×10/2=10) + small(2) = 12.
+	assert.Equal(t, 12, row.Count, "job count should extrapolate to population, not report raw sample size")
+	// Per-job stats stay sample-based (validated accurate by cmd/sample-eval).
+	assert.InDelta(t, 100.0, row.SuccessRatePct, 0.01)
+	assert.InDelta(t, 60.0, row.AvgDurationSec, 0.01)
+}
+
 func TestComputeFacetsTruncatesBusiestFirst(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)

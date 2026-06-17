@@ -43,6 +43,7 @@ go_test(
     srcs = [
         "clamp_test.go",
         "data_provider_test.go",
+        "facet_accuracy_test.go",
         "facet_test.go",
         "hourly_test.go",
         "mapping_test.go",
