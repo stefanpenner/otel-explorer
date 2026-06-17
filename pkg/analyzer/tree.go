@@ -64,6 +64,10 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 
 	filtered := []spanWithHints{}
 	seenDedup := make(map[string]struct{})
+	// Collapse spans sharing a trace+span ID (e.g. the same job/step emitted both
+	// by the GitHub API reconstruction and natively by the runner). Prefer the
+	// runner-emitted span: it has sub-second precision timing.
+	bySpanID := make(map[string]int)
 
 	for _, s := range spans {
 		attrs := make(map[string]string)
@@ -98,6 +102,16 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 			}
 			seenDedup[hints.DedupKey] = struct{}{}
 		}
+
+		// Deduplicate by trace+span ID, preferring the runner-emitted span.
+		idKey := s.SpanContext().TraceID().String() + ":" + s.SpanContext().SpanID().String()
+		if idx, ok := bySpanID[idKey]; ok {
+			if attrs["source"] == "runner" && filtered[idx].attrs["source"] != "runner" {
+				filtered[idx] = spanWithHints{span: s, attrs: attrs, hints: hints}
+			}
+			continue
+		}
+		bySpanID[idKey] = len(filtered)
 
 		filtered = append(filtered, spanWithHints{span: s, attrs: attrs, hints: hints})
 	}

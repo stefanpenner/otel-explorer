@@ -522,7 +522,7 @@ func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex
 
 	// Ingest step logs (best-effort) for sub-step span extraction
 	if opts.FetchLogs {
-		_ = IngestStepLogs(ctx, client, owner, repo, jobs, builder, urlIndex, tid, nil)
+		_ = IngestStepLogs(ctx, client, owner, repo, run.ID, run.RunAttempt, jobs, builder, urlIndex, tid, nil)
 	}
 
 	// Build workflow span stub (runEnd was extended to cover the latest job completion)
@@ -785,7 +785,7 @@ func processJob(job githubapi.Job, jobIndex int, run githubapi.WorkflowRun, jobT
 		jobURL = fmt.Sprintf("https://github.com/%s/%s/actions/runs/%d/job/%d", run.Repository.Owner.Login, run.Repository.Name, run.ID, job.ID)
 	}
 
-	jobSID := githubapi.NewSpanID(job.ID)
+	jobSID := githubapi.NewJobSpanID(run.ID, run.RunAttempt, job.Name)
 	jobSC := trace.NewSpanContext(trace.SpanContextConfig{
 		TraceID:    traceID,
 		SpanID:     jobSID,
@@ -1047,7 +1047,7 @@ func processStep(step githubapi.Step, job githubapi.Job, run githubapi.WorkflowR
 
 	stepURL := fmt.Sprintf("%s#step:%d:1", jobURL, step.Number)
 
-	stepSID := githubapi.NewSpanIDFromString(fmt.Sprintf("%d-%s", job.ID, step.Name))
+	stepSID := githubapi.NewStepSpanID(run.ID, run.RunAttempt, job.Name, step.Name)
 	stepSC := trace.NewSpanContext(trace.SpanContextConfig{
 		TraceID:    traceID,
 		SpanID:     stepSID,

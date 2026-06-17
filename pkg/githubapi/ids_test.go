@@ -56,3 +56,28 @@ func TestDeterministicIDs(t *testing.T) {
 		}
 	})
 }
+
+// TestCrossLanguageGoldenIDs locks the shared ID contract with the runner
+// (runner/src/Test/L0/Worker/OTelTracerL0.cs uses the identical golden values).
+func TestCrossLanguageGoldenIDs(t *testing.T) {
+	cases := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"trace", NewTraceID(99999, 1).String(), "37912fcf8909bcb43fd643580e6b5ee1"},
+		{"workflow", NewSpanID(99999).String(), "000000000001869f"},
+		{"job", NewJobSpanID(99999, 1, "build").String(), "224bc2674c838206"},
+		{"step", NewStepSpanID(99999, 1, "build", "Run tests").String(), "8f4170e86c7435ac"},
+	}
+	for _, c := range cases {
+		if c.got != c.want {
+			t.Errorf("%s: got %s, want %s", c.name, c.got, c.want)
+		}
+	}
+
+	// Attempt 0 normalizes to 1.
+	if NewJobSpanID(99999, 0, "build") != NewJobSpanID(99999, 1, "build") {
+		t.Error("attempt 0 should normalize to 1 for job span")
+	}
+}
