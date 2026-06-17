@@ -114,6 +114,12 @@ func OutputTrends(w io.Writer, analysis *analyzer.TrendAnalysis, format string) 
 	trendSection(w, "Summary Statistics")
 	renderTrendSummary(w, analysis.Summary)
 
+	// Facet comparison (only when --facet was requested)
+	if analysis.Facets != nil && len(analysis.Facets.Rows) > 0 {
+		trendSection(w, "Facet Comparison: "+facetTitle(analysis.Facets.Dimension))
+		renderFacetComparison(w, analysis.Facets)
+	}
+
 	// Duration trend chart
 	if len(analysis.DurationTrend) > 0 {
 		trendSection(w, "Workflow Duration Trend")
@@ -224,6 +230,64 @@ func renderTrendSummary(w io.Writer, summary analyzer.TrendSummary) {
 	if summary.TrendDescription != "" {
 		fmt.Fprintf(w, "\n  %s\n", dimStyle.Render(summary.TrendDescription))
 	}
+}
+
+// facetTitle returns a human label for a facet dimension.
+func facetTitle(dim analyzer.FacetDimension) string {
+	switch dim {
+	case analyzer.FacetBranch:
+		return "Branch (upstream vs feature)"
+	case analyzer.FacetEvent:
+		return "Event"
+	case analyzer.FacetRunner:
+		return "Runner"
+	default:
+		return string(dim)
+	}
+}
+
+// renderFacetComparison prints one compact table comparing the facet buckets.
+// Run-level facets (branch, event) show a Flaky column; the job-level runner
+// facet shows Avg Queue instead, and labels its first column / count by job.
+func renderFacetComparison(w io.Writer, fc *analyzer.FacetComparison) {
+	fmt.Fprintln(w)
+
+	jobLevel := fc.Level == "job"
+	keyHeader, countHeader, lastHeader := "Bucket", "Runs", "Flaky"
+	if jobLevel {
+		keyHeader, countHeader, lastHeader = "Runner", "Jobs", "Avg Queue"
+	}
+
+	t := table.New().
+		Border(lipgloss.RoundedBorder()).
+		BorderStyle(borderStyle).
+		StyleFunc(func(row, col int) lipgloss.Style {
+			if row == table.HeaderRow {
+				return labelStyle.Bold(true)
+			}
+			if col == 0 {
+				return lipgloss.NewStyle()
+			}
+			return lipgloss.NewStyle().Align(lipgloss.Right)
+		}).
+		Headers(keyHeader, countHeader, "Avg", "Median", "Success", lastHeader)
+
+	for _, r := range fc.Rows {
+		last := fmt.Sprintf("%d", r.FlakyJobs)
+		if jobLevel {
+			last = utils.HumanizeTime(r.AvgQueueSec)
+		}
+		t.Row(
+			r.Key,
+			fmt.Sprintf("%d", r.Count),
+			utils.HumanizeTime(r.AvgDurationSec),
+			utils.HumanizeTime(r.MedianDurationSec),
+			colorForSuccessRate(r.SuccessRatePct).Render(fmt.Sprintf("%.1f%%", r.SuccessRatePct)),
+			last,
+		)
+	}
+
+	fmt.Fprintln(w, t)
 }
 
 func renderDurationChart(w io.Writer, points []analyzer.DataPoint) {

@@ -46,6 +46,7 @@ type TrendAnalysis struct {
 	QueueTimeStats   QueueTimeStats
 	Typical          *TypicalRun
 	Hourly           *HourlyPatterns
+	Facets           *FacetComparison // set only when faceting was requested
 }
 
 // Changepoint identifies the approximate point in time where a job's duration shifted.
@@ -185,8 +186,9 @@ type JobData struct {
 // TrendOptions configures the trend analysis behavior
 type TrendOptions struct {
 	NoSample      bool
-	MarginOfError float64 // e.g. 0.10 for ±10% — drives per-workflow observation targets
-	DumpRunsPath  string  // when set, write the fetched RunData as JSON for offline analysis
+	MarginOfError float64        // e.g. 0.10 for ±10% — drives per-workflow observation targets
+	DumpRunsPath  string         // when set, write the fetched RunData as JSON for offline analysis
+	Facet         FacetDimension // when set, slice the analysis into a facet comparison
 }
 
 // RunDump is the on-disk format written by TrendOptions.DumpRunsPath: the raw
@@ -341,7 +343,18 @@ func AnalyzeTrends(ctx context.Context, client githubapi.GitHubProvider, owner, 
 		}
 	}
 
-	return analyzeRunData(owner, repo, runData, sampling, TimeRange{Start: startTime, End: endTime, Days: days}), nil
+	analysis := analyzeRunData(owner, repo, runData, sampling, TimeRange{Start: startTime, End: endTime, Days: days})
+	if opts.Facet != "" {
+		defaultBranch := ""
+		if opts.Facet == FacetBranch {
+			// Branch classification needs the repo's trunk; one cheap call.
+			if meta, err := client.FetchRepository(ctx, fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo)); err == nil && meta != nil {
+				defaultBranch = meta.DefaultBranch
+			}
+		}
+		analysis.Facets = computeFacets(runData, opts.Facet, defaultBranch)
+	}
+	return analysis, nil
 }
 
 // AnalyzeTrendsFromRuns runs the full trend analysis over locally stored

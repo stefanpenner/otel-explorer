@@ -119,6 +119,7 @@ type config struct {
 	trendsNoSample   bool
 	trendsDumpRuns   string
 	trendsMargin     float64
+	trendsFacet      string
 	syncMode         bool
 	noArtifacts      bool
 	convertMode      bool
@@ -322,6 +323,10 @@ func parseArgs(args []string, terminal bool) (config, error) {
 			cfg.trendsWorkflow = strings.TrimPrefix(arg, "--workflow=")
 			continue
 		}
+		if strings.HasPrefix(arg, "--facet=") {
+			cfg.trendsFacet = strings.TrimPrefix(arg, "--facet=")
+			continue
+		}
 		if arg == "--no-sample" {
 			cfg.trendsNoSample = true
 			continue
@@ -489,8 +494,17 @@ func main() {
 		// store: an incremental sync brings it current, then the analysis is
 		// exact (full job detail) with near-zero API cost. Branch/workflow
 		// filters and dump/no-sample knobs still use the API path.
+		switch cfg.trendsFacet {
+		case "", string(analyzer.FacetBranch), string(analyzer.FacetEvent), string(analyzer.FacetRunner):
+		default:
+			printError(fmt.Errorf("invalid --facet=%q (expected branch, event, or runner)", cfg.trendsFacet), "trend analysis failed")
+			os.Exit(1)
+		}
+
 		var analysis *analyzer.TrendAnalysis
-		if cfg.trendsBranch == "" && cfg.trendsWorkflow == "" && cfg.trendsDumpRuns == "" && !cfg.trendsNoSample {
+		// Faceting needs head_branch/event/labels on every fetched run, so it
+		// always uses the API path rather than the store.
+		if cfg.trendsBranch == "" && cfg.trendsWorkflow == "" && cfg.trendsDumpRuns == "" && !cfg.trendsNoSample && cfg.trendsFacet == "" {
 			analysis = trendsFromStore(ctx, client, owner, repo, cfg.trendsDays)
 		}
 
@@ -506,6 +520,7 @@ func main() {
 				NoSample:      cfg.trendsNoSample,
 				MarginOfError: cfg.trendsMargin,
 				DumpRunsPath:  cfg.trendsDumpRuns,
+				Facet:         analyzer.FacetDimension(cfg.trendsFacet),
 			}, progress)
 
 			progress.Finish()
@@ -1333,6 +1348,7 @@ func printUsage() {
 	fmt.Println("  --format=<format>         Output format: terminal, json, xlsx, doc, html (default: terminal)")
 	fmt.Println("  --branch=<name>           Filter by branch name (e.g., main, master)")
 	fmt.Println("  --workflow=<file>         Filter by workflow file name (e.g., post-merge.yaml)")
+	fmt.Println("  --facet=<dimension>       Compare buckets side by side: branch (upstream vs feature), event, runner")
 	fmt.Println("  --no-sample               Fetch job details for all runs (disables statistical sampling)")
 	fmt.Println("  --dump-runs=<file>        Write fetched run/job data as JSON (ground truth with --no-sample)")
 	fmt.Println("  --confidence=<0-1>        Deprecated and ignored; use --margin")
@@ -1359,6 +1375,7 @@ func printUsage() {
 	fmt.Println("  ote trends owner/repo --format=xlsx --out=trends.xlsx")
 	fmt.Println("  ote trends owner/repo --format=html > trends.html")
 	fmt.Println("  ote trends owner/repo --branch=main --workflow=post-merge.yaml")
+	fmt.Println("  ote trends owner/repo --facet=branch   # upstream vs feature comparison")
 	fmt.Println("  ote trace.json                      # auto-detects OTel or Chrome Tracing format")
 	fmt.Println("  ote chrome-profile.json spans.json   # multiple trace files as args")
 	fmt.Println("  ote --trace=spans.json https://github.com/owner/repo/pull/123")

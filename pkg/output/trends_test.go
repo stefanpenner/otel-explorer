@@ -161,6 +161,45 @@ func TestOutputTrendsHeaderNoSamplingDuplication(t *testing.T) {
 	}
 }
 
+func TestRenderFacetComparisonRunLevel(t *testing.T) {
+	var buf bytes.Buffer
+	renderFacetComparison(&buf, &analyzer.FacetComparison{
+		Dimension: analyzer.FacetBranch,
+		Level:     "run",
+		Rows: []analyzer.FacetRow{
+			{Key: "upstream", Count: 120, AvgDurationSec: 600, MedianDurationSec: 540, SuccessRatePct: 95.0, FlakyJobs: 1},
+			{Key: "feature", Count: 880, AvgDurationSec: 720, MedianDurationSec: 300, SuccessRatePct: 41.2, FlakyJobs: 7},
+		},
+	})
+	out := buf.String()
+	for _, want := range []string{"Bucket", "Runs", "Flaky", "upstream", "feature", "95.0%", "41.2%"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("run-level facet table missing %q, got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Avg Queue") {
+		t.Errorf("run-level facet should not show the job-level Avg Queue column:\n%s", out)
+	}
+}
+
+func TestRenderFacetComparisonJobLevel(t *testing.T) {
+	var buf bytes.Buffer
+	renderFacetComparison(&buf, &analyzer.FacetComparison{
+		Dimension: analyzer.FacetRunner,
+		Level:     "job",
+		Rows: []analyzer.FacetRow{
+			{Key: "ubuntu-24.04", Count: 300, AvgDurationSec: 480, MedianDurationSec: 450, SuccessRatePct: 88.0, AvgQueueSec: 12},
+			{Key: "ubuntu-24.04-arm", Count: 120, AvgDurationSec: 510, MedianDurationSec: 500, SuccessRatePct: 86.0, AvgQueueSec: 30},
+		},
+	})
+	out := buf.String()
+	for _, want := range []string{"Runner", "Jobs", "Avg Queue", "ubuntu-24.04", "ubuntu-24.04-arm"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("job-level facet table missing %q, got:\n%s", want, out)
+		}
+	}
+}
+
 func TestRenderChangepointPositionIsOneBased(t *testing.T) {
 	cp := &analyzer.Changepoint{
 		Date:        time.Date(2026, 1, 4, 0, 0, 0, 0, time.UTC),
