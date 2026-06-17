@@ -18,7 +18,10 @@ go_library(
 
 go_test(
     name = "perfetto_test",
-    srcs = ["export_test.go"],
+    srcs = [
+        "export_test.go",
+        "origin_test.go",
+    ],
     embed = [":perfetto"],
     deps = [
         "//pkg/analyzer",

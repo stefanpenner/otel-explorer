@@ -64,7 +64,7 @@ func WriteTrace(w io.Writer, urlResults []analyzer.URLResult, combined analyzer.
 	}
 
 	// Track registry: collect all tracks before emitting
-	processTracks := make(map[int]*trackState)  // pid -> state
+	processTracks := make(map[int]*trackState)     // pid -> state
 	threadTracks := make(map[trackKey]*trackState) // (pid,tid) -> state
 
 	getProcessTrack := func(pid int, name string) uint64 {
@@ -357,6 +357,29 @@ func WriteTrace(w io.Writer, urlResults []analyzer.URLResult, combined analyzer.
 	return nil
 }
 
+// DefaultUIOrigin is Perfetto's public UI. Override with SetUIOrigin to target
+// a self-hosted instance (some companies run their own Perfetto UI).
+const DefaultUIOrigin = "https://ui.perfetto.dev"
+
+var uiOrigin = DefaultUIOrigin
+
+// SetUIOrigin configures which Perfetto UI traces are opened in. An empty
+// string is ignored (keeps the current/default origin).
+func SetUIOrigin(origin string) {
+	if origin != "" {
+		uiOrigin = origin
+	}
+}
+
+// UIOrigin returns the configured Perfetto UI origin.
+func UIOrigin() string { return uiOrigin }
+
+// openTraceArgs builds the argument list for the open_trace_in_ui script,
+// passing the configured UI origin through to --origin. Kept pure for testing.
+func openTraceArgs(scriptPath, traceFile, origin string) []string {
+	return []string{scriptPath, "--origin", origin, traceFile}
+}
+
 func openTraceInPerfetto(w io.Writer, traceFile string) error {
 	scriptName := "open_trace_in_ui"
 	scriptURL := "https://raw.githubusercontent.com/google/perfetto/main/tools/open_trace_in_ui"
@@ -375,14 +398,15 @@ func openTraceInPerfetto(w io.Writer, traceFile string) error {
 		fmt.Fprintf(w, "\n Using existing script: %s\n", scriptPath)
 	}
 
-	fmt.Fprintf(w, " Opening %s in Perfetto UI...\n", traceFile)
-	cmd := exec.Command(scriptPath, traceFile)
+	fmt.Fprintf(w, " Opening %s in Perfetto UI (%s)...\n", traceFile, uiOrigin)
+	args := openTraceArgs(scriptPath, traceFile, uiOrigin)
+	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
 	cmd.Stdout = w
 	cmd.Stderr = w
 	if err := cmd.Run(); err != nil {
 		fmt.Fprintf(w, " Failed to open trace in Perfetto\n")
-		fmt.Fprintln(w, " You can manually open the trace at: https://ui.perfetto.dev")
+		fmt.Fprintf(w, " You can manually open the trace at: %s\n", uiOrigin)
 		fmt.Fprintf(w, "   Then click \"Open trace file\" and select: %s\n", traceFile)
 		return nil
 	}

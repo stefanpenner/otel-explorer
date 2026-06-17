@@ -119,13 +119,15 @@ type config struct {
 	traceIDs         []string // trace IDs to fetch from backends
 	perfettoFile     string
 	openInPerfetto   bool
+	perfettoUI       string // custom Perfetto UI origin (or PERFETTO_UI_URL); default ui.perfetto.dev
 	openInOTel       bool
 	otelEndpoint     string
 	otelStdout       bool
 	otelGRPCEndpoint string
 	tuiMode          bool
-	outputFormat     string // stdout, markdown, otel, json, xlsx, doc, html
+	outputFormat     string // stdout, markdown, otel, json, xlsx, doc, html, slack
 	outFile          string // destination for binary formats (xlsx/doc); default chosen per format
+	slackWebhook     string // when set with --output=slack, POST the payload here (or SLACK_WEBHOOK_URL)
 	clearCache       bool
 	window           time.Duration
 	showHelp         bool
@@ -252,12 +254,20 @@ func parseArgs(args []string, terminal bool) (config, error) {
 		if strings.HasPrefix(arg, "--output=") {
 			cfg.outputFormat = strings.TrimPrefix(arg, "--output=")
 			if !validOutputFormat(cfg.outputFormat) {
-				return cfg, fmt.Errorf("invalid --output value: %s (must be 'stdout', 'markdown', 'otel', 'json', 'xlsx', 'doc', or 'html')", cfg.outputFormat)
+				return cfg, fmt.Errorf("invalid --output value: %s (must be 'stdout', 'markdown', 'otel', 'json', 'xlsx', 'doc', 'html', or 'slack')", cfg.outputFormat)
 			}
 			continue
 		}
 		if strings.HasPrefix(arg, "--out=") {
 			cfg.outFile = strings.TrimPrefix(arg, "--out=")
+			continue
+		}
+		if strings.HasPrefix(arg, "--slack-webhook=") {
+			cfg.slackWebhook = strings.TrimPrefix(arg, "--slack-webhook=")
+			continue
+		}
+		if strings.HasPrefix(arg, "--perfetto-ui=") {
+			cfg.perfettoUI = strings.TrimPrefix(arg, "--perfetto-ui=")
 			continue
 		}
 		if strings.HasPrefix(arg, "--trace=") {
@@ -326,12 +336,20 @@ func parseArgs(args []string, terminal bool) (config, error) {
 		if strings.HasPrefix(arg, "--format=") {
 			cfg.trendsFormat = strings.TrimPrefix(arg, "--format=")
 			if !validTrendsFormat(cfg.trendsFormat) {
-				return cfg, fmt.Errorf("invalid --format value: %s (must be 'terminal', 'json', 'xlsx', 'doc', or 'html')", cfg.trendsFormat)
+				return cfg, fmt.Errorf("invalid --format value: %s (must be 'terminal', 'json', 'xlsx', 'doc', 'html', or 'slack')", cfg.trendsFormat)
 			}
 			continue
 		}
 		if strings.HasPrefix(arg, "--out=") {
 			cfg.outFile = strings.TrimPrefix(arg, "--out=")
+			continue
+		}
+		if strings.HasPrefix(arg, "--slack-webhook=") {
+			cfg.slackWebhook = strings.TrimPrefix(arg, "--slack-webhook=")
+			continue
+		}
+		if strings.HasPrefix(arg, "--perfetto-ui=") {
+			cfg.perfettoUI = strings.TrimPrefix(arg, "--perfetto-ui=")
 			continue
 		}
 		if strings.HasPrefix(arg, "--branch=") {
@@ -420,6 +438,9 @@ func main() {
 		printUsage()
 		os.Exit(0)
 	}
+
+	// Point Perfetto trace-opening at a self-hosted UI when configured.
+	perfetto.SetUIOrigin(resolvePerfettoUI(cfg.perfettoUI))
 
 	// Gate raw ANSI/OSC escape emission on the destination of human-readable
 	// output (stderr by default) being a terminal, honoring NO_COLOR.
@@ -558,7 +579,7 @@ func main() {
 		utils.SetColorEnabled(colorsEnabledFor(os.Stdout))
 		if isExportFormat(cfg.trendsFormat) {
 			rep := export.BuildTrendReport(analysis, generatedAt())
-			if err := emitReport(rep, cfg.trendsFormat, cfg.outFile); err != nil {
+			if err := deliverReport(rep, cfg.trendsFormat, cfg.outFile, resolveSlackWebhook(cfg.slackWebhook)); err != nil {
 				printError(err, "output failed")
 				os.Exit(1)
 			}
@@ -1122,12 +1143,12 @@ func main() {
 	}
 
 	switch cfg.outputFormat {
-	case "json", "xlsx", "doc", "html":
+	case "json", "xlsx", "doc", "html", "slack":
 		// Trace files / receiver inputs have no URL results; reconstruct runs
 		// from spans so those inputs still produce a populated report.
 		spanRuns := analyzer.RunsFromSpans(spans, enricher)
 		rep := export.BuildRunReport(results, spanRuns, combined, globalEarliest, globalLatest, generatedAt())
-		if err := emitReport(rep, cfg.outputFormat, cfg.outFile); err != nil {
+		if err := deliverReport(rep, cfg.outputFormat, cfg.outFile, resolveSlackWebhook(cfg.slackWebhook)); err != nil {
 			printError(err, "writing report")
 			hadError = true
 		}
@@ -1347,10 +1368,12 @@ func printUsage() {
 	fmt.Println("\nFlags:")
 	fmt.Println("  --tui                     Force interactive TUI mode (default when terminal is available)")
 	fmt.Println("  --no-tui                  Disable interactive TUI, use CLI output instead")
-	fmt.Println("  --output=<format>         Output format: stdout, markdown, otel, json, xlsx, doc, html (implies --no-tui)")
+	fmt.Println("  --output=<format>         Output format: stdout, markdown, otel, json, xlsx, doc, html, slack (implies --no-tui)")
+	fmt.Println("  --slack-webhook=<url>     With --output=slack, POST the message to this Slack webhook (or SLACK_WEBHOOK_URL)")
 	fmt.Println("  --out=<file>              Destination file for binary formats (xlsx/doc); default: ote-report.<ext>")
 	fmt.Println("  --perfetto=<file.pftrace> Save trace for Perfetto.dev analysis")
 	fmt.Println("  --open-in-perfetto        Automatically open the generated trace in Perfetto UI")
+	fmt.Println("  --perfetto-ui=<url>       Perfetto UI origin to open traces in (or PERFETTO_UI_URL); default https://ui.perfetto.dev")
 	fmt.Println("  --otel                    Write OTel spans as JSON to stdout")
 	fmt.Println("  --otel=<endpoint>         Export traces via OTLP/HTTP (default port: 4318)")
 	fmt.Println("  --otel-grpc[=<endpoint>]  Export traces via OTLP/gRPC (default: localhost:4317)")

@@ -47,10 +47,12 @@ go_test(
     srcs = [
         "args_test.go",
         "persist_test.go",
+        "slack_test.go",
     ],
     embed = [":ote_lib"],
     deps = [
         "//pkg/analyzer",
+        "//pkg/export",
         "//pkg/githubapi",
         "//pkg/store",
         "@com_github_stretchr_testify//assert",

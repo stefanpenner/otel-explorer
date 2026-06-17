@@ -104,6 +104,18 @@ func TestParseArgs(t *testing.T) {
 			want:       config{urls: []string{"url"}, outputFormat: "html"},
 		},
 		{
+			name:       "--output=slack",
+			args:       []string{"url", "--output=slack"},
+			isTerminal: false,
+			want:       config{urls: []string{"url"}, outputFormat: "slack"},
+		},
+		{
+			name:       "--output=slack with --slack-webhook",
+			args:       []string{"url", "--output=slack", "--slack-webhook=https://hooks.slack.com/x"},
+			isTerminal: false,
+			want:       config{urls: []string{"url"}, outputFormat: "slack", slackWebhook: "https://hooks.slack.com/x"},
+		},
+		{
 			name:       "invalid --output returns error",
 			args:       []string{"url", "--output=pdf"},
 			isTerminal: false,
