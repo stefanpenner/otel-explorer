@@ -133,3 +133,22 @@ func TestChainEnricher_CICDBeforeGeneric(t *testing.T) {
 		t.Errorf("expected CICDEnricher to match first, got category %q", h.Category)
 	}
 }
+
+func TestCICDEnricher_VcsChangeAndBase(t *testing.T) {
+	e := &CICDEnricher{}
+	h := e.Enrich("build", map[string]string{
+		"cicd.pipeline.task.name": "build",
+		"vcs.ref.head.revision":   "abc123",
+		"vcs.ref.base.name":       "main",
+		"vcs.change.id":           "42",
+	}, false)
+	if h.VCSRevision != "abc123" {
+		t.Errorf("VCSRevision: got %q", h.VCSRevision)
+	}
+	if h.VCSBaseRef != "main" {
+		t.Errorf("VCSBaseRef: got %q", h.VCSBaseRef)
+	}
+	if h.VCSChangeID != "42" {
+		t.Errorf("VCSChangeID: got %q", h.VCSChangeID)
+	}
+}

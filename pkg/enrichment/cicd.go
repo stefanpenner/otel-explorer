@@ -39,6 +39,12 @@ func (e *CICDEnricher) Enrich(name string, attrs map[string]string, isZeroDurati
 	} else if rev := attrs["vcs.revision"]; rev != "" {
 		h.VCSRevision = rev
 	}
+	if base := attrs["vcs.ref.base.name"]; base != "" {
+		h.VCSBaseRef = base
+	}
+	if change := attrs["vcs.change.id"]; change != "" {
+		h.VCSChangeID = change
+	}
 
 	// Pipeline-level span (root)
 	if pipelineName != "" && taskName == "" {

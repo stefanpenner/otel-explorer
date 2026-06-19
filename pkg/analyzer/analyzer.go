@@ -543,10 +543,15 @@ func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex
 		attribute.String("cicd.pipeline.definition", run.Path),
 	}
 	if run.HeadSHA != "" {
-		wfAttrs = append(wfAttrs, attribute.String("vcs.revision", run.HeadSHA))
+		wfAttrs = append(wfAttrs, attribute.String("vcs.ref.head.revision", run.HeadSHA)) // semconv name
 	}
 	if run.HeadBranch != "" {
 		wfAttrs = append(wfAttrs, attribute.String("vcs.ref.head.name", run.HeadBranch))
+	}
+	wfAttrs = append(wfAttrs, attribute.String("vcs.provider.name", "github"))
+	// PR context parity with the runner: identifier is the PR number for pr URLs.
+	if sourceType == "pr" && identifier != "" {
+		wfAttrs = append(wfAttrs, attribute.String("vcs.change.id", identifier))
 	}
 	// Map conclusion to cicd.pipeline.run.result
 	wfAttrs = append(wfAttrs, attribute.String("cicd.pipeline.run.result", ghConclusionToResult(run.Conclusion)))

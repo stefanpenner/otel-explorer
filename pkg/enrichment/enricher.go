@@ -20,7 +20,9 @@ type SpanHints struct {
 	GroupKey     string // non-empty → group under synthetic parent ("activity" for markers)
 	// CI/CD extended context
 	VCSBranch   string // vcs.ref.head.name — branch context
-	VCSRevision string // vcs.revision — commit SHA
+	VCSRevision string // vcs.ref.head.revision — commit SHA
+	VCSBaseRef  string // vcs.ref.base.name — base branch (PRs)
+	VCSChangeID string // vcs.change.id — pull/merge request number
 	RunID       string // cicd.pipeline.run.id or cicd.pipeline.task.run.id
 	// Generic span detail (extracted from semconv attributes)
 	Detail string // e.g. "GET /api/users" for HTTP, "SELECT * FROM users" for DB
