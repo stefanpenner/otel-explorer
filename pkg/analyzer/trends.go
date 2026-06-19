@@ -49,11 +49,13 @@ type TrendAnalysis struct {
 	Facets           *FacetComparison // set only when faceting was requested
 }
 
-// Changepoint identifies the approximate point in time where a job's duration shifted.
+// Changepoint identifies the point in time where a job's duration shifted,
+// the statistical confidence that the shift is real, and a tight commit window
+// the shift falls within.
 type Changepoint struct {
 	Date         time.Time // timestamp of the first observation after the shift
-	BeforeSHA    string    // last commit SHA before the changepoint
-	AfterSHA     string    // first commit SHA after the changepoint
+	BeforeSHA    string    // last commit SHA before the changepoint (point estimate)
+	AfterSHA     string    // first commit SHA after the changepoint (point estimate)
 	BeforeRunURL string    // URL of the last run before the changepoint
 	AfterRunURL  string    // URL of the first run after the changepoint
 	DiffURL      string    // GitHub compare URL: BeforeSHA...AfterSHA
@@ -61,6 +63,24 @@ type Changepoint struct {
 	AfterAvg     float64   // average duration (seconds) after the changepoint
 	Index        int       // index of the first observation after the shift
 	TotalPoints  int       // total number of observations
+
+	// Significance of the shift (Mann-Whitney U, two-sided). A Changepoint is
+	// only produced when PValue < 0.05, so Confidence is "medium" or better.
+	PValue     float64 // two-sided p-value that the two regimes differ
+	Confidence string  // "very high" (p<0.001), "high" (p<0.01), "medium" (p<0.05)
+
+	// Localization interval: the 95% likelihood-ratio window the shift falls in
+	// — the place to investigate. The shift occurred within RangeCommits commits
+	// between RangeStartSHA (last steady-before) and RangeEndSHA (first
+	// steady-after); the cause may be code in that window or infrastructure
+	// (build caches, runner pools) coinciding with it. Collapses to the adjacent
+	// BeforeSHA..AfterSHA boundary for a sharp shift.
+	RangeStartSHA string // last observation confidently before the shift
+	RangeEndSHA   string // first observation confidently after the shift
+	RangeStartURL string
+	RangeEndURL   string
+	RangeCommits  int    // distinct candidate commits in the window
+	RangeDiffURL  string // GitHub compare URL: RangeStartSHA...RangeEndSHA
 }
 
 // JobRegression represents a job that got slower
@@ -427,18 +447,12 @@ func analyzeRunData(owner, repo string, runData []RunData, sampling SamplingInfo
 	// Calculate regressions and improvements (uses sampled job data)
 	analysis.TopRegressions, analysis.TopImprovements = calculateJobChanges(runData)
 
-	// Populate diff URLs on changepoints
-	for i, reg := range analysis.TopRegressions {
-		if reg.Changepoint != nil {
-			analysis.TopRegressions[i].Changepoint.DiffURL = fmt.Sprintf(
-				"https://github.com/%s/%s/compare/%s...%s", owner, repo, reg.Changepoint.BeforeSHA, reg.Changepoint.AfterSHA)
-		}
+	// Populate diff URLs on changepoints (point boundary and localization window)
+	for i := range analysis.TopRegressions {
+		populateChangepointURLs(analysis.TopRegressions[i].Changepoint, owner, repo)
 	}
-	for i, imp := range analysis.TopImprovements {
-		if imp.Changepoint != nil {
-			analysis.TopImprovements[i].Changepoint.DiffURL = fmt.Sprintf(
-				"https://github.com/%s/%s/compare/%s...%s", owner, repo, imp.Changepoint.BeforeSHA, imp.Changepoint.AfterSHA)
-		}
+	for i := range analysis.TopImprovements {
+		populateChangepointURLs(analysis.TopImprovements[i].Changepoint, owner, repo)
 	}
 
 	// Calculate queue time statistics (uses sampled job data)
@@ -1181,61 +1195,65 @@ type jobObservation struct {
 	JobURL       string
 }
 
-// detectChangepoint finds the single split point that minimizes total
-// sum-of-squared residuals. Returns nil if len(observations) < 2*minSideSize.
-func detectChangepoint(observations []jobObservation, minSideSize int) *Changepoint {
+// detectChangepoint locates the most likely single shift in a job's
+// chronological durations, tests its statistical significance, and bounds its
+// location to a tight commit window. dir constrains the shift direction so the
+// changepoint agrees with the change it explains (+1 slower, -1 faster, 0
+// either). Returns nil when there is insufficient data, no same-direction
+// split, or the shift is not statistically significant (p ≥ 0.05) — so a
+// Changepoint means "a real shift we can point at," not "the least-bad split of
+// noise." See locateChangepoint for the algorithm.
+func detectChangepoint(observations []jobObservation, minSideSize, dir int) *Changepoint {
 	n := len(observations)
 	if n < 2*minSideSize {
 		return nil
 	}
 
-	bestSSR := math.MaxFloat64
-	bestIdx := -1
-
-	// Prefix sums of durations and squared durations make each split's
-	// sum-of-squared-residuals O(1): SSR = Σx² - (Σx)²/n per side,
-	// keeping the whole scan O(n) instead of O(n²).
-	prefixSum := make([]float64, n+1)
-	prefixSq := make([]float64, n+1)
+	durs := make([]float64, n)
 	for i, o := range observations {
-		prefixSum[i+1] = prefixSum[i] + o.DurationSec
-		prefixSq[i+1] = prefixSq[i] + o.DurationSec*o.DurationSec
+		durs[i] = o.DurationSec
 	}
-
-	for i := minSideSize; i <= n-minSideSize; i++ {
-		leftSum := prefixSum[i]
-		leftSSR := prefixSq[i] - leftSum*leftSum/float64(i)
-
-		rightSum := prefixSum[n] - prefixSum[i]
-		rightSSR := (prefixSq[n] - prefixSq[i]) - rightSum*rightSum/float64(n-i)
-
-		ssr := leftSSR + rightSSR
-		if ssr < bestSSR {
-			bestSSR = ssr
-			bestIdx = i
-		}
-	}
-
-	if bestIdx < 0 {
+	best, pValue, lo, hi, ok := locateChangepoint(durs, minSideSize, dir)
+	if !ok || pValue >= significanceAlpha {
 		return nil
 	}
 
-	beforeAvg := avgObservations(observations[:bestIdx])
-	afterAvg := avgObservations(observations[bestIdx:])
-	last := observations[bestIdx-1]
-	first := observations[bestIdx]
-
-	return &Changepoint{
+	last := observations[best-1]
+	first := observations[best]
+	cp := &Changepoint{
 		Date:         first.RunCreatedAt,
 		BeforeSHA:    last.HeadSHA,
 		AfterSHA:     first.HeadSHA,
 		BeforeRunURL: last.JobURL,
 		AfterRunURL:  first.JobURL,
-		BeforeAvg:    beforeAvg,
-		AfterAvg:     afterAvg,
-		Index:        bestIdx,
+		BeforeAvg:    avgObservations(observations[:best]),
+		AfterAvg:     avgObservations(observations[best:]),
+		Index:        best,
 		TotalPoints:  n,
+		PValue:       pValue,
+		Confidence:   confidenceLabel(pValue),
 	}
+
+	// Localization window: the shift lies among the commits between the last
+	// confidently-before observation (split lo) and the first confidently-after
+	// observation (split hi). observations[hi] exists because hi ≤ n-minSideSize.
+	cp.RangeStartSHA = observations[lo-1].HeadSHA
+	cp.RangeEndSHA = observations[hi].HeadSHA
+	cp.RangeStartURL = observations[lo-1].JobURL
+	cp.RangeEndURL = observations[hi].JobURL
+	cp.RangeCommits = distinctSHAs(observations[lo : hi+1])
+	return cp
+}
+
+// distinctSHAs counts the unique commit SHAs among observations.
+func distinctSHAs(obs []jobObservation) int {
+	seen := make(map[string]struct{}, len(obs))
+	for _, o := range obs {
+		if o.HeadSHA != "" {
+			seen[o.HeadSHA] = struct{}{}
+		}
+	}
+	return len(seen)
 }
 
 // avgObservations computes the mean DurationSec of a slice of observations.
@@ -1308,7 +1326,13 @@ func calculateJobChanges(runs []RunData) ([]JobRegression, []JobImprovement) {
 			}
 		}
 
-		cp := detectChangepoint(observations, 3)
+		// Localize the shift in the same direction as the detected change so the
+		// changepoint never contradicts the regression/improvement it explains.
+		dir := 1
+		if change < 0 {
+			dir = -1
+		}
+		cp := detectChangepoint(observations, 3, dir)
 
 		if change > 0 {
 			// Regression (got slower)

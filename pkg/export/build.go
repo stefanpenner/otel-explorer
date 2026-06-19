@@ -230,24 +230,26 @@ func BuildTrendReport(a *analyzer.TrendAnalysis, generatedAt string) *Report {
 		})
 	}
 	for _, r := range a.TopRegressions {
-		tr.Regressions = append(tr.Regressions, JobChange{
+		jc := JobChange{
 			Name:          r.Name,
 			OldAvgSec:     r.OldAvgDuration,
 			NewAvgSec:     r.NewAvgDuration,
 			PercentChange: r.PercentIncrease,
 			AbsoluteSec:   r.AbsoluteChange,
-			DiffURL:       changepointDiff(r.Changepoint),
-		})
+		}
+		applyChangepoint(&jc, r.Changepoint)
+		tr.Regressions = append(tr.Regressions, jc)
 	}
 	for _, im := range a.TopImprovements {
-		tr.Improvements = append(tr.Improvements, JobChange{
+		jc := JobChange{
 			Name:          im.Name,
 			OldAvgSec:     im.OldAvgDuration,
 			NewAvgSec:     im.NewAvgDuration,
 			PercentChange: -im.PercentDecrease,
 			AbsoluteSec:   im.AbsoluteChange,
-			DiffURL:       changepointDiff(im.Changepoint),
-		})
+		}
+		applyChangepoint(&jc, im.Changepoint)
+		tr.Improvements = append(tr.Improvements, jc)
 	}
 	if a.Hourly != nil {
 		for h, b := range a.Hourly.Hours {
@@ -284,11 +286,20 @@ func quant(q analyzer.Quantiles) Quantiles {
 	return Quantiles{P5: q.P5, P25: q.P25, P50: q.P50, P75: q.P75, P95: q.P95}
 }
 
-func changepointDiff(c *analyzer.Changepoint) string {
+// applyChangepoint copies a significant changepoint's localization onto a
+// JobChange: the confidence label, the narrowed commit count, and the compare
+// URL for the tight window (falling back to the point boundary).
+func applyChangepoint(jc *JobChange, c *analyzer.Changepoint) {
 	if c == nil {
-		return ""
+		return
 	}
-	return c.DiffURL
+	jc.Confidence = c.Confidence
+	jc.NarrowedCommits = c.RangeCommits
+	if c.RangeDiffURL != "" {
+		jc.DiffURL = c.RangeDiffURL
+	} else {
+		jc.DiffURL = c.DiffURL
+	}
 }
 
 func first(s []string) string {

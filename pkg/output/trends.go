@@ -616,6 +616,55 @@ func shortSHA(sha string) string {
 	return sha
 }
 
+// renderChangepoint prints a changepoint's location, statistical confidence,
+// and the tight commit window the shift was narrowed to. afterStyle colors the
+// post-shift duration (red for regressions, green for improvements).
+func renderChangepoint(w io.Writer, name string, cp *analyzer.Changepoint, afterStyle lipgloss.Style) {
+	if cp == nil {
+		return
+	}
+	fmt.Fprintf(w, "\n  %s %s\n", labelStyle.Render("Changepoint:"), valueStyle.Render(name))
+	fmt.Fprintf(w, "     %s  %s\n", labelStyle.Render("Date:      "), valueStyle.Render(cp.Date.Format("Jan 02, 2006 15:04")))
+	fmt.Fprintf(w, "     %s  %s %s %s\n",
+		labelStyle.Render("Duration:  "),
+		valueStyle.Render(utils.HumanizeTime(cp.BeforeAvg)),
+		dimStyle.Render("->"),
+		afterStyle.Render(utils.HumanizeTime(cp.AfterAvg)))
+
+	if cp.Confidence != "" {
+		fmt.Fprintf(w, "     %s  %s\n",
+			labelStyle.Render("Confidence:"),
+			valueStyle.Render(fmt.Sprintf("%s (p=%s)", cp.Confidence, formatPValue(cp.PValue))))
+	}
+
+	// The tight commit window the shift was localized to — the headline result.
+	if cp.RangeCommits > 0 {
+		noun := "commit"
+		if cp.RangeCommits != 1 {
+			noun = "commits"
+		}
+		label := fmt.Sprintf("%d %s  %s..%s", cp.RangeCommits, noun, shortSHA(cp.RangeStartSHA), shortSHA(cp.RangeEndSHA))
+		if cp.RangeDiffURL != "" {
+			label = utils.MakeClickableLink(cp.RangeDiffURL, label)
+		}
+		fmt.Fprintf(w, "     %s  %s\n", labelStyle.Render("Narrowed:  "), label)
+	}
+
+	// cp.Index is the 0-based index of the first post-shift observation;
+	// "observation N of M" is a 1-based ordinal phrase.
+	fmt.Fprintf(w, "     %s  %s\n",
+		labelStyle.Render("Position:  "),
+		dimStyle.Render(fmt.Sprintf("observation %d of %d", cp.Index+1, cp.TotalPoints)))
+}
+
+// formatPValue renders a p-value compactly: "<0.001" for tiny values.
+func formatPValue(p float64) string {
+	if p < 0.001 {
+		return "<0.001"
+	}
+	return fmt.Sprintf("%.3f", p)
+}
+
 func renderRegressions(w io.Writer, regressions []analyzer.JobRegression) {
 	fmt.Fprintf(w, "\n  %s Jobs that got significantly slower (>10%% increase):\n\n", failureStyle.Render("!"))
 
@@ -649,38 +698,7 @@ func renderRegressions(w io.Writer, regressions []analyzer.JobRegression) {
 		if reg.Changepoint == nil {
 			continue
 		}
-		cp := reg.Changepoint
-		fmt.Fprintf(w, "\n  %s %s\n", labelStyle.Render("Changepoint:"), valueStyle.Render(reg.Name))
-		fmt.Fprintf(w, "     %s  %s\n", labelStyle.Render("Date:    "), valueStyle.Render(cp.Date.Format("Jan 02, 2006 15:04")))
-		fmt.Fprintf(w, "     %s  %s %s %s\n",
-			labelStyle.Render("Duration:"),
-			valueStyle.Render(utils.HumanizeTime(cp.BeforeAvg)),
-			dimStyle.Render("->"),
-			failureStyle.Render(utils.HumanizeTime(cp.AfterAvg)))
-
-		beforeSHA := shortSHA(cp.BeforeSHA)
-		afterSHA := shortSHA(cp.AfterSHA)
-		if cp.BeforeRunURL != "" {
-			beforeSHA = utils.MakeClickableLink(cp.BeforeRunURL, beforeSHA)
-		}
-		if cp.AfterRunURL != "" {
-			afterSHA = utils.MakeClickableLink(cp.AfterRunURL, afterSHA)
-		}
-		fmt.Fprintf(w, "     %s  %s %s %s\n",
-			labelStyle.Render("Commits: "),
-			beforeSHA,
-			dimStyle.Render("->"),
-			afterSHA)
-		if cp.DiffURL != "" {
-			fmt.Fprintf(w, "     %s  %s\n",
-				labelStyle.Render("Diff:    "),
-				utils.MakeClickableLink(cp.DiffURL, shortSHA(cp.BeforeSHA)+"..."+shortSHA(cp.AfterSHA)))
-		}
-		// cp.Index is the 0-based index of the first post-shift observation;
-		// "observation N of M" is a 1-based ordinal phrase.
-		fmt.Fprintf(w, "     %s  %s\n",
-			labelStyle.Render("Position:"),
-			dimStyle.Render(fmt.Sprintf("observation %d of %d", cp.Index+1, cp.TotalPoints)))
+		renderChangepoint(w, reg.Name, reg.Changepoint, failureStyle)
 	}
 
 	fmt.Fprintf(w, "\n  %s Investigate these jobs for:\n", subheaderStyle.Render("i"))
@@ -723,38 +741,7 @@ func renderImprovements(w io.Writer, improvements []analyzer.JobImprovement) {
 		if imp.Changepoint == nil {
 			continue
 		}
-		cp := imp.Changepoint
-		fmt.Fprintf(w, "\n  %s %s\n", labelStyle.Render("Changepoint:"), valueStyle.Render(imp.Name))
-		fmt.Fprintf(w, "     %s  %s\n", labelStyle.Render("Date:    "), valueStyle.Render(cp.Date.Format("Jan 02, 2006 15:04")))
-		fmt.Fprintf(w, "     %s  %s %s %s\n",
-			labelStyle.Render("Duration:"),
-			valueStyle.Render(utils.HumanizeTime(cp.BeforeAvg)),
-			dimStyle.Render("->"),
-			successStyle.Render(utils.HumanizeTime(cp.AfterAvg)))
-
-		beforeSHA := shortSHA(cp.BeforeSHA)
-		afterSHA := shortSHA(cp.AfterSHA)
-		if cp.BeforeRunURL != "" {
-			beforeSHA = utils.MakeClickableLink(cp.BeforeRunURL, beforeSHA)
-		}
-		if cp.AfterRunURL != "" {
-			afterSHA = utils.MakeClickableLink(cp.AfterRunURL, afterSHA)
-		}
-		fmt.Fprintf(w, "     %s  %s %s %s\n",
-			labelStyle.Render("Commits: "),
-			beforeSHA,
-			dimStyle.Render("->"),
-			afterSHA)
-		if cp.DiffURL != "" {
-			fmt.Fprintf(w, "     %s  %s\n",
-				labelStyle.Render("Diff:    "),
-				utils.MakeClickableLink(cp.DiffURL, shortSHA(cp.BeforeSHA)+"..."+shortSHA(cp.AfterSHA)))
-		}
-		// cp.Index is the 0-based index of the first post-shift observation;
-		// "observation N of M" is a 1-based ordinal phrase.
-		fmt.Fprintf(w, "     %s  %s\n",
-			labelStyle.Render("Position:"),
-			dimStyle.Render(fmt.Sprintf("observation %d of %d", cp.Index+1, cp.TotalPoints)))
+		renderChangepoint(w, imp.Name, imp.Changepoint, successStyle)
 	}
 }
 

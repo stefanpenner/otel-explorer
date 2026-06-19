@@ -98,12 +98,19 @@ func trendInsights(t *TrendReport) []Insight {
 	// Worst regression.
 	if len(t.Regressions) > 0 {
 		r := t.Regressions[0]
+		detail := sprintf("%s → %s on average.", humanSec(r.OldAvgSec), humanSec(r.NewAvgSec))
+		rec := "Review the changes at the regression's changepoint."
+		if r.NarrowedCommits > 0 {
+			noun := "commit"
+			if r.NarrowedCommits != 1 {
+				noun = "commits"
+			}
+			detail += sprintf(" Narrowed to %d %s (%s confidence).", r.NarrowedCommits, noun, r.Confidence)
+			rec = sprintf("Inspect the %d-%s window where it shifted (code, or infra such as caches/runners).", r.NarrowedCommits, noun)
+		}
 		ins = append(ins, Insight{
-			Severity:       SeverityBad,
-			Title:          sprintf("%q is %+.0f%% slower", r.Name, r.PercentChange),
-			Detail:         sprintf("%s → %s on average.", humanSec(r.OldAvgSec), humanSec(r.NewAvgSec)),
-			Recommendation: "Review the changes at the regression's changepoint.",
-			URL:            r.DiffURL,
+			Severity: SeverityBad, Title: sprintf("%q is %+.0f%% slower", r.Name, r.PercentChange),
+			Detail: detail, Recommendation: rec, URL: r.DiffURL,
 		})
 	}
 

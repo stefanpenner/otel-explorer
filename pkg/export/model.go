@@ -188,7 +188,11 @@ type JobChange struct {
 	NewAvgSec     float64 `json:"new_avg_sec"`
 	PercentChange float64 `json:"percent_change"` // signed: + slower, - faster
 	AbsoluteSec   float64 `json:"absolute_sec"`
-	DiffURL       string  `json:"diff_url,omitempty"`
+	DiffURL       string  `json:"diff_url,omitempty"` // compare URL for the narrowed window
+	// Statistical localization of the shift (when a significant changepoint was
+	// found): confidence label and how many commits the change was narrowed to.
+	Confidence      string `json:"confidence,omitempty"`
+	NarrowedCommits int    `json:"narrowed_commits,omitempty"`
 }
 
 // HourBucket is one UTC hour of activity.

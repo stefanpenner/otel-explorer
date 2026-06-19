@@ -982,7 +982,7 @@ func TestDetectChangepoint(t *testing.T) {
 			{DurationSec: 10}, {DurationSec: 10}, {DurationSec: 20}, {DurationSec: 20},
 		}
 		// minSideSize=3 requires at least 6 observations
-		cp := detectChangepoint(obs, 3)
+		cp := detectChangepoint(obs, 3, 1)
 		assert.Nil(t, cp)
 	})
 
@@ -1002,7 +1002,7 @@ func TestDetectChangepoint(t *testing.T) {
 				JobURL:       fmt.Sprintf("https://example.com/job/%d", i),
 			}
 		}
-		cp := detectChangepoint(obs, 3)
+		cp := detectChangepoint(obs, 3, 1)
 		assert.NotNil(t, cp)
 		assert.Equal(t, 5, cp.Index)
 		assert.Equal(t, 10, cp.TotalPoints)
@@ -1027,7 +1027,7 @@ func TestDetectChangepoint(t *testing.T) {
 				JobURL:       fmt.Sprintf("https://example.com/job/%d", i),
 			}
 		}
-		cp := detectChangepoint(obs, 3)
+		cp := detectChangepoint(obs, 3, 1)
 		assert.NotNil(t, cp)
 		assert.Equal(t, 3, cp.Index)
 	})
@@ -1048,7 +1048,7 @@ func TestDetectChangepoint(t *testing.T) {
 				JobURL:       fmt.Sprintf("https://example.com/job/%d", i),
 			}
 		}
-		cp := detectChangepoint(obs, 3)
+		cp := detectChangepoint(obs, 3, 1)
 		assert.NotNil(t, cp)
 		assert.Equal(t, "sha3", cp.BeforeSHA) // last before changepoint
 		assert.Equal(t, "sha4", cp.AfterSHA)  // first after changepoint

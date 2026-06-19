@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "analyzer.go",
         "artifacts.go",
+        "changepoint.go",
         "data_provider.go",
         "facet.go",
         "hourly.go",
@@ -43,6 +44,7 @@ go_library(
 go_test(
     name = "analyzer_test",
     srcs = [
+        "changepoint_test.go",
         "clamp_test.go",
         "data_provider_test.go",
         "facet_accuracy_test.go",

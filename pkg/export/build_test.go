@@ -144,7 +144,10 @@ func TestBuildTrendReport(t *testing.T) {
 		}},
 		TopRegressions: []analyzer.JobRegression{{
 			Name: "lint", OldAvgDuration: 10, NewAvgDuration: 20, PercentIncrease: 100, AbsoluteChange: 10,
-			Changepoint: &analyzer.Changepoint{DiffURL: "diff1"},
+			Changepoint: &analyzer.Changepoint{
+				DiffURL: "point-diff", Confidence: "high", PValue: 0.002,
+				RangeCommits: 3, RangeDiffURL: "range-diff",
+			},
 		}},
 		TopImprovements: []analyzer.JobImprovement{{
 			Name: "build", OldAvgDuration: 30, NewAvgDuration: 20, PercentDecrease: 33.3, AbsoluteChange: 10,
@@ -174,7 +177,11 @@ func TestBuildTrendReport(t *testing.T) {
 
 	require.Len(t, tr.Regressions, 1)
 	assert.InDelta(t, 100, tr.Regressions[0].PercentChange, 0.01)
-	assert.Equal(t, "diff1", tr.Regressions[0].DiffURL)
+	// Changepoint localization flows through: confidence, narrowed count, and
+	// the compare URL prefers the tight window over the point boundary.
+	assert.Equal(t, "high", tr.Regressions[0].Confidence)
+	assert.Equal(t, 3, tr.Regressions[0].NarrowedCommits)
+	assert.Equal(t, "range-diff", tr.Regressions[0].DiffURL)
 
 	require.Len(t, tr.Improvements, 1)
 	assert.InDelta(t, -33.3, tr.Improvements[0].PercentChange, 0.01, "improvements are negative percent change")
