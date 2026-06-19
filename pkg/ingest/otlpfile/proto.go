@@ -21,6 +21,8 @@ package otlpfile
 //	}
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -60,16 +62,16 @@ type scopeJSON struct {
 }
 
 type protoSpanJSON struct {
-	TraceID            string           `json:"traceId"`
-	SpanID             string           `json:"spanId"`
-	ParentSpanID       string           `json:"parentSpanId"`
-	Name               string           `json:"name"`
-	Kind               int              `json:"kind"`
-	StartTimeUnixNano  stringOrInt      `json:"startTimeUnixNano"`
-	EndTimeUnixNano    stringOrInt      `json:"endTimeUnixNano"`
-	Attributes         []protoAttrJSON  `json:"attributes"`
-	Events             []protoEventJSON `json:"events"`
-	Status             protoStatusJSON  `json:"status"`
+	TraceID           string           `json:"traceId"`
+	SpanID            string           `json:"spanId"`
+	ParentSpanID      string           `json:"parentSpanId"`
+	Name              string           `json:"name"`
+	Kind              protoEnum        `json:"kind"`
+	StartTimeUnixNano stringOrInt      `json:"startTimeUnixNano"`
+	EndTimeUnixNano   stringOrInt      `json:"endTimeUnixNano"`
+	Attributes        []protoAttrJSON  `json:"attributes"`
+	Events            []protoEventJSON `json:"events"`
+	Status            protoStatusJSON  `json:"status"`
 }
 
 // stringOrInt handles JSON values that can be either a string "123" or number 123.
@@ -95,6 +97,31 @@ func (s *stringOrInt) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// protoEnum handles OTLP enum fields (span kind, status code) that may be encoded
+// as a number (1) or as the canonical protojson enum name ("SPAN_KIND_SERVER").
+// Tempo returns the string form; the OTel Collector file exporter returns numbers.
+type protoEnum int
+
+var protoEnumNames = map[string]int{
+	"SPAN_KIND_UNSPECIFIED": 0, "SPAN_KIND_INTERNAL": 1, "SPAN_KIND_SERVER": 2,
+	"SPAN_KIND_CLIENT": 3, "SPAN_KIND_PRODUCER": 4, "SPAN_KIND_CONSUMER": 5,
+	"STATUS_CODE_UNSET": 0, "STATUS_CODE_OK": 1, "STATUS_CODE_ERROR": 2,
+}
+
+func (e *protoEnum) UnmarshalJSON(data []byte) error {
+	var n int
+	if err := json.Unmarshal(data, &n); err == nil {
+		*e = protoEnum(n)
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*e = protoEnum(protoEnumNames[s]) // unknown name -> 0
+		return nil
+	}
+	return nil
+}
+
 type protoAttrJSON struct {
 	Key   string         `json:"key"`
 	Value protoValueJSON `json:"value"`
@@ -108,14 +135,14 @@ type protoValueJSON struct {
 }
 
 type protoEventJSON struct {
-	Name               string          `json:"name"`
-	TimeUnixNano       stringOrInt     `json:"timeUnixNano"`
-	Attributes         []protoAttrJSON `json:"attributes"`
+	Name         string          `json:"name"`
+	TimeUnixNano stringOrInt     `json:"timeUnixNano"`
+	Attributes   []protoAttrJSON `json:"attributes"`
 }
 
 type protoStatusJSON struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    protoEnum `json:"code"`
+	Message string    `json:"message"`
 }
 
 // ParseProto reads OTLP protobuf-JSON (ExportTraceServiceRequest) and returns ReadOnlySpans.
@@ -152,13 +179,25 @@ func ParseProto(r io.Reader) ([]sdktrace.ReadOnlySpan, error) {
 	return stubs.Snapshots(), nil
 }
 
+// normalizeID returns a hex ID. protojson (Tempo) encodes ID bytes as base64,
+// while the OTel Collector file exporter and our hand-built JSON use hex.
+func normalizeID(s string) string {
+	if _, err := hex.DecodeString(s); err == nil {
+		return s
+	}
+	if b, err := base64.StdEncoding.DecodeString(s); err == nil {
+		return hex.EncodeToString(b)
+	}
+	return s
+}
+
 func convertProtoSpan(raw protoSpanJSON, res *resource.Resource, scope instrumentation.Scope) (tracetest.SpanStub, error) {
-	traceID, err := trace.TraceIDFromHex(raw.TraceID)
+	traceID, err := trace.TraceIDFromHex(normalizeID(raw.TraceID))
 	if err != nil {
 		return tracetest.SpanStub{}, fmt.Errorf("invalid trace ID %q: %w", raw.TraceID, err)
 	}
 
-	spanID, err := trace.SpanIDFromHex(raw.SpanID)
+	spanID, err := trace.SpanIDFromHex(normalizeID(raw.SpanID))
 	if err != nil {
 		return tracetest.SpanStub{}, fmt.Errorf("invalid span ID %q: %w", raw.SpanID, err)
 	}
@@ -171,7 +210,7 @@ func convertProtoSpan(raw protoSpanJSON, res *resource.Resource, scope instrumen
 
 	var parent trace.SpanContext
 	if raw.ParentSpanID != "" {
-		parentSpanID, err := trace.SpanIDFromHex(raw.ParentSpanID)
+		parentSpanID, err := trace.SpanIDFromHex(normalizeID(raw.ParentSpanID))
 		if err == nil {
 			parent = trace.NewSpanContext(trace.SpanContextConfig{
 				TraceID:    traceID, // same trace

@@ -76,6 +76,12 @@ func (c *Client) FetchTrace(traceID string) ([]sdktrace.ReadOnlySpan, error) {
 		return nil, fmt.Errorf("read trace %s response: %w", traceID, err)
 	}
 
+	// Tempo's /api/traces returns OTLP under a top-level "batches" key (tempopb.Trace)
+	// rather than "resourceSpans"; the contents are otherwise identical OTLP/JSON.
+	if bytes.Contains(body, []byte(`"batches"`)) && !bytes.Contains(body, []byte(`"resourceSpans"`)) {
+		body = bytes.Replace(body, []byte(`"batches"`), []byte(`"resourceSpans"`), 1)
+	}
+
 	// Auto-detect format: Jaeger responses have "data" key, OTLP has "resourceSpans"
 	if bytes.Contains(body, []byte(`"resourceSpans"`)) {
 		spans, err := otlpfile.ParseProto(bytes.NewReader(body))
