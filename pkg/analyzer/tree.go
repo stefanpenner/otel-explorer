@@ -56,6 +56,11 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 		return nil
 	}
 
+	// Collapse API/runner duplicates (same job/step from both the GitHub API
+	// reconstruction and the runner). Idempotent, so safe on every rebuild —
+	// including TUI reloads and log-fetch appends that bypass the initial combine.
+	spans = DedupeRunnerSpans(spans)
+
 	type spanWithHints struct {
 		span  trace.ReadOnlySpan
 		attrs map[string]string

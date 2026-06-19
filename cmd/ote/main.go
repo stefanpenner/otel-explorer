@@ -1132,7 +1132,9 @@ func main() {
 				}
 			}
 
-			return allSpans, time.UnixMilli(reloadEarliest), time.UnixMilli(reloadLatest), nil
+			// Collapse API/runner duplicates, same as the initial combine — otherwise
+			// a reload shows the API job and the runner job as two separate sections.
+			return analyzer.DedupeRunnerSpans(allSpans), time.UnixMilli(reloadEarliest), time.UnixMilli(reloadLatest), nil
 		}
 
 		// Create function to open in Perfetto from TUI
