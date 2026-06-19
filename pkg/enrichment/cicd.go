@@ -33,7 +33,10 @@ func (e *CICDEnricher) Enrich(name string, attrs map[string]string, isZeroDurati
 	if branch := attrs["vcs.ref.head.name"]; branch != "" {
 		h.VCSBranch = branch
 	}
-	if rev := attrs["vcs.revision"]; rev != "" {
+	// vcs.ref.head.revision is the semconv name; vcs.revision is an older alias.
+	if rev := attrs["vcs.ref.head.revision"]; rev != "" {
+		h.VCSRevision = rev
+	} else if rev := attrs["vcs.revision"]; rev != "" {
 		h.VCSRevision = rev
 	}
 
