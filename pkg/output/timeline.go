@@ -295,14 +295,13 @@ func renderNode(w io.Writer, node *SpanNode, depth int, globalStart time.Time, t
 
 	padding := strings.Repeat(" ", maxInt(0, startPos))
 
-	// Use hints for icon, falling back for step alignment
+	// Use hints for icon. Do NOT bake indentation spaces into the icon: the depth
+	// indent (below) is what conveys hierarchy. Padding the leaf icon with spaces
+	// made a depth-N leaf align with a depth-(N+1) child, so child spans (e.g. a
+	// tool span under its step) looked like siblings instead of nested.
 	icon := h.Icon
 	if icon == "" {
 		icon = "• "
-	}
-	// Steps need leading spaces for indentation alignment
-	if h.IsLeaf && icon == "↳" {
-		icon = "  ↳"
 	}
 
 	statusIcon := "  "
