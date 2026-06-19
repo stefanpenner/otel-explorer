@@ -527,7 +527,12 @@ func main() {
 			os.Exit(1)
 		}
 
-		ctx := context.Background()
+		// Signal-aware context so ctrl+c (and SIGTERM) cancels in-flight
+		// fetches. The progress spinner runs the terminal in raw mode, so a
+		// keyboard ctrl+c arrives as a keystroke rather than a SIGINT — it is
+		// relayed to this context via progress.SetInterruptHandler below.
+		ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stopSignals()
 		client := githubapi.NewClient(githubapi.NewContext(token))
 
 		// Repos previously opted in via `ote sync` analyze from the local
@@ -551,6 +556,7 @@ func main() {
 			// Setup progress spinner for trends mode
 			progress := tui.NewProgress(1, os.Stderr)
 			progress.Start()
+			progress.SetInterruptHandler(stopSignals)
 			wireAPIMeter(progress, client)
 			progress.StartURL(0, cfg.trendsRepo)
 
@@ -567,6 +573,10 @@ func main() {
 			progress.Wait()
 
 			if err != nil {
+				if ctx.Err() != nil { // cancelled via ctrl+c / SIGTERM
+					fmt.Fprintln(os.Stderr, "Interrupted.")
+					os.Exit(130)
+				}
 				printError(err, "trend analysis failed")
 				os.Exit(1)
 			}

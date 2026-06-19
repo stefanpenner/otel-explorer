@@ -53,6 +53,10 @@ type setStatsMsg struct {
 	f func() (requests, remaining int)
 }
 
+type setInterruptMsg struct {
+	f func()
+}
+
 type finishMsg struct{}
 
 type progressModel struct {
@@ -66,6 +70,7 @@ type progressModel struct {
 	done           bool
 	spinner        spinner.Model
 	statsFunc      func() (requests, remaining int)
+	interrupt      func() // called on ctrl+c to cancel in-flight work
 }
 
 func NewProgress(totalURLs int, output io.Writer) *Progress {
@@ -121,6 +126,15 @@ func (p *Progress) SetStatsProvider(f func() (requests, remaining int)) {
 	p.program.Send(setStatsMsg{f: f})
 }
 
+// SetInterruptHandler registers a function invoked when the user presses
+// ctrl+c. The spinner runs the terminal in raw mode, so ctrl+c arrives as a
+// keystroke rather than a SIGINT; without this the keypress would be swallowed
+// and the program would appear to hang. The handler should cancel the work
+// context so in-flight fetches abort promptly.
+func (p *Progress) SetInterruptHandler(f func()) {
+	p.program.Send(setInterruptMsg{f: f})
+}
+
 func (p *Progress) Finish() {
 	p.program.Send(finishMsg{})
 	p.once.Do(func() {
@@ -153,6 +167,18 @@ func (m progressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case setStatsMsg:
 		m.statsFunc = typed.f
+		return m, nil
+	case setInterruptMsg:
+		m.interrupt = typed.f
+		return m, nil
+	case tea.KeyMsg:
+		if typed.Type == tea.KeyCtrlC {
+			if m.interrupt != nil {
+				m.interrupt()
+			}
+			m.done = true
+			return m, tea.Quit
+		}
 		return m, nil
 	case finishMsg:
 		m.done = true
