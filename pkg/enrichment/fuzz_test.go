@@ -42,5 +42,13 @@ func FuzzEnrichChain(f *testing.F) {
 		// Must not panic for either duration flag.
 		chain.Enrich(name, attrs, false)
 		chain.Enrich(name, attrs, true)
+
+		// Per-service resource aggregation folds the same untrusted attrs.
+		rs := NewResourceSummary()
+		rs.Add(attrs)
+		rs.Add(attrs) // idempotent setIfEmpty path
+		if rs.HasData() {
+			rs.Lines()
+		}
 	})
 }
