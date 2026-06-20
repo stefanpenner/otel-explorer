@@ -104,6 +104,21 @@ func BuildEnrichedSpanTree(spans []trace.ReadOnlySpan, enricher enrichment.Enric
 	return roots
 }
 
+// exceptionTypeFromSpan returns the exception type from the span's first
+// exception event, or "" if it has none.
+func exceptionTypeFromSpan(s trace.ReadOnlySpan) string {
+	for _, ev := range s.Events() {
+		evAttrs := make(map[string]string, len(ev.Attributes))
+		for _, a := range ev.Attributes {
+			evAttrs[string(a.Key)] = a.Value.Emit()
+		}
+		if t := enrichment.ExceptionTypeFromEvent(ev.Name, evAttrs); t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
 // enrichNodes enriches each SpanNode in-place with attrs and hints.
 func enrichNodes(nodes []*SpanNode, enricher enrichment.Enricher) {
 	for _, n := range nodes {
@@ -113,6 +128,11 @@ func enrichNodes(nodes []*SpanNode, enricher enrichment.Enricher) {
 		}
 		isZeroDuration := n.Span.EndTime().Before(n.Span.StartTime()) || n.Span.EndTime().Equal(n.Span.StartTime())
 		n.Hints = enricher.Enrich(n.Span.Name(), n.Attrs, isZeroDuration)
+		// Surface a recorded exception (a span event) onto the span itself so
+		// the failure is visible in the waterfall, not only in the inspector.
+		if excType := exceptionTypeFromSpan(n.Span); excType != "" {
+			enrichment.ApplyException(&n.Hints, excType)
+		}
 		enrichNodes(n.Children, enricher)
 	}
 }

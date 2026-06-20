@@ -124,6 +124,7 @@ type mockReadOnlySpan struct {
 	endTime   time.Time
 	spanID    trace.SpanID
 	attrs     []attribute.KeyValue
+	events    []sdktrace.Event
 }
 
 func (m *mockReadOnlySpan) Name() string                     { return m.name }
@@ -145,7 +146,7 @@ func (m *mockReadOnlySpan) InstrumentationScope() instrumentation.Scope {
 }
 func (m *mockReadOnlySpan) ChildSpanCount() int                 { return 0 }
 func (m *mockReadOnlySpan) Links() []sdktrace.Link              { return nil }
-func (m *mockReadOnlySpan) Events() []sdktrace.Event            { return nil }
+func (m *mockReadOnlySpan) Events() []sdktrace.Event            { return m.events }
 func (m *mockReadOnlySpan) Status() sdktrace.Status             { return sdktrace.Status{} }
 func (m *mockReadOnlySpan) DroppedAttributesCount() int         { return 0 }
 func (m *mockReadOnlySpan) DroppedEventsCount() int             { return 0 }
@@ -293,6 +294,35 @@ func TestRenderOTelTimelineSurfacesSemanticDetail(t *testing.T) {
 	assert.Contains(t, output, "🤖", "expected GenAI icon in timeline")
 	assert.Contains(t, output, "chat claude-opus-4", "expected operation+model detail in timeline")
 	assert.Contains(t, output, "1.2k→340 tok", "expected token usage in timeline")
+}
+
+func TestRenderOTelTimelineSurfacesException(t *testing.T) {
+	// A span with an exception event but no explicit error status should show
+	// as a failure (❌) in the waterfall with the exception type inline.
+	now := time.Now().Truncate(time.Second)
+
+	span := &mockReadOnlySpan{
+		name:      "process-order",
+		startTime: now,
+		endTime:   now.Add(1 * time.Second),
+		spanID:    trace.SpanID{2, 2, 2, 2, 2, 2, 2, 2},
+		events: []sdktrace.Event{
+			{
+				Name: "exception",
+				Attributes: []attribute.KeyValue{
+					attribute.String("exception.type", "PaymentDeclined"),
+					attribute.String("exception.message", "card declined"),
+				},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	RenderOTelTimeline(&buf, []sdktrace.ReadOnlySpan{span}, now, now.Add(1*time.Second), enrichment.DefaultEnricher())
+
+	output := utils.StripANSI(buf.String())
+	assert.Contains(t, output, "❌", "expected failure marker for span with exception event")
+	assert.Contains(t, output, "PaymentDeclined", "expected exception type inline in label")
 }
 
 func TestRenderOTelTimelineMarkerAlignment(t *testing.T) {

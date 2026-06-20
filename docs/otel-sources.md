@@ -201,6 +201,37 @@ Spans with none of these still render, using `otel.span_kind` to vary the icon
 
 ---
 
+## Errors & exceptions (`exception` span events)
+
+Per the OTel spec, recording an exception on a span does **not** change the
+span's status — so a span that captured an error but left its status unset would
+otherwise look fine in the waterfall. `ote` reads the `exception` span event and
+folds it onto the span: the bar turns red (`❌`) and the `exception.type` is
+shown inline, so failures surface in the timeline, not just deep in the
+inspector. An explicit `OK` status is respected (a handled exception stays
+green) but the type is still surfaced.
+
+Here `charge-card` carried only an exception event with no error status, yet the
+declined payment is now impossible to miss:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ Start: 10:00:00   End: 10:00:02   Duration: 2s               │
+├──────────────────────────────────────────────────────────────┤
+│████████████████████████████████████████████████████████████  │ ⇄  POST /checkout (2s)
+│   █████████                                                  │   ●  validate-cart (300ms)
+│            ████████████████████████████████████              │   ●  charge-card  PaymentDeclined ❌ (1s)
+│                                                ████████████  │   ✉  send-receipt  sqs receipts (publish) (400ms)
+└──────────────────────────────────────────────────────────────┘
+```
+
+The full exception — type, message, and stacktrace (line by line) — remains
+browsable under the span's **Events** in the TUI inspector.
+
+`ote docs/samples/exceptions.jsonl`
+
+---
+
 ## Ingestion: where traces can come from
 
 The conventions above are recognized regardless of how the spans arrive:

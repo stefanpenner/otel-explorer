@@ -177,6 +177,15 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 			}
 		}
 
+		// Surface a recorded exception (a span event) onto the span itself so
+		// the failure is visible in the timeline, not only in the inspector.
+		for _, ev := range events {
+			if excType := enrichment.ExceptionTypeFromEvent(ev.Name, ev.Attrs); excType != "" {
+				enrichment.ApplyException(&sh.hints, excType)
+				break
+			}
+		}
+
 		node := &TreeNode{
 			Attrs:         sh.attrs,
 			Hints:         sh.hints,
