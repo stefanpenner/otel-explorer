@@ -250,3 +250,15 @@ The conventions above are recognized regardless of how the spans arrive:
 `ote --lint <trace>` flags spans that violate OTel semantic conventions, and
 `--filter='service.name=checkout,http.status_code=5*'` / `--errors-only` narrow
 a noisy trace down to what you care about before rendering.
+
+`--filter` matches against span attributes, resource attributes, the span name
+(`otel.span_name`), and the status (`otel.status_code=ERROR`); integer-valued
+attributes such as `http.status_code` are matched by value, so `5*` catches all
+5xx responses. `--errors-only` keeps any span with `ERROR` status **or** a
+recorded `exception` event — including spans that captured an exception without
+setting an error status:
+
+```bash
+ote docs/samples/exceptions.jsonl --errors-only --no-tui
+# Filter: 4 → 1 spans   →   ●  charge-card  PaymentDeclined ❌ (1s)
+```

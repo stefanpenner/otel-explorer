@@ -2,7 +2,23 @@ package filter
 
 import (
 	"testing"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
+
+// stubSpan builds a ReadOnlySpan with the given name, status code, attributes,
+// and events for filter tests.
+func stubSpan(name string, code codes.Code, attrs []attribute.KeyValue, events []sdktrace.Event) sdktrace.ReadOnlySpan {
+	return tracetest.SpanStub{
+		Name:       name,
+		Attributes: attrs,
+		Events:     events,
+		Status:     sdktrace.Status{Code: code},
+	}.Snapshot()
+}
 
 func TestParse(t *testing.T) {
 	tests := []struct {
@@ -82,6 +98,66 @@ func TestErrorsOnly(t *testing.T) {
 	}
 	if f.conditions[0].value != "ERROR" {
 		t.Errorf("expected value 'ERROR', got %q", f.conditions[0].value)
+	}
+}
+
+func TestErrorsOnly_MatchesExceptionEvent(t *testing.T) {
+	f := ErrorsOnly()
+
+	// A span with an exception event but UNSET status must pass errors-only.
+	excSpan := stubSpan("charge-card", codes.Unset, nil, []sdktrace.Event{
+		{Name: "exception", Attributes: []attribute.KeyValue{
+			attribute.String("exception.type", "PaymentDeclined"),
+		}},
+	})
+	// A clean OK span must not.
+	okSpan := stubSpan("validate-cart", codes.Ok, nil, nil)
+	// An explicit ERROR span must still pass.
+	errSpan := stubSpan("db-write", codes.Error, nil, nil)
+
+	result := f.Apply([]sdktrace.ReadOnlySpan{excSpan, okSpan, errSpan})
+	if len(result) != 2 {
+		t.Fatalf("expected 2 spans (exception + error), got %d", len(result))
+	}
+	if result[0].Name() != "charge-card" || result[1].Name() != "db-write" {
+		t.Errorf("unexpected spans passed: %q, %q", result[0].Name(), result[1].Name())
+	}
+}
+
+func TestMatches_StatusCodeUppercase(t *testing.T) {
+	// The OTel convention status string is uppercase; a user filter of
+	// otel.status_code=ERROR must match an Error-status span even though the
+	// Go SDK renders the code as "Error".
+	f, err := Parse("otel.status_code=ERROR")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	errSpan := stubSpan("db-write", codes.Error, nil, nil)
+	okSpan := stubSpan("read", codes.Ok, nil, nil)
+
+	result := f.Apply([]sdktrace.ReadOnlySpan{errSpan, okSpan})
+	if len(result) != 1 || result[0].Name() != "db-write" {
+		t.Fatalf("expected only the error span to match, got %d", len(result))
+	}
+}
+
+func TestMatches_IntAttributeGlob(t *testing.T) {
+	// http.status_code is an int attribute; a 5xx glob must match it. With
+	// AsString() the int collapsed to "" and never matched.
+	f, err := Parse("http.status_code=5*")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	span5xx := stubSpan("GET /api", codes.Unset, []attribute.KeyValue{
+		attribute.Int("http.status_code", 503),
+	}, nil)
+	span2xx := stubSpan("GET /ok", codes.Unset, []attribute.KeyValue{
+		attribute.Int("http.status_code", 200),
+	}, nil)
+
+	result := f.Apply([]sdktrace.ReadOnlySpan{span5xx, span2xx})
+	if len(result) != 1 || result[0].Name() != "GET /api" {
+		t.Fatalf("expected only the 503 span to match, got %d spans", len(result))
 	}
 }
 
