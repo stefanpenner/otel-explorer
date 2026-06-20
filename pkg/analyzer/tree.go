@@ -68,7 +68,11 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 	for _, s := range spans {
 		attrs := make(map[string]string)
 		for _, a := range s.Attributes() {
-			attrs[string(a.Key)] = a.Value.AsString()
+			// Emit() (not AsString()) so int/bool/double attributes — e.g.
+			// gen_ai.usage.input_tokens, http.response.status_code — stringify
+			// instead of collapsing to "" and vanishing from enrichment and the
+			// inspector.
+			attrs[string(a.Key)] = a.Value.Emit()
 		}
 
 		isZeroDuration := s.EndTime().Before(s.StartTime()) || s.EndTime().Equal(s.StartTime())
@@ -127,7 +131,7 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 		for _, e := range sh.span.Events() {
 			eventAttrs := make(map[string]string)
 			for _, a := range e.Attributes {
-				eventAttrs[string(a.Key)] = a.Value.AsString()
+				eventAttrs[string(a.Key)] = a.Value.Emit()
 			}
 			events = append(events, SpanEvent{
 				Name:  e.Name,
@@ -141,7 +145,7 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 		for _, l := range sh.span.Links() {
 			linkAttrs := make(map[string]string)
 			for _, a := range l.Attributes {
-				linkAttrs[string(a.Key)] = a.Value.AsString()
+				linkAttrs[string(a.Key)] = a.Value.Emit()
 			}
 			links = append(links, SpanLink{
 				TraceID: l.SpanContext.TraceID().String(),
@@ -157,7 +161,7 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 		resourceAttrs := make(map[string]string)
 		if sh.span.Resource() != nil {
 			for _, a := range sh.span.Resource().Attributes() {
-				resourceAttrs[string(a.Key)] = a.Value.AsString()
+				resourceAttrs[string(a.Key)] = a.Value.Emit()
 			}
 		}
 

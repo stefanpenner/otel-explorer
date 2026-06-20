@@ -267,6 +267,34 @@ func TestRenderOTelTimelineZeroDuration(t *testing.T) {
 	}
 }
 
+func TestRenderOTelTimelineSurfacesSemanticDetail(t *testing.T) {
+	// A GenAI (LLM) span should show its model and token usage inline in the
+	// waterfall label, not just render as an anonymous bar.
+	now := time.Now().Truncate(time.Second)
+
+	span := &mockReadOnlySpan{
+		name:      "chat claude-opus-4",
+		startTime: now,
+		endTime:   now.Add(2 * time.Second),
+		spanID:    trace.SpanID{1, 2, 3, 4, 5, 6, 7, 8},
+		attrs: []attribute.KeyValue{
+			attribute.String("gen_ai.system", "anthropic"),
+			attribute.String("gen_ai.operation.name", "chat"),
+			attribute.String("gen_ai.request.model", "claude-opus-4"),
+			attribute.Int("gen_ai.usage.input_tokens", 1200),
+			attribute.Int("gen_ai.usage.output_tokens", 340),
+		},
+	}
+
+	var buf bytes.Buffer
+	RenderOTelTimeline(&buf, []sdktrace.ReadOnlySpan{span}, now, now.Add(2*time.Second), enrichment.DefaultEnricher())
+
+	output := utils.StripANSI(buf.String())
+	assert.Contains(t, output, "🤖", "expected GenAI icon in timeline")
+	assert.Contains(t, output, "chat claude-opus-4", "expected operation+model detail in timeline")
+	assert.Contains(t, output, "1.2k→340 tok", "expected token usage in timeline")
+}
+
 func TestRenderOTelTimelineMarkerAlignment(t *testing.T) {
 	// Marker glyph widths were guessed from the event type (assuming e.g. ✅
 	// for "approved") while enrichment actually emits ✓ — a 1-cell glyph

@@ -665,6 +665,10 @@ func main() {
 	// re-ingested via files or the receiver carry those attrs too.
 	enrichers = append(enrichers, &enrichment.GHAEnricher{})
 	enrichers = append(enrichers, &enrichment.CICDEnricher{})
+	// GenAIEnricher is attribute-gated on gen_ai.* — it claims LLM spans
+	// (Anthropic/OpenAI SDKs, OpenLLMetry, LangChain, …) before the generic
+	// catch-all so models and token usage surface.
+	enrichers = append(enrichers, &enrichment.GenAIEnricher{})
 	if cfg.enrichmentFile != "" {
 		ruleEnricher, err := enrichment.LoadRules(cfg.enrichmentFile)
 		if err != nil {

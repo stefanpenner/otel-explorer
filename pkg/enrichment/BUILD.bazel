@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "cicd.go",
         "enricher.go",
+        "genai.go",
         "generic.go",
         "gha.go",
         "lint.go",
@@ -23,6 +24,7 @@ go_test(
         "cicd_extended_test.go",
         "cicd_test.go",
         "enricher_test.go",
+        "genai_test.go",
         "generic_test.go",
         "lint_test.go",
         "rules_test.go",

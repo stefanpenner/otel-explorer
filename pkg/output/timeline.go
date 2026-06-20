@@ -65,7 +65,10 @@ func BuildEnrichedSpanTree(spans []trace.ReadOnlySpan, enricher enrichment.Enric
 	for _, s := range spans {
 		attrs := make(map[string]string)
 		for _, a := range s.Attributes() {
-			attrs[string(a.Key)] = a.Value.AsString()
+			// Emit() (not AsString()) so int/bool/double attributes — e.g.
+			// gen_ai.usage.input_tokens, http.response.status_code — stringify
+			// instead of collapsing to "" and vanishing from enrichment.
+			attrs[string(a.Key)] = a.Value.Emit()
 		}
 
 		isZeroDuration := s.EndTime().Before(s.StartTime()) || s.EndTime().Equal(s.StartTime())
@@ -106,7 +109,7 @@ func enrichNodes(nodes []*SpanNode, enricher enrichment.Enricher) {
 	for _, n := range nodes {
 		n.Attrs = make(map[string]string)
 		for _, a := range n.Span.Attributes() {
-			n.Attrs[string(a.Key)] = a.Value.AsString()
+			n.Attrs[string(a.Key)] = a.Value.Emit()
 		}
 		isZeroDuration := n.Span.EndTime().Before(n.Span.StartTime()) || n.Span.EndTime().Equal(n.Span.StartTime())
 		n.Hints = enricher.Enrich(n.Span.Name(), n.Attrs, isZeroDuration)
@@ -295,6 +298,14 @@ func renderNode(w io.Writer, node *SpanNode, depth int, globalStart time.Time, t
 	if h.URL != "" {
 		label = utils.MakeClickableLink(h.URL, label)
 	}
+	// Append semantic detail (model, route, statement, token usage, …) so that
+	// generic OTel spans — HTTP, DB, RPC, GenAI — read at a glance in the
+	// waterfall rather than as anonymous bars. Markers carry no detail.
+	if h.Detail != "" && !h.IsMarker {
+		if extra := nonRedundantDetail(s.Name(), h.Detail); extra != "" {
+			label = fmt.Sprintf("%s  %s", label, colorizeText(extra, "gray"))
+		}
+	}
 
 	// Pad icons to ensure consistent labeling alignment
 	var displayName string
@@ -327,6 +338,21 @@ func renderNode(w io.Writer, node *SpanNode, depth int, globalStart time.Time, t
 }
 
 // colorizeText applies terminal color based on color name.
+// nonRedundantDetail drops detail segments (joined by " · ") that already
+// appear verbatim in the span name, so e.g. a GenAI span named
+// "chat claude-opus-4" with detail "chat claude-opus-4 · 1.2k→340 tok" renders
+// only the additive "1.2k→340 tok" rather than restating the name.
+func nonRedundantDetail(name, detail string) string {
+	segments := strings.Split(detail, " · ")
+	kept := segments[:0]
+	for _, seg := range segments {
+		if seg != "" && !strings.Contains(name, seg) {
+			kept = append(kept, seg)
+		}
+	}
+	return strings.Join(kept, " · ")
+}
+
 func colorizeText(text, color string) string {
 	switch color {
 	case "green":
