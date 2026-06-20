@@ -93,6 +93,56 @@ func TestLintSpans_MissingDBSystem(t *testing.T) {
 	}
 }
 
+func TestLintSpans_DeprecatedDB(t *testing.T) {
+	spans := []SpanData{
+		{
+			Name: "SELECT users",
+			Attrs: map[string]string{
+				"db.system":    "postgresql",
+				"db.statement": "SELECT * FROM users",
+				"db.sql.table": "users",
+			},
+		},
+	}
+
+	results := LintSpans(spans)
+	wantReplacements := map[string]bool{
+		"db.system.name":     false,
+		"db.query.text":      false,
+		"db.collection.name": false,
+	}
+	for _, r := range results {
+		for repl := range wantReplacements {
+			if strings.Contains(r.Suggestion, repl) {
+				wantReplacements[repl] = true
+			}
+		}
+	}
+	for repl, found := range wantReplacements {
+		if !found {
+			t.Errorf("expected a deprecation suggestion pointing to %q", repl)
+		}
+	}
+}
+
+func TestLintSpans_StableDBNamesClean(t *testing.T) {
+	// A span using the current stable DB names must produce no warnings.
+	spans := []SpanData{
+		{
+			Name: "SELECT users",
+			Attrs: map[string]string{
+				"db.system.name": "postgresql",
+				"db.query.text":  "SELECT * FROM users",
+			},
+		},
+	}
+	for _, r := range LintSpans(spans) {
+		if r.Level == "warning" || r.Level == "error" {
+			t.Errorf("unexpected %s for stable DB span: %s", r.Level, r.Message)
+		}
+	}
+}
+
 func TestFormatLintResults_Empty(t *testing.T) {
 	out := FormatLintResults(nil)
 	if !strings.Contains(out, "No semconv issues") {

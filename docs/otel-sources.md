@@ -294,7 +294,25 @@ The conventions above are recognized regardless of how the spans arrive:
 
 ## Checking your own instrumentation
 
-`ote --lint <trace>` flags spans that violate OTel semantic conventions, and
+`ote --lint <trace>` flags spans that violate OTel semantic conventions —
+deprecated attributes (HTTP `http.method`→`http.request.method`, the whole
+database family `db.system`→`db.system.name`, `db.statement`→`db.query.text`,
+`db.operation`→`db.operation.name`, `db.sql.table`→`db.collection.name`,
+`db.name`→`db.namespace`, the `net.*` peer attributes, `messaging.destination`),
+plus missing required fields (a DB query with no `db.system.name`, an HTTP
+server span with no `http.route`):
+
+```
+Semconv Lint: 3 issues found (3 warnings)
+
+  ⚠ Deprecated attribute 'db.system'
+    → Use 'db.system.name' instead
+  ⚠ Deprecated attribute 'db.statement'
+    → Use 'db.query.text' instead
+  ⚠ Deprecated attribute 'db.sql.table'
+    → Use 'db.collection.name' instead
+```
+
 `--filter='service.name=checkout,http.status_code=5*'` / `--errors-only` narrow
 a noisy trace down to what you care about before rendering.
 
