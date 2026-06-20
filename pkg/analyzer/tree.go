@@ -177,14 +177,23 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 			}
 		}
 
-		// Surface a recorded exception (a span event) onto the span itself so
-		// the failure is visible in the timeline, not only in the inspector.
+		// Surface recorded exceptions and feature-flag evaluations (span
+		// events) onto the span itself, so they are visible in the timeline,
+		// not only in the inspector.
+		var flags []string
+		exceptionApplied := false
 		for _, ev := range events {
-			if excType := enrichment.ExceptionTypeFromEvent(ev.Name, ev.Attrs); excType != "" {
-				enrichment.ApplyException(&sh.hints, excType)
-				break
+			if !exceptionApplied {
+				if excType := enrichment.ExceptionTypeFromEvent(ev.Name, ev.Attrs); excType != "" {
+					enrichment.ApplyException(&sh.hints, excType)
+					exceptionApplied = true
+				}
+			}
+			if f := enrichment.FeatureFlagFromEvent(ev.Name, ev.Attrs); f != "" {
+				flags = append(flags, f)
 			}
 		}
+		enrichment.ApplyFeatureFlags(&sh.hints, flags)
 
 		node := &TreeNode{
 			Attrs:         sh.attrs,

@@ -42,6 +42,8 @@ GitHub Actions  →  OTel CI/CD  →  GenAI (LLM)  →  Generic (HTTP/DB/RPC/mes
 | Messaging | `messaging.system` | `✉` | `system destination (operation)` |
 | FaaS | `faas.trigger` | `λ` | `function (trigger)` |
 | Generic span | any | `● ⇣ ⇢ ⇡ ⇠` | span-kind aware |
+| Exception (event) | `exception` event | `❌` | `exception.type`, marks failure |
+| Feature flag (event) | `feature_flag` event | `🚩` | `key=variant` |
 
 Whatever the source, the full attribute set — including int/bool values such as
 `gen_ai.usage.input_tokens` or `http.response.status_code` — is browsable in the
@@ -276,6 +278,30 @@ The full exception — type, message, and stacktrace (line by line) — remains
 browsable under the span's **Events** in the TUI inspector.
 
 `ote docs/samples/exceptions.jsonl`
+
+---
+
+## Feature flags (`feature_flag` events)
+
+OpenFeature and other flag SDKs record each flag evaluation as a `feature_flag`
+span event. `ote` surfaces them inline on the span with a 🚩, showing
+`key=variant`, so you can see which flag variants were active on a given
+request — invaluable when a bug only reproduces under one variant:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ Start: 10:00:00   End: 10:00:00   Duration: 800ms            │
+├──────────────────────────────────────────────────────────────┤
+│████████████████████████████████████████████████████████████  │ ⇄  GET /home  GET /home [200] · 🚩 new-dashboard=on · 🚩 pricing-experiment=control (800ms)
+│               █████████████████████████████████████          │   ●  render-template (500ms)
+└──────────────────────────────────────────────────────────────┘
+```
+
+Key attributes: `feature_flag.key`, `feature_flag.result.variant` (or legacy
+`feature_flag.variant`), `feature_flag.provider.name`. Both the stable and
+legacy variant attributes are recognized.
+
+`ote docs/samples/feature-flags.jsonl`
 
 ---
 

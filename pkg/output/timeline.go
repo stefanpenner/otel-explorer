@@ -119,6 +119,22 @@ func exceptionTypeFromSpan(s trace.ReadOnlySpan) string {
 	return ""
 }
 
+// featureFlagsFromSpan returns feature-flag evaluation summaries ("key=variant")
+// recorded as events on the span.
+func featureFlagsFromSpan(s trace.ReadOnlySpan) []string {
+	var flags []string
+	for _, ev := range s.Events() {
+		evAttrs := make(map[string]string, len(ev.Attributes))
+		for _, a := range ev.Attributes {
+			evAttrs[string(a.Key)] = a.Value.Emit()
+		}
+		if f := enrichment.FeatureFlagFromEvent(ev.Name, evAttrs); f != "" {
+			flags = append(flags, f)
+		}
+	}
+	return flags
+}
+
 // enrichNodes enriches each SpanNode in-place with attrs and hints.
 func enrichNodes(nodes []*SpanNode, enricher enrichment.Enricher) {
 	for _, n := range nodes {
@@ -133,6 +149,8 @@ func enrichNodes(nodes []*SpanNode, enricher enrichment.Enricher) {
 		if excType := exceptionTypeFromSpan(n.Span); excType != "" {
 			enrichment.ApplyException(&n.Hints, excType)
 		}
+		// Surface feature-flag evaluations recorded as events.
+		enrichment.ApplyFeatureFlags(&n.Hints, featureFlagsFromSpan(n.Span))
 		enrichNodes(n.Children, enricher)
 	}
 }

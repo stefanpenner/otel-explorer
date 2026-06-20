@@ -325,6 +325,34 @@ func TestRenderOTelTimelineSurfacesException(t *testing.T) {
 	assert.Contains(t, output, "PaymentDeclined", "expected exception type inline in label")
 }
 
+func TestRenderOTelTimelineSurfacesFeatureFlag(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+
+	span := &mockReadOnlySpan{
+		name:      "GET /home",
+		startTime: now,
+		endTime:   now.Add(1 * time.Second),
+		spanID:    trace.SpanID{3, 3, 3, 3, 3, 3, 3, 3},
+		attrs: []attribute.KeyValue{
+			attribute.String("http.request.method", "GET"),
+			attribute.String("http.route", "/home"),
+		},
+		events: []sdktrace.Event{
+			{Name: "feature_flag", Attributes: []attribute.KeyValue{
+				attribute.String("feature_flag.key", "new-dashboard"),
+				attribute.String("feature_flag.result.variant", "on"),
+			}},
+		},
+	}
+
+	var buf bytes.Buffer
+	RenderOTelTimeline(&buf, []sdktrace.ReadOnlySpan{span}, now, now.Add(1*time.Second), enrichment.DefaultEnricher())
+
+	output := utils.StripANSI(buf.String())
+	assert.Contains(t, output, "🚩", "expected feature-flag marker in timeline")
+	assert.Contains(t, output, "new-dashboard=on", "expected flag key=variant inline")
+}
+
 func TestRenderOTelTimelineMarkerAlignment(t *testing.T) {
 	// Marker glyph widths were guessed from the event type (assuming e.g. ✅
 	// for "approved") while enrichment actually emits ✓ — a 1-cell glyph
