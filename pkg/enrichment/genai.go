@@ -2,6 +2,7 @@ package enrichment
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -93,6 +94,77 @@ func (e *GenAIEnricher) Enrich(name string, attrs map[string]string, isZeroDurat
 
 	h.Detail = strings.Join(parts, " · ")
 	return h
+}
+
+// GenAIUsage aggregates LLM token usage across the spans of a trace, so a
+// request's total model cost reads at a glance ("4 calls · 18.5k → 2.1k
+// tokens") rather than having to be summed by hand from individual spans.
+type GenAIUsage struct {
+	Calls        int
+	InputTokens  int
+	OutputTokens int
+	ModelCalls   map[string]int // model name → number of calls
+}
+
+// NewGenAIUsage returns an empty, ready-to-accumulate GenAIUsage.
+func NewGenAIUsage() *GenAIUsage {
+	return &GenAIUsage{ModelCalls: map[string]int{}}
+}
+
+// Add folds one span's gen_ai attributes into the totals. A span counts as an
+// LLM call when it carries a model (request or response) or token usage —
+// wrapper spans like invoke_agent/execute_tool (no model, no tokens) are
+// ignored so the call count reflects actual model invocations.
+func (u *GenAIUsage) Add(attrs map[string]string) {
+	model := attrs["gen_ai.response.model"]
+	if model == "" {
+		model = attrs["gen_ai.request.model"]
+	}
+	in, hasIn := parseTokenCount(attrs["gen_ai.usage.input_tokens"])
+	out, hasOut := parseTokenCount(attrs["gen_ai.usage.output_tokens"])
+	if model == "" && !hasIn && !hasOut {
+		return
+	}
+	u.Calls++
+	if model != "" {
+		u.ModelCalls[model]++
+	}
+	u.InputTokens += in
+	u.OutputTokens += out
+}
+
+// HasData reports whether any LLM calls were accumulated.
+func (u *GenAIUsage) HasData() bool {
+	return u.Calls > 0
+}
+
+// Summary renders the one-line totals, e.g. "4 calls · 18.5k → 2.1k tokens".
+func (u *GenAIUsage) Summary() string {
+	callWord := "calls"
+	if u.Calls == 1 {
+		callWord = "call"
+	}
+	return fmt.Sprintf("%d %s · %s → %s tokens", u.Calls, callWord, compactCount(u.InputTokens), compactCount(u.OutputTokens))
+}
+
+// ModelLines returns one "model ×N" line per distinct model, ordered by call
+// count descending then model name, for a per-model breakdown.
+func (u *GenAIUsage) ModelLines() []string {
+	models := make([]string, 0, len(u.ModelCalls))
+	for m := range u.ModelCalls {
+		models = append(models, m)
+	}
+	sort.Slice(models, func(i, j int) bool {
+		if u.ModelCalls[models[i]] != u.ModelCalls[models[j]] {
+			return u.ModelCalls[models[i]] > u.ModelCalls[models[j]]
+		}
+		return models[i] < models[j]
+	})
+	lines := make([]string, 0, len(models))
+	for _, m := range models {
+		lines = append(lines, fmt.Sprintf("%s ×%d", m, u.ModelCalls[m]))
+	}
+	return lines
 }
 
 // genAIIcon picks an icon based on the GenAI operation (per the

@@ -118,6 +118,21 @@ makes the expensive call obvious at a glance:
 └──────────────────────────────────────────────────────────────┘
 ```
 
+When a trace contains LLM calls, `ote` prints an **LLM Usage** summary above
+the timeline so the total model cost of a request is visible without summing
+spans by hand — call count, aggregate input→output tokens, and a per-model
+breakdown (wrapper spans like `invoke_agent`/`execute_tool`, which carry no
+model or tokens, are excluded from the call count):
+
+```
+  LLM Usage
+  ───────────
+  3 calls · 4.3k → 620 tokens
+    claude-opus-4 ×1
+    claude-opus-4-20250101 ×1
+    text-embedding-3-small ×1
+```
+
 Key attributes: `gen_ai.system`, `gen_ai.operation.name`,
 `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.tool.name`,
 `gen_ai.agent.name`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`,

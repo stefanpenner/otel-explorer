@@ -156,6 +156,43 @@ func TestGenAIEnricher_ServiceContext(t *testing.T) {
 	}
 }
 
+func TestGenAIUsage_Aggregates(t *testing.T) {
+	u := NewGenAIUsage()
+	// Two chat calls + one embeddings call.
+	u.Add(map[string]string{"gen_ai.request.model": "claude-opus-4", "gen_ai.usage.input_tokens": "1800", "gen_ai.usage.output_tokens": "210"})
+	u.Add(map[string]string{"gen_ai.response.model": "claude-opus-4", "gen_ai.usage.input_tokens": "12500", "gen_ai.usage.output_tokens": "1450"})
+	u.Add(map[string]string{"gen_ai.request.model": "text-embedding-3-small", "gen_ai.usage.input_tokens": "80"})
+	// A wrapper span with no model/tokens must NOT count.
+	u.Add(map[string]string{"gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": "research-agent"})
+	// A non-genai span must not count.
+	u.Add(map[string]string{"http.request.method": "GET"})
+
+	if u.Calls != 3 {
+		t.Errorf("expected 3 calls, got %d", u.Calls)
+	}
+	if u.InputTokens != 14380 {
+		t.Errorf("expected 14380 input tokens, got %d", u.InputTokens)
+	}
+	if u.OutputTokens != 1660 {
+		t.Errorf("expected 1660 output tokens, got %d", u.OutputTokens)
+	}
+	if got := u.Summary(); got != "3 calls · 14.4k → 1.7k tokens" {
+		t.Errorf("unexpected summary: %q", got)
+	}
+	lines := u.ModelLines()
+	if len(lines) != 2 || lines[0] != "claude-opus-4 ×2" || lines[1] != "text-embedding-3-small ×1" {
+		t.Errorf("unexpected model lines: %v", lines)
+	}
+}
+
+func TestGenAIUsage_Empty(t *testing.T) {
+	u := NewGenAIUsage()
+	u.Add(map[string]string{"db.system": "postgresql"})
+	if u.HasData() {
+		t.Error("expected no data for non-genai spans")
+	}
+}
+
 func TestGenAIEnricher_NoMatch(t *testing.T) {
 	e := &GenAIEnricher{}
 
