@@ -158,6 +158,18 @@ func TestParseArgs(t *testing.T) {
 			want:       config{showHelp: true},
 		},
 		{
+			name:       "--version flag",
+			args:       []string{"--version"},
+			isTerminal: false,
+			want:       config{showVersion: true},
+		},
+		{
+			name:       "-v flag",
+			args:       []string{"-v"},
+			isTerminal: false,
+			want:       config{showVersion: true},
+		},
+		{
 			name:       "--perfetto=file.json",
 			args:       []string{"url", "--perfetto=trace.json"},
 			isTerminal: false,
@@ -340,6 +352,9 @@ func TestParseArgs(t *testing.T) {
 			}
 			if got.showHelp != tt.want.showHelp {
 				t.Errorf("showHelp = %v, want %v", got.showHelp, tt.want.showHelp)
+			}
+			if got.showVersion != tt.want.showVersion {
+				t.Errorf("showVersion = %v, want %v", got.showVersion, tt.want.showVersion)
 			}
 			if got.outputFormat != tt.want.outputFormat {
 				t.Errorf("outputFormat = %q, want %q", got.outputFormat, tt.want.outputFormat)

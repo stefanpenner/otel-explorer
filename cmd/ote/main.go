@@ -131,6 +131,7 @@ type config struct {
 	clearCache       bool
 	window           time.Duration
 	showHelp         bool
+	showVersion      bool
 	trendsMode       bool
 	trendsRepo       string
 	trendsDays       int
@@ -204,8 +205,12 @@ func parseArgs(args []string, terminal bool) (config, error) {
 			continue
 		}
 		if arg == "--version" || arg == "-v" {
-			fmt.Println("ote", version)
-			os.Exit(0)
+			// Signal via config rather than exiting here: parseArgs is a pure,
+			// unit-tested parser, and calling os.Exit mid-parse makes the path
+			// untestable and would terminate any embedding caller. main()
+			// prints the version and exits, mirroring showHelp.
+			cfg.showVersion = true
+			continue
 		}
 		if strings.HasPrefix(arg, "--perfetto=") {
 			cfg.perfettoFile = strings.TrimPrefix(arg, "--perfetto=")
@@ -432,6 +437,11 @@ func main() {
 	if err != nil {
 		printErrorMsg(err.Error())
 		os.Exit(1)
+	}
+
+	if cfg.showVersion {
+		fmt.Println("ote", version)
+		os.Exit(0)
 	}
 
 	if cfg.showHelp {
