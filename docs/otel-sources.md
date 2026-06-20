@@ -216,6 +216,33 @@ Spans with none of these still render, using `otel.span_kind` to vary the icon
 
 ---
 
+## Resource context (`service.*`, `k8s.*`, `cloud.*`, `host.*`)
+
+OTel resource attributes describe *where* a trace ran — which is otherwise
+buried in a flat attribute dump. `ote` summarizes them per service in a
+**Resources** section above the timeline: environment, version, cloud
+provider/region, Kubernetes namespace/pod, host, container, and runtime,
+whichever are present. A trace spanning multiple services (here an
+`api-gateway` calling a `rag-worker`, each its own resource) shows one line
+each:
+
+```
+  Resources
+  ───────────
+  api-gateway · production · v2.3.1 · aws/us-east-1 · k8s frontend/api-gateway-7d9f8 · host ip-10-0-1-42
+  rag-worker · production · v0.9.4 · aws/us-east-1 · k8s backend/rag-worker-5c4b2 · python
+```
+
+Key attributes: `service.name`, `service.version`, `deployment.environment`
+(or `deployment.environment.name`), `cloud.provider`, `cloud.region`,
+`k8s.namespace.name`, `k8s.pod.name`, `host.name`, `container.name`,
+`process.runtime.name`. The complete resource attribute set is also browsable,
+grouped, in the TUI inspector.
+
+`ote docs/samples/microservices.json`
+
+---
+
 ## Errors & exceptions (`exception` span events)
 
 Per the OTel spec, recording an exception on a span does **not** change the

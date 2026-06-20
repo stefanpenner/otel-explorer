@@ -379,6 +379,9 @@ func OutputStyledResults(w io.Writer, urlResults []analyzer.URLResult, combined 
 		}
 	}
 
+	// ── Resources ─────────────────────────────────────────────────────
+	renderResourceSection(w, spans)
+
 	// ── LLM Usage ─────────────────────────────────────────────────────
 	renderGenAIUsageSection(w, spans)
 
@@ -387,6 +390,34 @@ func OutputStyledResults(w io.Writer, urlResults []analyzer.URLResult, combined 
 	RenderOTelTimeline(w, spans, time.UnixMilli(globalEarliestTime), time.UnixMilli(globalLatestTime), enricher)
 
 	return nil
+}
+
+// renderResourceSection prints a per-service deployment/infrastructure context
+// summary (environment, cloud region, k8s pod, host, …) when the trace's spans
+// carry resource attributes. No-op when no service context is present.
+func renderResourceSection(w io.Writer, spans []trace.ReadOnlySpan) {
+	r := enrichment.NewResourceSummary()
+	for _, s := range spans {
+		attrs := make(map[string]string)
+		// Span attributes first, then resource attributes (resource wins for
+		// the well-known service/deployment keys).
+		for _, a := range s.Attributes() {
+			attrs[string(a.Key)] = a.Value.Emit()
+		}
+		if s.Resource() != nil {
+			for _, a := range s.Resource().Attributes() {
+				attrs[string(a.Key)] = a.Value.Emit()
+			}
+		}
+		r.Add(attrs)
+	}
+	if !r.HasData() {
+		return
+	}
+	styledSection(w, "Resources")
+	for _, line := range r.Lines() {
+		fmt.Fprintf(w, "  %s\n", line)
+	}
 }
 
 // renderGenAIUsageSection prints an LLM token-usage summary when the trace
