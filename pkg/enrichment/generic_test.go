@@ -97,6 +97,43 @@ func TestGenericEnricher_Messaging(t *testing.T) {
 	}
 }
 
+func TestGenericEnricher_GraphQL(t *testing.T) {
+	e := &GenericEnricher{}
+
+	// GraphQL spans typically also carry HTTP attributes (POST /graphql);
+	// the GraphQL convention must win so the operation is what's shown.
+	attrs := map[string]string{
+		"http.request.method":    "POST",
+		"http.route":             "/graphql",
+		"graphql.operation.type": "query",
+		"graphql.operation.name": "findBookById",
+	}
+	h := e.Enrich("query findBookById", attrs, false)
+
+	if h.Category != "graphql" {
+		t.Errorf("expected category 'graphql', got %q", h.Category)
+	}
+	if h.Detail != "query findBookById" {
+		t.Errorf("expected Detail 'query findBookById', got %q", h.Detail)
+	}
+}
+
+func TestGenericEnricher_GraphQLTypeOnly(t *testing.T) {
+	e := &GenericEnricher{}
+
+	attrs := map[string]string{
+		"graphql.operation.type": "mutation",
+	}
+	h := e.Enrich("mutation", attrs, false)
+
+	if h.Category != "graphql" {
+		t.Errorf("expected category 'graphql', got %q", h.Category)
+	}
+	if h.Detail != "mutation" {
+		t.Errorf("expected Detail 'mutation', got %q", h.Detail)
+	}
+}
+
 func TestGenericEnricher_FaaS(t *testing.T) {
 	e := &GenericEnricher{}
 

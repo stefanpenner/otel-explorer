@@ -30,9 +30,12 @@ GitHub Actions  →  OTel CI/CD  →  GenAI (LLM)  →  Generic (HTTP/DB/RPC/mes
 |---|---|---|---|
 | GitHub Actions | `github.*` | `▶ ⚙ ↳` | conclusion, required, queue time |
 | OTel CI/CD | `cicd.pipeline.*` | `🚀 🔨 🧪 ▶ ⚙` | task type, run result |
-| GenAI — chat | `gen_ai.*` | `🤖` | operation, model, `in→out tok`, `error.type` |
-| GenAI — embeddings | `gen_ai.operation.name=embeddings` | `🔢` | model, token count |
-| GenAI — image gen | `gen_ai.operation.name=image.generation` | `🖼` | model |
+| GenAI — chat / completion | `gen_ai.*` | `🤖` | operation, model, `in→out tok`, `error.type` |
+| GenAI — embeddings | `…operation.name=embeddings` | `🔢` | model, token count |
+| GenAI — tool call | `…operation.name=execute_tool` | `🔧` | `gen_ai.tool.name` |
+| GenAI — agent / workflow | `…=invoke_agent` / `create_agent` / `invoke_workflow` | `🧠` | `gen_ai.agent.name` |
+| GenAI — retrieval | `…operation.name=retrieval` | `🔎` | provider |
+| GraphQL | `graphql.operation.*` | `◆` | `type name` |
 | HTTP | `http.request.method` | `⇄` | `METHOD route → host:port [status]` |
 | Database | `db.system` | `⛁` | `system: statement` |
 | RPC / gRPC | `rpc.system` | `⇌` | `system service/method` |
@@ -88,18 +91,27 @@ all distinct OTel sources, rendered in one waterfall:
 
 OTel's GenAI semantic conventions are emitted by the Anthropic and OpenAI SDKs,
 OpenLLMetry, OpenInference, LangChain, LlamaIndex, and similar instrumentation.
-`ote` surfaces the operation, the model actually served (`gen_ai.response.model`
-preferred over `gen_ai.request.model`), token usage compacted as `in→out tok`,
-and any `error.type`. Chat, embeddings, and image generation get distinct icons.
+`ote` surfaces the operation, the subject (the model actually served —
+`gen_ai.response.model` preferred over `gen_ai.request.model` — or the tool/
+agent name for tool and agent spans), token usage compacted as `in→out tok`,
+and any `error.type`. Each `gen_ai.operation.name` gets a distinct icon:
 
-An agent loop — plan → tool call → synthesize — where token usage makes the
-expensive call obvious at a glance:
+| Operation | Icon | Subject shown |
+|---|---|---|
+| `chat`, `text_completion`, `generate_content` | `🤖` | model |
+| `embeddings` | `🔢` | model |
+| `execute_tool` | `🔧` | `gen_ai.tool.name` |
+| `create_agent`, `invoke_agent`, `invoke_workflow` | `🧠` | `gen_ai.agent.name` |
+| `retrieval` | `🔎` | provider |
+
+An agent loop — invoke → tool call → retrieval → synthesize — where token usage
+makes the expensive call obvious at a glance:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │ Start: 10:00:00   End: 10:00:09   Duration: 9s               │
 ├──────────────────────────────────────────────────────────────┤
-│████████████████████████████████████████████████████████████  │ 🤖  invoke_agent research-agent  invoke_agent anthropic (9s)
+│████████████████████████████████████████████████████████████  │ 🧠  invoke_agent research-agent (9s)
 │ ██████████████████                                           │   🤖  chat claude-opus-4  1.8k→210 tok (2s)
 │                    ███                                       │   ⇄  GET /search  GET /search [200] (500ms)
 │                       ████████████████████████████████████   │   🤖  chat claude-opus-4  12.5k→1.4k tok (5s)
@@ -107,10 +119,40 @@ expensive call obvious at a glance:
 ```
 
 Key attributes: `gen_ai.system`, `gen_ai.operation.name`,
-`gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.usage.input_tokens`,
-`gen_ai.usage.output_tokens`, `error.type`.
+`gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.tool.name`,
+`gen_ai.agent.name`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`,
+`error.type`.
 
 `ote docs/samples/llm-agent.jsonl`
+
+---
+
+## GraphQL (`graphql.operation.*`)
+
+GraphQL server spans usually ride on an HTTP `POST /graphql`, which would
+otherwise hide the actual operation behind a single route. `ote` recognizes the
+GraphQL convention first (`◆`) and shows `type name`
+(e.g. `query DashboardData`, `mutation createOrder`), so the operation — not the
+endpoint — is what you read. The example below combines GraphQL with a nested
+agent that calls a tool, a retrieval, and an LLM:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ Start: 10:00:00   End: 10:00:06   Duration: 6s               │
+├──────────────────────────────────────────────────────────────┤
+│████████████████████████████████████████████████████████████  │ ◆  query DashboardData (6s)
+│ ████                                                         │   ⛁  SELECT widgets  postgresql: SELECT * FROM widgets WHERE owner = $1 (400ms)
+│     ███████████████████████████████████████████████████████  │   🧠  invoke_agent summarizer (5s)
+│      ██████████                                              │     🔧  execute_tool web_search (1s)
+│                █████                                         │     🔎  retrieval vector-store  retrieval langchain (500ms)
+│                     ███████████████████████████████████████  │     🤖  chat claude-opus-4  8.8k→540 tok (3s)
+└──────────────────────────────────────────────────────────────┘
+```
+
+Key attributes: `graphql.operation.type` (`query` / `mutation` /
+`subscription`), `graphql.operation.name`, `graphql.document`.
+
+`ote docs/samples/graphql-tools.jsonl`
 
 ---
 

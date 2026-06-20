@@ -74,6 +74,46 @@ func TestGenAIEnricher_Embeddings(t *testing.T) {
 	}
 }
 
+func TestGenAIEnricher_ExecuteTool(t *testing.T) {
+	e := &GenAIEnricher{}
+
+	// A tool-execution span has no model; the tool name is the subject.
+	attrs := map[string]string{
+		"gen_ai.system":         "anthropic",
+		"gen_ai.operation.name": "execute_tool",
+		"gen_ai.tool.name":      "web_search",
+	}
+	h := e.Enrich("execute_tool web_search", attrs, false)
+
+	if h.Category != "genai" {
+		t.Errorf("expected category 'genai', got %q", h.Category)
+	}
+	if h.Icon != "🔧 " {
+		t.Errorf("expected wrench icon for execute_tool, got %q", h.Icon)
+	}
+	if !strings.Contains(h.Detail, "web_search") {
+		t.Errorf("expected Detail to name the tool, got %q", h.Detail)
+	}
+}
+
+func TestGenAIEnricher_InvokeAgent(t *testing.T) {
+	e := &GenAIEnricher{}
+
+	attrs := map[string]string{
+		"gen_ai.system":         "anthropic",
+		"gen_ai.operation.name": "invoke_agent",
+		"gen_ai.agent.name":     "research-agent",
+	}
+	h := e.Enrich("invoke_agent research-agent", attrs, false)
+
+	if h.Icon != "🧠 " {
+		t.Errorf("expected brain icon for invoke_agent, got %q", h.Icon)
+	}
+	if !strings.Contains(h.Detail, "research-agent") {
+		t.Errorf("expected Detail to name the agent, got %q", h.Detail)
+	}
+}
+
 func TestGenAIEnricher_Error(t *testing.T) {
 	e := &GenAIEnricher{}
 

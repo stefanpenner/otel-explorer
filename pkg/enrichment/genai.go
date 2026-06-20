@@ -41,24 +41,31 @@ func (e *GenAIEnricher) Enrich(name string, attrs map[string]string, isZeroDurat
 		h.Environment = env
 	}
 
-	// Detail: "operation model · 1.2k→340 tok [error.type]".
-	// The response model (what was actually served) is preferred over the
-	// requested model when both are present.
-	model := respModel
-	if model == "" {
-		model = reqModel
+	// Detail: "operation subject · 1.2k→340 tok [error.type]".
+	// The subject is the most specific identifier available: the response model
+	// (what was actually served) over the requested model, then the tool name
+	// (for execute_tool spans), the agent name (for agent spans), and finally
+	// the provider so the span still names its source.
+	subject := respModel
+	if subject == "" {
+		subject = reqModel
+	}
+	if subject == "" {
+		subject = attrs["gen_ai.tool.name"]
+	}
+	if subject == "" {
+		subject = attrs["gen_ai.agent.name"]
+	}
+	if subject == "" {
+		subject = system
 	}
 
 	var head []string
 	if operation != "" {
 		head = append(head, operation)
 	}
-	if model != "" {
-		head = append(head, model)
-	} else if system != "" {
-		// No model available — fall back to the provider so the span still
-		// names its source (e.g. a cohere "rerank" with token usage only).
-		head = append(head, system)
+	if subject != "" {
+		head = append(head, subject)
 	}
 
 	var parts []string
@@ -88,15 +95,21 @@ func (e *GenAIEnricher) Enrich(name string, attrs map[string]string, isZeroDurat
 	return h
 }
 
-// genAIIcon picks an icon based on the GenAI operation so the common shapes
-// (chat, embeddings, image generation) read differently in a timeline.
+// genAIIcon picks an icon based on the GenAI operation (per the
+// gen_ai.operation.name well-known values) so the common shapes read
+// differently in a timeline.
 func genAIIcon(operation string) string {
 	switch operation {
 	case "embeddings":
 		return "🔢 "
-	case "image.generation", "generate_content":
-		return "🖼 "
+	case "execute_tool":
+		return "🔧 "
+	case "create_agent", "invoke_agent", "invoke_workflow":
+		return "🧠 "
+	case "retrieval":
+		return "🔎 "
 	default:
+		// chat, text_completion, generate_content, and any unknown operation.
 		return "🤖 "
 	}
 }

@@ -56,6 +56,23 @@ func (e *GenericEnricher) Enrich(name string, attrs map[string]string, isZeroDur
 	// These set category/icon and extract Detail for richer display.
 	if !h.IsMarker {
 		switch {
+		case attrs["graphql.operation.type"] != "" || attrs["graphql.operation.name"] != "":
+			// GraphQL server spans usually also carry HTTP attributes
+			// (POST /graphql); the GraphQL operation is the meaningful detail,
+			// so this case precedes the HTTP one.
+			h.Category = "graphql"
+			h.Icon = "◆ "
+			opType := attrs["graphql.operation.type"]
+			opName := attrs["graphql.operation.name"]
+			switch {
+			case opType != "" && opName != "":
+				h.Detail = opType + " " + opName
+			case opName != "":
+				h.Detail = opName
+			default:
+				h.Detail = opType
+			}
+
 		case attrs["http.request.method"] != "" || attrs["http.method"] != "":
 			h.Category = "http"
 			h.Icon = "⇄ "
