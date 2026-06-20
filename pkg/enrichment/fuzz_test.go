@@ -50,5 +50,10 @@ func FuzzEnrichChain(f *testing.F) {
 		if rs.HasData() {
 			rs.Lines()
 		}
+
+		// Feature-flag surfacing reads the same untrusted span-event attrs.
+		flag := FeatureFlagFromEvent(name, attrs)
+		h := SpanHints{Detail: name}
+		ApplyFeatureFlags(&h, []string{flag, flag, ""}) // dup + empty paths
 	})
 }
