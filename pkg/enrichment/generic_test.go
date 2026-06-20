@@ -61,6 +61,44 @@ func TestGenericEnricher_Database(t *testing.T) {
 	}
 }
 
+func TestGenericEnricher_DatabaseStableSemconv(t *testing.T) {
+	e := &GenericEnricher{}
+
+	// Current stable v1.30+ attribute names — must be recognized as a database.
+	attrs := map[string]string{
+		"db.system.name": "postgresql",
+		"db.query.text":  "SELECT * FROM orders WHERE id = $1",
+		"db.namespace":   "shop",
+	}
+	h := e.Enrich("SELECT orders", attrs, false)
+
+	if h.Category != "database" {
+		t.Errorf("expected category 'database', got %q", h.Category)
+	}
+	if h.Detail != "postgresql: SELECT * FROM orders WHERE id = $1" {
+		t.Errorf("unexpected Detail: %q", h.Detail)
+	}
+}
+
+func TestGenericEnricher_DatabaseCollectionOnly(t *testing.T) {
+	e := &GenericEnricher{}
+
+	// Operation + collection, new names (e.g. a mongo find).
+	attrs := map[string]string{
+		"db.system.name":     "mongodb",
+		"db.operation.name":  "find",
+		"db.collection.name": "users",
+	}
+	h := e.Enrich("find users", attrs, false)
+
+	if h.Category != "database" {
+		t.Errorf("expected category 'database', got %q", h.Category)
+	}
+	if h.Detail != "mongodb: find users" {
+		t.Errorf("expected 'mongodb: find users', got %q", h.Detail)
+	}
+}
+
 func TestGenericEnricher_RPC(t *testing.T) {
 	e := &GenericEnricher{}
 
@@ -94,6 +132,25 @@ func TestGenericEnricher_Messaging(t *testing.T) {
 	}
 	if h.Detail == "" {
 		t.Error("expected non-empty Detail for messaging span")
+	}
+}
+
+func TestGenericEnricher_MessagingStableOperation(t *testing.T) {
+	e := &GenericEnricher{}
+
+	// Stable messaging.operation.name should be picked up.
+	attrs := map[string]string{
+		"messaging.system":           "kafka",
+		"messaging.destination.name": "orders",
+		"messaging.operation.name":   "send",
+	}
+	h := e.Enrich("send orders", attrs, false)
+
+	if h.Category != "messaging" {
+		t.Errorf("expected category 'messaging', got %q", h.Category)
+	}
+	if h.Detail != "kafka orders (send)" {
+		t.Errorf("expected 'kafka orders (send)', got %q", h.Detail)
 	}
 }
 

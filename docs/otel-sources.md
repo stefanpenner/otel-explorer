@@ -203,12 +203,17 @@ Key attributes: `cicd.pipeline.name`, `cicd.pipeline.type`,
 The generic reader recognizes the common OTel span conventions and extracts a
 human-readable detail string for each — visible inline in the hero trace above:
 
-- **HTTP** (`http.request.method`): `POST /v1/answer → rag.internal:8080 [200]`;
-  4xx/5xx status codes color the bar red.
-- **Database** (`db.system`): `postgresql: SELECT * FROM users WHERE id = $1`
-  (statement truncated to 80 chars), or `system: operation table`.
+- **HTTP** (`http.request.method`, or legacy `http.method`):
+  `POST /v1/answer → rag.internal:8080 [200]`; 4xx/5xx status codes color the
+  bar red.
+- **Database** (`db.system.name`, or legacy `db.system`):
+  `postgresql: SELECT * FROM users WHERE id = $1` (query truncated to 80
+  chars), or `system: operation collection`. Both the stable v1.30+ names
+  (`db.query.text`, `db.operation.name`, `db.collection.name`) and the older
+  ones (`db.statement`, `db.operation`, `db.sql.table`) are recognized.
 - **RPC** (`rpc.system`): `grpc UserService/GetUser`.
-- **Messaging** (`messaging.system`): `kafka answers (publish)`.
+- **Messaging** (`messaging.system`): `kafka answers (publish)` — operation
+  from `messaging.operation.name`/`.type` or legacy `messaging.operation`.
 - **FaaS** (`faas.trigger`): `my-function (http)`.
 
 Spans with none of these still render, using `otel.span_kind` to vary the icon

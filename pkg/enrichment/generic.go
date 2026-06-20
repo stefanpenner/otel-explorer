@@ -111,23 +111,33 @@ func (e *GenericEnricher) Enrich(name string, attrs map[string]string, isZeroDur
 				}
 			}
 
-		case attrs["db.system"] != "":
+		case attrs["db.system.name"] != "" || attrs["db.system"] != "":
 			h.Category = "database"
 			h.Icon = "⛁ "
-			// Extract DB detail: "system: statement"
-			dbSystem := attrs["db.system"]
+			// Accept both the stable v1.30+ names (db.system.name, db.query.text,
+			// db.operation.name, db.collection.name) and the older ones
+			// (db.system, db.statement, db.operation, db.sql.table) — modern
+			// instrumentation emits the former and would otherwise not even be
+			// recognized as a database span.
+			dbSystem := firstNonEmpty(attrs, "db.system.name", "db.system")
 			h.Detail = dbSystem
-			if stmt := attrs["db.statement"]; stmt != "" {
+			query := firstNonEmpty(attrs, "db.query.text", "db.statement")
+			op := firstNonEmpty(attrs, "db.operation.name", "db.operation")
+			collection := firstNonEmpty(attrs, "db.collection.name", "db.sql.table")
+			switch {
+			case query != "":
 				const maxLen = 80
-				if len(stmt) > maxLen {
-					stmt = stmt[:maxLen-3] + "..."
+				if len(query) > maxLen {
+					query = query[:maxLen-3] + "..."
 				}
-				h.Detail = dbSystem + ": " + stmt
-			} else if op := attrs["db.operation"]; op != "" {
+				h.Detail = dbSystem + ": " + query
+			case op != "":
 				h.Detail = dbSystem + ": " + op
-				if table := attrs["db.sql.table"]; table != "" {
-					h.Detail += " " + table
+				if collection != "" {
+					h.Detail += " " + collection
 				}
+			case collection != "":
+				h.Detail = dbSystem + ": " + collection
 			}
 
 		case attrs["rpc.system"] != "":
@@ -153,7 +163,9 @@ func (e *GenericEnricher) Enrich(name string, attrs map[string]string, isZeroDur
 			if dest := attrs["messaging.destination.name"]; dest != "" {
 				h.Detail += " " + dest
 			}
-			if op := attrs["messaging.operation"]; op != "" {
+			// Accept the stable messaging.operation.name / .type as well as the
+			// older messaging.operation.
+			if op := firstNonEmpty(attrs, "messaging.operation.name", "messaging.operation.type", "messaging.operation"); op != "" {
 				h.Detail += " (" + op + ")"
 			}
 
