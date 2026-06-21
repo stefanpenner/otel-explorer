@@ -379,11 +379,67 @@ func OutputStyledResults(w io.Writer, urlResults []analyzer.URLResult, combined 
 		}
 	}
 
+	// ── Resources ─────────────────────────────────────────────────────
+	renderResourceSection(w, spans)
+
+	// ── LLM Usage ─────────────────────────────────────────────────────
+	renderGenAIUsageSection(w, spans)
+
 	// ── Pipeline Timelines ────────────────────────────────────────────
 	styledSection(w, "Pipeline Timelines")
 	RenderOTelTimeline(w, spans, time.UnixMilli(globalEarliestTime), time.UnixMilli(globalLatestTime), enricher)
 
 	return nil
+}
+
+// renderResourceSection prints a per-service deployment/infrastructure context
+// summary (environment, cloud region, k8s pod, host, …) when the trace's spans
+// carry resource attributes. No-op when no service context is present.
+func renderResourceSection(w io.Writer, spans []trace.ReadOnlySpan) {
+	r := enrichment.NewResourceSummary()
+	for _, s := range spans {
+		attrs := make(map[string]string)
+		// Span attributes first, then resource attributes (resource wins for
+		// the well-known service/deployment keys).
+		for _, a := range s.Attributes() {
+			attrs[string(a.Key)] = a.Value.Emit()
+		}
+		if s.Resource() != nil {
+			for _, a := range s.Resource().Attributes() {
+				attrs[string(a.Key)] = a.Value.Emit()
+			}
+		}
+		r.Add(attrs)
+	}
+	if !r.HasData() {
+		return
+	}
+	styledSection(w, "Resources")
+	for _, line := range r.Lines() {
+		fmt.Fprintf(w, "  %s\n", line)
+	}
+}
+
+// renderGenAIUsageSection prints an LLM token-usage summary when the trace
+// contains GenAI spans, so the total model cost of a request is visible
+// without summing individual spans. No-op when there are no LLM calls.
+func renderGenAIUsageSection(w io.Writer, spans []trace.ReadOnlySpan) {
+	u := enrichment.NewGenAIUsage()
+	for _, s := range spans {
+		attrs := make(map[string]string)
+		for _, a := range s.Attributes() {
+			attrs[string(a.Key)] = a.Value.Emit()
+		}
+		u.Add(attrs)
+	}
+	if !u.HasData() {
+		return
+	}
+	styledSection(w, "LLM Usage")
+	fmt.Fprintf(w, "  %s\n", u.Summary())
+	for _, line := range u.ModelLines() {
+		fmt.Fprintf(w, "    %s\n", dimStyle.Render(line))
+	}
 }
 
 // styledSection prints a section header with lipgloss styling.

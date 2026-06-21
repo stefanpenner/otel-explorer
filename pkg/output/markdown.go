@@ -65,6 +65,9 @@ func OutputCombinedResultsMarkdown(w io.Writer, urlResults []analyzer.URLResult,
 	fmt.Fprintln(w, "")
 
 	if len(spans) > 0 {
+		renderResourceMarkdown(w, spans)
+		renderGenAIUsageMarkdown(w, spans)
+
 		timelineStr := RenderTimelineToBuffer(spans, globalEarliestTime, globalLatestTime, enricher)
 		if timelineStr != "" {
 			fmt.Fprintln(w, "## Pipeline Timeline")
@@ -170,6 +173,63 @@ func OutputCombinedResultsMarkdown(w io.Writer, urlResults []analyzer.URLResult,
 		}
 	}
 	return nil
+}
+
+// spanAttrsWithResource flattens a span's attributes merged with its resource
+// attributes (resource wins), for the summary aggregators.
+func spanAttrsWithResource(s trace.ReadOnlySpan) map[string]string {
+	attrs := make(map[string]string)
+	for _, a := range s.Attributes() {
+		attrs[string(a.Key)] = a.Value.Emit()
+	}
+	if s.Resource() != nil {
+		for _, a := range s.Resource().Attributes() {
+			attrs[string(a.Key)] = a.Value.Emit()
+		}
+	}
+	return attrs
+}
+
+// renderResourceMarkdown emits a per-service deployment/infrastructure context
+// section in Markdown when the trace's spans carry resource attributes.
+func renderResourceMarkdown(w io.Writer, spans []trace.ReadOnlySpan) {
+	r := enrichment.NewResourceSummary()
+	for _, s := range spans {
+		r.Add(spanAttrsWithResource(s))
+	}
+	if !r.HasData() {
+		return
+	}
+	fmt.Fprintln(w, "## Resources")
+	fmt.Fprintln(w, "")
+	for _, line := range r.Lines() {
+		fmt.Fprintf(w, "- %s\n", line)
+	}
+	fmt.Fprintln(w, "")
+}
+
+// renderGenAIUsageMarkdown emits an LLM token-usage summary in Markdown when
+// the trace contains GenAI spans.
+func renderGenAIUsageMarkdown(w io.Writer, spans []trace.ReadOnlySpan) {
+	u := enrichment.NewGenAIUsage()
+	for _, s := range spans {
+		attrs := make(map[string]string)
+		for _, a := range s.Attributes() {
+			attrs[string(a.Key)] = a.Value.Emit()
+		}
+		u.Add(attrs)
+	}
+	if !u.HasData() {
+		return
+	}
+	fmt.Fprintln(w, "## LLM Usage")
+	fmt.Fprintln(w, "")
+	fmt.Fprintf(w, "**%s**\n", u.Summary())
+	fmt.Fprintln(w, "")
+	for _, line := range u.ModelLines() {
+		fmt.Fprintf(w, "- %s\n", line)
+	}
+	fmt.Fprintln(w, "")
 }
 
 func markdownLink(url, text string) string {

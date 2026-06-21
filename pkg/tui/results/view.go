@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/stefanpenner/otel-explorer/pkg/enrichment"
 	"github.com/stefanpenner/otel-explorer/pkg/utils"
 )
 
@@ -121,8 +122,8 @@ func renderDiffLabel(name, url string) string {
 		return hyperlink(url, grayStyle.Render(name))
 	}
 
-	addPart := rest[1:slashIdx]        // "+45"
-	delPart := rest[slashIdx+3:]        // "-23)"
+	addPart := rest[1:slashIdx]  // "+45"
+	delPart := rest[slashIdx+3:] // "-23)"
 	delPart = strings.TrimSuffix(delPart, ")")
 
 	rendered := grayStyle.Render(prefix+"(") +
@@ -352,7 +353,7 @@ func (m Model) renderTimeAxis() string {
 	}
 
 	// Put duration in center, start at left, end at right
-	leftGap := (timelineW - durW) / 2 - startW
+	leftGap := (timelineW-durW)/2 - startW
 	if leftGap < 1 {
 		leftGap = 1
 	}
@@ -589,6 +590,15 @@ func (m Model) renderItem(item TreeItem, isSelected bool, itemIdx int) string {
 	name := item.DisplayName
 	if item.Hints.User != "" && item.Hints.IsMarker {
 		name = fmt.Sprintf("%s by %s", name, item.Hints.User)
+	}
+	// Append semantic detail (model, route, SQL, token usage, feature flags, …)
+	// inline next to the name — the same information the CLI timeline shows —
+	// so the interactive view surfaces it without opening the inspector. Done
+	// before width budgeting so it participates in truncation.
+	if item.Hints.Detail != "" && !item.Hints.IsMarker {
+		if extra := enrichment.NonRedundantDetail(item.DisplayName, item.Hints.Detail); extra != "" {
+			name = name + "  " + extra
+		}
 	}
 
 	// Inline log fetch spinner
@@ -1338,7 +1348,7 @@ func (m Model) renderInspectorHeader(maxWidth int) string {
 // detail modal for the given modal maxHeight, mirroring renderDetailModal.
 func (m Model) modalContentHeight(maxHeight int) int {
 	contentMaxHeight := maxHeight - 4 // 2 for border, 2 for padding
-	contentMaxHeight -= 4            // header (name + badges + separator) + footer
+	contentMaxHeight -= 4             // header (name + badges + separator) + footer
 	if m.modalItem != nil && m.modalItem.Hints.URL != "" {
 		contentMaxHeight-- // URL line in header
 	}

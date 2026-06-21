@@ -6,6 +6,7 @@ go_library(
     importpath = "github.com/stefanpenner/otel-explorer/pkg/ingest/filter",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/enrichment",
         "//pkg/utils",
         "@io_opentelemetry_go_otel_sdk//trace",
     ],
@@ -15,4 +16,10 @@ go_test(
     name = "filter_test",
     srcs = ["filter_test.go"],
     embed = [":filter"],
+    deps = [
+        "@io_opentelemetry_go_otel//attribute",
+        "@io_opentelemetry_go_otel//codes",
+        "@io_opentelemetry_go_otel_sdk//trace",
+        "@io_opentelemetry_go_otel_sdk//trace/tracetest",
+    ],
 )

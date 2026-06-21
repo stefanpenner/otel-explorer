@@ -3,7 +3,25 @@ package enrichment
 import (
 	"fmt"
 	"strconv"
+	"strings"
 )
+
+// grpcStatusNames maps canonical gRPC status codes to their names.
+var grpcStatusNames = map[int]string{
+	1: "CANCELLED", 2: "UNKNOWN", 3: "INVALID_ARGUMENT", 4: "DEADLINE_EXCEEDED",
+	5: "NOT_FOUND", 6: "ALREADY_EXISTS", 7: "PERMISSION_DENIED", 8: "RESOURCE_EXHAUSTED",
+	9: "FAILED_PRECONDITION", 10: "ABORTED", 11: "OUT_OF_RANGE", 12: "UNIMPLEMENTED",
+	13: "INTERNAL", 14: "UNAVAILABLE", 15: "DATA_LOSS", 16: "UNAUTHENTICATED",
+}
+
+// grpcStatusName returns the canonical gRPC status name for a non-zero code,
+// falling back to "code N" for unknown codes.
+func grpcStatusName(code int) string {
+	if name, ok := grpcStatusNames[code]; ok {
+		return name
+	}
+	return fmt.Sprintf("code %d", code)
+}
 
 // GenericEnricher handles any OTel span that wasn't recognized by a more
 // specific enricher. It recognizes OTel semantic conventions for HTTP, database,
@@ -56,6 +74,23 @@ func (e *GenericEnricher) Enrich(name string, attrs map[string]string, isZeroDur
 	// These set category/icon and extract Detail for richer display.
 	if !h.IsMarker {
 		switch {
+		case attrs["graphql.operation.type"] != "" || attrs["graphql.operation.name"] != "":
+			// GraphQL server spans usually also carry HTTP attributes
+			// (POST /graphql); the GraphQL operation is the meaningful detail,
+			// so this case precedes the HTTP one.
+			h.Category = "graphql"
+			h.Icon = "◆ "
+			opType := attrs["graphql.operation.type"]
+			opName := attrs["graphql.operation.name"]
+			switch {
+			case opType != "" && opName != "":
+				h.Detail = opType + " " + opName
+			case opName != "":
+				h.Detail = opName
+			default:
+				h.Detail = opType
+			}
+
 		case attrs["http.request.method"] != "" || attrs["http.method"] != "":
 			h.Category = "http"
 			h.Icon = "⇄ "
@@ -64,9 +99,14 @@ func (e *GenericEnricher) Enrich(name string, attrs map[string]string, isZeroDur
 			if method == "" {
 				method = attrs["http.method"]
 			}
+			// Prefer the low-cardinality route; fall back to url.path, then to
+			// the full URL (client spans often carry only url.full / http.url).
 			route := attrs["http.route"]
 			if route == "" {
 				route = attrs["url.path"]
+			}
+			if route == "" {
+				route = firstNonEmpty(attrs, "url.full", "http.url")
 			}
 			if method != "" && route != "" {
 				h.Detail = method + " " + route
@@ -94,23 +134,33 @@ func (e *GenericEnricher) Enrich(name string, attrs map[string]string, isZeroDur
 				}
 			}
 
-		case attrs["db.system"] != "":
+		case attrs["db.system.name"] != "" || attrs["db.system"] != "":
 			h.Category = "database"
 			h.Icon = "⛁ "
-			// Extract DB detail: "system: statement"
-			dbSystem := attrs["db.system"]
+			// Accept both the stable v1.30+ names (db.system.name, db.query.text,
+			// db.operation.name, db.collection.name) and the older ones
+			// (db.system, db.statement, db.operation, db.sql.table) — modern
+			// instrumentation emits the former and would otherwise not even be
+			// recognized as a database span.
+			dbSystem := firstNonEmpty(attrs, "db.system.name", "db.system")
 			h.Detail = dbSystem
-			if stmt := attrs["db.statement"]; stmt != "" {
+			query := firstNonEmpty(attrs, "db.query.text", "db.statement")
+			op := firstNonEmpty(attrs, "db.operation.name", "db.operation")
+			collection := firstNonEmpty(attrs, "db.collection.name", "db.sql.table")
+			switch {
+			case query != "":
 				const maxLen = 80
-				if len(stmt) > maxLen {
-					stmt = stmt[:maxLen-3] + "..."
+				if len(query) > maxLen {
+					query = query[:maxLen-3] + "..."
 				}
-				h.Detail = dbSystem + ": " + stmt
-			} else if op := attrs["db.operation"]; op != "" {
+				h.Detail = dbSystem + ": " + query
+			case op != "":
 				h.Detail = dbSystem + ": " + op
-				if table := attrs["db.sql.table"]; table != "" {
-					h.Detail += " " + table
+				if collection != "" {
+					h.Detail += " " + collection
 				}
+			case collection != "":
+				h.Detail = dbSystem + ": " + collection
 			}
 
 		case attrs["rpc.system"] != "":
@@ -126,6 +176,21 @@ func (e *GenericEnricher) Enrich(name string, attrs map[string]string, isZeroDur
 					h.Detail = rpcSystem + " " + svc
 				}
 			}
+			// gRPC status code: 0 is OK, any non-zero is a failure. The span's
+			// otel.status_code is often left unset, so this is the only error
+			// signal for many gRPC instrumentations.
+			if code, err := strconv.Atoi(attrs["rpc.grpc.status_code"]); err == nil {
+				if code == 0 {
+					if h.Outcome == "" {
+						h.Outcome = "success"
+						h.Color = "green"
+					}
+				} else {
+					h.Outcome = "failure"
+					h.Color = "red"
+					h.Detail += " [" + grpcStatusName(code) + "]"
+				}
+			}
 
 		case attrs["messaging.system"] != "":
 			h.Category = "messaging"
@@ -136,7 +201,9 @@ func (e *GenericEnricher) Enrich(name string, attrs map[string]string, isZeroDur
 			if dest := attrs["messaging.destination.name"]; dest != "" {
 				h.Detail += " " + dest
 			}
-			if op := attrs["messaging.operation"]; op != "" {
+			// Accept the stable messaging.operation.name / .type as well as the
+			// older messaging.operation.
+			if op := firstNonEmpty(attrs, "messaging.operation.name", "messaging.operation.type", "messaging.operation"); op != "" {
 				h.Detail += " (" + op + ")"
 			}
 
@@ -146,6 +213,39 @@ func (e *GenericEnricher) Enrich(name string, attrs map[string]string, isZeroDur
 			h.Detail = attrs["faas.trigger"]
 			if fname := attrs["faas.name"]; fname != "" {
 				h.Detail = fname + " (" + h.Detail + ")"
+			}
+		}
+
+		// Fall back to source-code origin for otherwise-undetailed spans, so
+		// custom internal spans show where they come from. Accepts the stable
+		// code.function.name / code.file.path / code.line.number and the legacy
+		// code.function / code.filepath / code.lineno (and code.namespace).
+		if h.Detail == "" {
+			if fn := firstNonEmpty(attrs, "code.function.name", "code.function", "code.namespace"); fn != "" {
+				h.Detail = fn
+				if file := firstNonEmpty(attrs, "code.file.path", "code.filepath"); file != "" {
+					base := file
+					if idx := strings.LastIndexByte(base, '/'); idx >= 0 {
+						base = base[idx+1:]
+					}
+					if line := firstNonEmpty(attrs, "code.line.number", "code.lineno"); line != "" {
+						h.Detail += fmt.Sprintf(" (%s:%s)", base, line)
+					} else {
+						h.Detail += fmt.Sprintf(" (%s)", base)
+					}
+				}
+			}
+		}
+
+		// Surface the logical downstream service (topology) when known and not
+		// already represented by a "→ host" in the detail. Accepts the stable
+		// service.peer.name and the legacy peer.service.
+		if peer := firstNonEmpty(attrs, "service.peer.name", "peer.service"); peer != "" &&
+			!strings.Contains(h.Detail, peer) && !strings.Contains(h.Detail, "→") {
+			if h.Detail == "" {
+				h.Detail = "→ " + peer
+			} else {
+				h.Detail += " → " + peer
 			}
 		}
 	}

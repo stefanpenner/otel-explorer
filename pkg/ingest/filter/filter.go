@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/stefanpenner/otel-explorer/pkg/enrichment"
 	"github.com/stefanpenner/otel-explorer/pkg/utils"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
@@ -12,12 +13,17 @@ import (
 // Filter represents a set of conditions that spans must match.
 type Filter struct {
 	conditions []condition
+	// includeExceptions, when set, also passes any span carrying an exception
+	// event (regardless of conditions) — so "errors only" surfaces spans that
+	// recorded an exception without setting ERROR status, matching how the
+	// timeline now renders them.
+	includeExceptions bool
 }
 
 type condition struct {
-	key      string
-	value    string
-	negate   bool
+	key    string
+	value  string
+	negate bool
 }
 
 // Parse parses filter expressions like "service.name=checkout" or "http.status_code=5*".
@@ -76,22 +82,32 @@ func (f *Filter) Apply(spans []sdktrace.ReadOnlySpan) []sdktrace.ReadOnlySpan {
 }
 
 func (f *Filter) matches(s sdktrace.ReadOnlySpan) bool {
-	// Build attribute map
+	// Errors-only also passes spans that recorded an exception event even when
+	// they left their status unset.
+	if f.includeExceptions && spanHasExceptionEvent(s) {
+		return true
+	}
+
+	// Build attribute map. Emit() (not AsString()) so int/bool/double
+	// attributes — e.g. http.status_code, http.response.status_code —
+	// stringify instead of collapsing to "" and never matching a glob.
 	attrs := make(map[string]string)
 	for _, a := range s.Attributes() {
-		attrs[string(a.Key)] = a.Value.AsString()
+		attrs[string(a.Key)] = a.Value.Emit()
 	}
 
 	// Also check resource attributes
 	if s.Resource() != nil {
 		for _, a := range s.Resource().Attributes() {
-			attrs[string(a.Key)] = a.Value.AsString()
+			attrs[string(a.Key)] = a.Value.Emit()
 		}
 	}
 
-	// Check span-level properties
+	// Check span-level properties. The Go SDK renders status codes Go-style
+	// ("Error"/"Ok"/"Unset"); normalize to the OTel-convention uppercase
+	// ("ERROR"/"OK"/"UNSET") the rest of the codebase and --errors-only use.
 	attrs["otel.span_name"] = s.Name()
-	attrs["otel.status_code"] = s.Status().Code.String()
+	attrs["otel.status_code"] = strings.ToUpper(s.Status().Code.String())
 
 	for _, cond := range f.conditions {
 		val, exists := attrs[cond.key]
@@ -109,12 +125,27 @@ func (f *Filter) matches(s sdktrace.ReadOnlySpan) bool {
 	return true
 }
 
-// ErrorsOnly returns a filter that only passes spans with ERROR status.
+// ErrorsOnly returns a filter that passes spans with ERROR status or a
+// recorded exception event.
 func ErrorsOnly() *Filter {
 	return &Filter{
 		conditions: []condition{
 			{key: "otel.status_code", value: "ERROR"},
 		},
+		includeExceptions: true,
 	}
 }
 
+// spanHasExceptionEvent reports whether the span carries an exception event.
+func spanHasExceptionEvent(s sdktrace.ReadOnlySpan) bool {
+	for _, ev := range s.Events() {
+		evAttrs := make(map[string]string, len(ev.Attributes))
+		for _, a := range ev.Attributes {
+			evAttrs[string(a.Key)] = a.Value.Emit()
+		}
+		if enrichment.ExceptionTypeFromEvent(ev.Name, evAttrs) != "" {
+			return true
+		}
+	}
+	return false
+}

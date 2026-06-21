@@ -124,6 +124,7 @@ type mockReadOnlySpan struct {
 	endTime   time.Time
 	spanID    trace.SpanID
 	attrs     []attribute.KeyValue
+	events    []sdktrace.Event
 }
 
 func (m *mockReadOnlySpan) Name() string                     { return m.name }
@@ -145,7 +146,7 @@ func (m *mockReadOnlySpan) InstrumentationScope() instrumentation.Scope {
 }
 func (m *mockReadOnlySpan) ChildSpanCount() int                 { return 0 }
 func (m *mockReadOnlySpan) Links() []sdktrace.Link              { return nil }
-func (m *mockReadOnlySpan) Events() []sdktrace.Event            { return nil }
+func (m *mockReadOnlySpan) Events() []sdktrace.Event            { return m.events }
 func (m *mockReadOnlySpan) Status() sdktrace.Status             { return sdktrace.Status{} }
 func (m *mockReadOnlySpan) DroppedAttributesCount() int         { return 0 }
 func (m *mockReadOnlySpan) DroppedEventsCount() int             { return 0 }
@@ -265,6 +266,91 @@ func TestRenderOTelTimelineZeroDuration(t *testing.T) {
 			assert.True(t, closing == 62 || closing == 63, "row interior width mismatch (closing border at rune %d): %q", closing, line)
 		}
 	}
+}
+
+func TestRenderOTelTimelineSurfacesSemanticDetail(t *testing.T) {
+	// A GenAI (LLM) span should show its model and token usage inline in the
+	// waterfall label, not just render as an anonymous bar.
+	now := time.Now().Truncate(time.Second)
+
+	span := &mockReadOnlySpan{
+		name:      "chat claude-opus-4",
+		startTime: now,
+		endTime:   now.Add(2 * time.Second),
+		spanID:    trace.SpanID{1, 2, 3, 4, 5, 6, 7, 8},
+		attrs: []attribute.KeyValue{
+			attribute.String("gen_ai.system", "anthropic"),
+			attribute.String("gen_ai.operation.name", "chat"),
+			attribute.String("gen_ai.request.model", "claude-opus-4"),
+			attribute.Int("gen_ai.usage.input_tokens", 1200),
+			attribute.Int("gen_ai.usage.output_tokens", 340),
+		},
+	}
+
+	var buf bytes.Buffer
+	RenderOTelTimeline(&buf, []sdktrace.ReadOnlySpan{span}, now, now.Add(2*time.Second), enrichment.DefaultEnricher())
+
+	output := utils.StripANSI(buf.String())
+	assert.Contains(t, output, "🤖", "expected GenAI icon in timeline")
+	assert.Contains(t, output, "chat claude-opus-4", "expected operation+model detail in timeline")
+	assert.Contains(t, output, "1.2k→340 tok", "expected token usage in timeline")
+}
+
+func TestRenderOTelTimelineSurfacesException(t *testing.T) {
+	// A span with an exception event but no explicit error status should show
+	// as a failure (❌) in the waterfall with the exception type inline.
+	now := time.Now().Truncate(time.Second)
+
+	span := &mockReadOnlySpan{
+		name:      "process-order",
+		startTime: now,
+		endTime:   now.Add(1 * time.Second),
+		spanID:    trace.SpanID{2, 2, 2, 2, 2, 2, 2, 2},
+		events: []sdktrace.Event{
+			{
+				Name: "exception",
+				Attributes: []attribute.KeyValue{
+					attribute.String("exception.type", "PaymentDeclined"),
+					attribute.String("exception.message", "card declined"),
+				},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	RenderOTelTimeline(&buf, []sdktrace.ReadOnlySpan{span}, now, now.Add(1*time.Second), enrichment.DefaultEnricher())
+
+	output := utils.StripANSI(buf.String())
+	assert.Contains(t, output, "❌", "expected failure marker for span with exception event")
+	assert.Contains(t, output, "PaymentDeclined", "expected exception type inline in label")
+}
+
+func TestRenderOTelTimelineSurfacesFeatureFlag(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+
+	span := &mockReadOnlySpan{
+		name:      "GET /home",
+		startTime: now,
+		endTime:   now.Add(1 * time.Second),
+		spanID:    trace.SpanID{3, 3, 3, 3, 3, 3, 3, 3},
+		attrs: []attribute.KeyValue{
+			attribute.String("http.request.method", "GET"),
+			attribute.String("http.route", "/home"),
+		},
+		events: []sdktrace.Event{
+			{Name: "feature_flag", Attributes: []attribute.KeyValue{
+				attribute.String("feature_flag.key", "new-dashboard"),
+				attribute.String("feature_flag.result.variant", "on"),
+			}},
+		},
+	}
+
+	var buf bytes.Buffer
+	RenderOTelTimeline(&buf, []sdktrace.ReadOnlySpan{span}, now, now.Add(1*time.Second), enrichment.DefaultEnricher())
+
+	output := utils.StripANSI(buf.String())
+	assert.Contains(t, output, "🚩", "expected feature-flag marker in timeline")
+	assert.Contains(t, output, "new-dashboard=on", "expected flag key=variant inline")
 }
 
 func TestRenderOTelTimelineMarkerAlignment(t *testing.T) {

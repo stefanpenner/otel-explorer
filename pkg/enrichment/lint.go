@@ -30,7 +30,7 @@ func LintSpans(spans []SpanData) []LintResult {
 		if span.Attrs["http.request.method"] != "" || span.Attrs["http.method"] != "" {
 			hasHTTP = true
 		}
-		if span.Attrs["db.system"] != "" {
+		if span.Attrs["db.system"] != "" || span.Attrs["db.system.name"] != "" {
 			hasDB = true
 		}
 	}
@@ -54,6 +54,20 @@ type SpanData struct {
 	SpanKind  string
 	ScopeName string
 	HasEvents bool
+}
+
+// deprecatedAttr returns a warning when the span carries a deprecated
+// attribute, suggesting its replacement, or nil if the attribute is absent.
+func deprecatedAttr(span SpanData, old, replacement string) *LintResult {
+	if span.Attrs[old] == "" {
+		return nil
+	}
+	return &LintResult{
+		SpanName:   span.Name,
+		Level:      "warning",
+		Message:    fmt.Sprintf("Deprecated attribute '%s'", old),
+		Suggestion: fmt.Sprintf("Use '%s' instead", replacement),
+	}
 }
 
 // lintSpan checks a single span for semconv issues.
@@ -110,13 +124,31 @@ func lintSpan(span SpanData) []LintResult {
 		})
 	}
 
-	// Check for deprecated DB attributes
-	if span.Attrs["db.statement"] != "" && span.Attrs["db.system"] == "" {
+	// Check for deprecated DB attributes (the stable database semconv renamed
+	// them — db.system → db.system.name, db.statement → db.query.text, etc.).
+	dbDeprecations := []struct{ old, replacement string }{
+		{"db.system", "db.system.name"},
+		{"db.statement", "db.query.text"},
+		{"db.operation", "db.operation.name"},
+		{"db.sql.table", "db.collection.name"},
+		{"db.name", "db.namespace"},
+		{"db.connection_string", "server.address and server.port"},
+	}
+	for _, d := range dbDeprecations {
+		if r := deprecatedAttr(span, d.old, d.replacement); r != nil {
+			results = append(results, *r)
+		}
+	}
+
+	// A query without a database system is incomplete (accept old or new name).
+	hasQuery := span.Attrs["db.query.text"] != "" || span.Attrs["db.statement"] != ""
+	hasDBSystem := span.Attrs["db.system.name"] != "" || span.Attrs["db.system"] != ""
+	if hasQuery && !hasDBSystem {
 		results = append(results, LintResult{
 			SpanName:   span.Name,
 			Level:      "warning",
-			Message:    "Has 'db.statement' but missing required 'db.system'",
-			Suggestion: "Add 'db.system' attribute (e.g., 'postgresql', 'mysql', 'redis')",
+			Message:    "Has a DB query but missing required 'db.system.name'",
+			Suggestion: "Add 'db.system.name' attribute (e.g., 'postgresql', 'mysql', 'redis')",
 		})
 	}
 

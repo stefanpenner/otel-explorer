@@ -1,0 +1,75 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "api-gateway"}},
+          {"key": "service.version", "value": {"stringValue": "2.3.1"}},
+          {"key": "deployment.environment", "value": {"stringValue": "production"}},
+          {"key": "cloud.provider", "value": {"stringValue": "aws"}},
+          {"key": "cloud.region", "value": {"stringValue": "us-east-1"}},
+          {"key": "k8s.namespace.name", "value": {"stringValue": "frontend"}},
+          {"key": "k8s.pod.name", "value": {"stringValue": "api-gateway-7d9f8"}},
+          {"key": "host.name", "value": {"stringValue": "ip-10-0-1-42"}}
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "5af7651916cd43dd8448eb211c80319c",
+              "spanId": "e111111111111111",
+              "name": "POST /v1/answer",
+              "kind": 2,
+              "startTimeUnixNano": "1705312800000000000",
+              "endTimeUnixNano": "1705312803000000000",
+              "attributes": [
+                {"key": "http.request.method", "value": {"stringValue": "POST"}},
+                {"key": "http.route", "value": {"stringValue": "/v1/answer"}},
+                {"key": "http.response.status_code", "value": {"intValue": "200"}}
+              ],
+              "status": {"code": 1}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "rag-worker"}},
+          {"key": "service.version", "value": {"stringValue": "0.9.4"}},
+          {"key": "deployment.environment", "value": {"stringValue": "production"}},
+          {"key": "cloud.provider", "value": {"stringValue": "aws"}},
+          {"key": "cloud.region", "value": {"stringValue": "us-east-1"}},
+          {"key": "k8s.namespace.name", "value": {"stringValue": "backend"}},
+          {"key": "k8s.pod.name", "value": {"stringValue": "rag-worker-5c4b2"}},
+          {"key": "process.runtime.name", "value": {"stringValue": "python"}}
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "5af7651916cd43dd8448eb211c80319c",
+              "spanId": "e222222222222222",
+              "parentSpanId": "e111111111111111",
+              "name": "chat claude-opus-4",
+              "kind": 3,
+              "startTimeUnixNano": "1705312800500000000",
+              "endTimeUnixNano": "1705312802800000000",
+              "attributes": [
+                {"key": "gen_ai.system", "value": {"stringValue": "anthropic"}},
+                {"key": "gen_ai.operation.name", "value": {"stringValue": "chat"}},
+                {"key": "gen_ai.request.model", "value": {"stringValue": "claude-opus-4"}},
+                {"key": "gen_ai.usage.input_tokens", "value": {"intValue": "5100"}},
+                {"key": "gen_ai.usage.output_tokens", "value": {"intValue": "430"}}
+              ],
+              "status": {"code": 1}
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

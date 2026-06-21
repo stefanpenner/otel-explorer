@@ -68,7 +68,11 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 	for _, s := range spans {
 		attrs := make(map[string]string)
 		for _, a := range s.Attributes() {
-			attrs[string(a.Key)] = a.Value.AsString()
+			// Emit() (not AsString()) so int/bool/double attributes — e.g.
+			// gen_ai.usage.input_tokens, http.response.status_code — stringify
+			// instead of collapsing to "" and vanishing from enrichment and the
+			// inspector.
+			attrs[string(a.Key)] = a.Value.Emit()
 		}
 
 		isZeroDuration := s.EndTime().Before(s.StartTime()) || s.EndTime().Equal(s.StartTime())
@@ -127,7 +131,7 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 		for _, e := range sh.span.Events() {
 			eventAttrs := make(map[string]string)
 			for _, a := range e.Attributes {
-				eventAttrs[string(a.Key)] = a.Value.AsString()
+				eventAttrs[string(a.Key)] = a.Value.Emit()
 			}
 			events = append(events, SpanEvent{
 				Name:  e.Name,
@@ -141,7 +145,7 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 		for _, l := range sh.span.Links() {
 			linkAttrs := make(map[string]string)
 			for _, a := range l.Attributes {
-				linkAttrs[string(a.Key)] = a.Value.AsString()
+				linkAttrs[string(a.Key)] = a.Value.Emit()
 			}
 			links = append(links, SpanLink{
 				TraceID: l.SpanContext.TraceID().String(),
@@ -157,7 +161,7 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 		resourceAttrs := make(map[string]string)
 		if sh.span.Resource() != nil {
 			for _, a := range sh.span.Resource().Attributes() {
-				resourceAttrs[string(a.Key)] = a.Value.AsString()
+				resourceAttrs[string(a.Key)] = a.Value.Emit()
 			}
 		}
 
@@ -172,6 +176,24 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 				sh.hints.Environment = env
 			}
 		}
+
+		// Surface recorded exceptions and feature-flag evaluations (span
+		// events) onto the span itself, so they are visible in the timeline,
+		// not only in the inspector.
+		var flags []string
+		exceptionApplied := false
+		for _, ev := range events {
+			if !exceptionApplied {
+				if excType := enrichment.ExceptionTypeFromEvent(ev.Name, ev.Attrs); excType != "" {
+					enrichment.ApplyException(&sh.hints, excType)
+					exceptionApplied = true
+				}
+			}
+			if f := enrichment.FeatureFlagFromEvent(ev.Name, ev.Attrs); f != "" {
+				flags = append(flags, f)
+			}
+		}
+		enrichment.ApplyFeatureFlags(&sh.hints, flags)
 
 		node := &TreeNode{
 			Attrs:         sh.attrs,

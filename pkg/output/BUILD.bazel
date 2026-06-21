@@ -30,6 +30,7 @@ go_library(
 go_test(
     name = "output_test",
     srcs = [
+        "markdown_test.go",
         "timeline_test.go",
         "trends_test.go",
         "typical_test.go",
@@ -45,6 +46,7 @@ go_test(
         "@io_opentelemetry_go_otel_sdk//instrumentation",
         "@io_opentelemetry_go_otel_sdk//resource",
         "@io_opentelemetry_go_otel_sdk//trace",
+        "@io_opentelemetry_go_otel_sdk//trace/tracetest",
         "@io_opentelemetry_go_otel_trace//:trace",
     ],
 )

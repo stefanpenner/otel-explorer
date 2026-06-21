@@ -131,6 +131,7 @@ type config struct {
 	clearCache       bool
 	window           time.Duration
 	showHelp         bool
+	showVersion      bool
 	trendsMode       bool
 	trendsRepo       string
 	trendsDays       int
@@ -204,8 +205,12 @@ func parseArgs(args []string, terminal bool) (config, error) {
 			continue
 		}
 		if arg == "--version" || arg == "-v" {
-			fmt.Println("ote", version)
-			os.Exit(0)
+			// Signal via config rather than exiting here: parseArgs is a pure,
+			// unit-tested parser, and calling os.Exit mid-parse makes the path
+			// untestable and would terminate any embedding caller. main()
+			// prints the version and exits, mirroring showHelp.
+			cfg.showVersion = true
+			continue
 		}
 		if strings.HasPrefix(arg, "--perfetto=") {
 			cfg.perfettoFile = strings.TrimPrefix(arg, "--perfetto=")
@@ -432,6 +437,11 @@ func main() {
 	if err != nil {
 		printErrorMsg(err.Error())
 		os.Exit(1)
+	}
+
+	if cfg.showVersion {
+		fmt.Println("ote", version)
+		os.Exit(0)
 	}
 
 	if cfg.showHelp {
@@ -665,6 +675,10 @@ func main() {
 	// re-ingested via files or the receiver carry those attrs too.
 	enrichers = append(enrichers, &enrichment.GHAEnricher{})
 	enrichers = append(enrichers, &enrichment.CICDEnricher{})
+	// GenAIEnricher is attribute-gated on gen_ai.* — it claims LLM spans
+	// (Anthropic/OpenAI SDKs, OpenLLMetry, LangChain, …) before the generic
+	// catch-all so models and token usage surface.
+	enrichers = append(enrichers, &enrichment.GenAIEnricher{})
 	if cfg.enrichmentFile != "" {
 		ruleEnricher, err := enrichment.LoadRules(cfg.enrichmentFile)
 		if err != nil {

@@ -65,7 +65,10 @@ func BuildEnrichedSpanTree(spans []trace.ReadOnlySpan, enricher enrichment.Enric
 	for _, s := range spans {
 		attrs := make(map[string]string)
 		for _, a := range s.Attributes() {
-			attrs[string(a.Key)] = a.Value.AsString()
+			// Emit() (not AsString()) so int/bool/double attributes — e.g.
+			// gen_ai.usage.input_tokens, http.response.status_code — stringify
+			// instead of collapsing to "" and vanishing from enrichment.
+			attrs[string(a.Key)] = a.Value.Emit()
 		}
 
 		isZeroDuration := s.EndTime().Before(s.StartTime()) || s.EndTime().Equal(s.StartTime())
@@ -101,15 +104,53 @@ func BuildEnrichedSpanTree(spans []trace.ReadOnlySpan, enricher enrichment.Enric
 	return roots
 }
 
+// exceptionTypeFromSpan returns the exception type from the span's first
+// exception event, or "" if it has none.
+func exceptionTypeFromSpan(s trace.ReadOnlySpan) string {
+	for _, ev := range s.Events() {
+		evAttrs := make(map[string]string, len(ev.Attributes))
+		for _, a := range ev.Attributes {
+			evAttrs[string(a.Key)] = a.Value.Emit()
+		}
+		if t := enrichment.ExceptionTypeFromEvent(ev.Name, evAttrs); t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
+// featureFlagsFromSpan returns feature-flag evaluation summaries ("key=variant")
+// recorded as events on the span.
+func featureFlagsFromSpan(s trace.ReadOnlySpan) []string {
+	var flags []string
+	for _, ev := range s.Events() {
+		evAttrs := make(map[string]string, len(ev.Attributes))
+		for _, a := range ev.Attributes {
+			evAttrs[string(a.Key)] = a.Value.Emit()
+		}
+		if f := enrichment.FeatureFlagFromEvent(ev.Name, evAttrs); f != "" {
+			flags = append(flags, f)
+		}
+	}
+	return flags
+}
+
 // enrichNodes enriches each SpanNode in-place with attrs and hints.
 func enrichNodes(nodes []*SpanNode, enricher enrichment.Enricher) {
 	for _, n := range nodes {
 		n.Attrs = make(map[string]string)
 		for _, a := range n.Span.Attributes() {
-			n.Attrs[string(a.Key)] = a.Value.AsString()
+			n.Attrs[string(a.Key)] = a.Value.Emit()
 		}
 		isZeroDuration := n.Span.EndTime().Before(n.Span.StartTime()) || n.Span.EndTime().Equal(n.Span.StartTime())
 		n.Hints = enricher.Enrich(n.Span.Name(), n.Attrs, isZeroDuration)
+		// Surface a recorded exception (a span event) onto the span itself so
+		// the failure is visible in the waterfall, not only in the inspector.
+		if excType := exceptionTypeFromSpan(n.Span); excType != "" {
+			enrichment.ApplyException(&n.Hints, excType)
+		}
+		// Surface feature-flag evaluations recorded as events.
+		enrichment.ApplyFeatureFlags(&n.Hints, featureFlagsFromSpan(n.Span))
 		enrichNodes(n.Children, enricher)
 	}
 }
@@ -294,6 +335,14 @@ func renderNode(w io.Writer, node *SpanNode, depth int, globalStart time.Time, t
 	}
 	if h.URL != "" {
 		label = utils.MakeClickableLink(h.URL, label)
+	}
+	// Append semantic detail (model, route, statement, token usage, …) so that
+	// generic OTel spans — HTTP, DB, RPC, GenAI — read at a glance in the
+	// waterfall rather than as anonymous bars. Markers carry no detail.
+	if h.Detail != "" && !h.IsMarker {
+		if extra := enrichment.NonRedundantDetail(s.Name(), h.Detail); extra != "" {
+			label = fmt.Sprintf("%s  %s", label, colorizeText(extra, "gray"))
+		}
 	}
 
 	// Pad icons to ensure consistent labeling alignment
