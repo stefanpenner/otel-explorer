@@ -170,6 +170,13 @@ You can also **ingest** OTel trace files from any CI/CD system — Jenkins, GitL
 ote --trace=spans.json
 ```
 
+`ote` isn't limited to CI/CD — it renders **any** OTel trace, recognizing the
+major semantic conventions and surfacing the attribute that matters for each
+span: GenAI/LLM model and token usage, HTTP routes, SQL, gRPC methods, GraphQL
+operations, messaging destinations, exceptions, feature flags, and per-service
+deployment context. See **[docs/otel-sources.md](docs/otel-sources.md)** for the
+full catalog with runnable examples and screenshots.
+
 ## Development
 
 Built with [Bazel](https://bazel.build/) for hermetic, reproducible builds.

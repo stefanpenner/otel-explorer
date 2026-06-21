@@ -260,6 +260,42 @@ func TestGenericEnricher_CodeOriginDoesNotOverrideSemconv(t *testing.T) {
 	}
 }
 
+func TestGenericEnricher_PeerService(t *testing.T) {
+	e := &GenericEnricher{}
+
+	// An RPC client span toward a logical downstream service.
+	attrs := map[string]string{
+		"rpc.system":        "grpc",
+		"rpc.service":       "Cart",
+		"rpc.method":        "Get",
+		"service.peer.name": "payments",
+	}
+	h := e.Enrich("grpc.Cart/Get", attrs, false)
+
+	if h.Detail != "grpc Cart/Get → payments" {
+		t.Errorf("expected peer service appended, got %q", h.Detail)
+	}
+}
+
+func TestGenericEnricher_PeerServiceLegacyAndNoDoubleArrow(t *testing.T) {
+	e := &GenericEnricher{}
+
+	// HTTP detail already contains a "→ host"; the legacy peer.service must NOT
+	// add a second arrow.
+	attrs := map[string]string{
+		"http.request.method": "GET",
+		"http.route":          "/x",
+		"server.address":      "api",
+		"server.port":         "443",
+		"peer.service":        "api-svc",
+	}
+	h := e.Enrich("GET /x", attrs, false)
+
+	if strings.Count(h.Detail, "→") != 1 {
+		t.Errorf("expected exactly one arrow, got %q", h.Detail)
+	}
+}
+
 func TestGenericEnricher_ServiceContext(t *testing.T) {
 	e := &GenericEnricher{}
 

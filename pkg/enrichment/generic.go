@@ -199,6 +199,18 @@ func (e *GenericEnricher) Enrich(name string, attrs map[string]string, isZeroDur
 				}
 			}
 		}
+
+		// Surface the logical downstream service (topology) when known and not
+		// already represented by a "→ host" in the detail. Accepts the stable
+		// service.peer.name and the legacy peer.service.
+		if peer := firstNonEmpty(attrs, "service.peer.name", "peer.service"); peer != "" &&
+			!strings.Contains(h.Detail, peer) && !strings.Contains(h.Detail, "→") {
+			if h.Detail == "" {
+				h.Detail = "→ " + peer
+			} else {
+				h.Detail += " → " + peer
+			}
+		}
 	}
 
 	// Use span kind for icon variation (only if not already set by semconv)

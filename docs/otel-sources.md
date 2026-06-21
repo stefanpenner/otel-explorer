@@ -213,7 +213,9 @@ human-readable detail string for each — visible inline in the hero trace above
   chars), or `system: operation collection`. Both the stable v1.30+ names
   (`db.query.text`, `db.operation.name`, `db.collection.name`) and the older
   ones (`db.statement`, `db.operation`, `db.sql.table`) are recognized.
-- **RPC** (`rpc.system`): `grpc UserService/GetUser`.
+- **RPC** (`rpc.system`): `grpc UserService/GetUser`. A logical downstream
+  service (`service.peer.name`, or legacy `peer.service`) is appended as
+  `→ payments` when not already shown as a host.
 - **Messaging** (`messaging.system`): `kafka answers (publish)` — operation
   from `messaging.operation.name`/`.type` or legacy `messaging.operation`.
 - **FaaS** (`faas.trigger`): `my-function (http)`.
