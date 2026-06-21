@@ -47,6 +47,8 @@ check "graphql + tools"         graphql-tools.jsonl "◆" "🔧" "🔎" "🧠"
 check "exceptions"              exceptions.jsonl "❌" "PaymentDeclined"
 check "feature flags"           feature-flags.jsonl "🚩" "new-dashboard=on"
 check "microservices (otlp/json)" microservices.json "Resources" "k8s" "aws/us-east-1" "LLM Usage"
+check "grpc status codes"       grpc.jsonl "⇌" "→ cart-svc" "[NOT_FOUND] ❌" "[UNAVAILABLE] ❌"
+check "code origin + peer"      code-origin.jsonl "checkout.ProcessOrder (order.go:142)" "→ pricing-svc"
 
 echo
 echo "verify-sources: $pass passed, $fail failed"
