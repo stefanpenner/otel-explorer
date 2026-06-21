@@ -55,5 +55,9 @@ func FuzzEnrichChain(f *testing.F) {
 		flag := FeatureFlagFromEvent(name, attrs)
 		h := SpanHints{Detail: name}
 		ApplyFeatureFlags(&h, []string{flag, flag, ""}) // dup + empty paths
+
+		// Detail de-duplication splits/filters the (untrusted) name + detail.
+		NonRedundantDetail(name, attrText)
+		NonRedundantDetail(name, h.Detail)
 	})
 }
