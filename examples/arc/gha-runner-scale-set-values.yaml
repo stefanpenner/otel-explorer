@@ -1,0 +1,55 @@
+# Example values for the actions-runner-controller `gha-runner-scale-set` Helm chart
+# that turn on the runner's native OpenTelemetry export and attach Kubernetes
+# context — with ZERO chart changes. The chart embeds a full PodSpec under
+# `template:`, so this is plain Kubernetes pod configuration.
+#
+#   helm install arc-runners oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set \
+#     -n arc-runners --create-namespace -f gha-runner-scale-set-values.yaml
+#
+# Telemetry flows: runner -> OTLP/HTTP -> Collector -> Tempo/Loki/Prometheus.
+# View it with: ote --tempo=http://tempo:3200 --trace-id=<id> --metrics=...
+
+githubConfigUrl: https://github.com/YOUR_ORG/YOUR_REPO
+githubConfigSecret: arc-github-token
+
+template:
+  spec:
+    containers:
+      - name: runner
+        image: ghcr.io/actions/actions-runner:latest
+        command: ["/home/runner/run.sh"]
+        env:
+          # --- runner native OTel export (opt-in via endpoint) ---
+          - name: ACTIONS_RUNNER_OTLP_ENDPOINT
+            value: "http://otel-collector.observability.svc:4318"
+          # Inject W3C TRACEPARENT into each step so in-job tools nest under the step span.
+          - name: ACTIONS_RUNNER_OTLP_PROPAGATE
+            value: "true"
+
+          # --- Kubernetes context via the Downward API ---
+          # Standard k8s.* resource attributes attached the spec-native way: the
+          # runner honors OTEL_RESOURCE_ATTRIBUTES, so no runner-specific env names.
+          - name: K8S_POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: K8S_NAMESPACE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          - name: K8S_NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+          # Kubernetes expands $(VAR) against earlier env entries in the same container.
+          - name: OTEL_RESOURCE_ATTRIBUTES
+            value: "k8s.pod.name=$(K8S_POD_NAME),k8s.namespace.name=$(K8S_NAMESPACE_NAME),k8s.node.name=$(K8S_NODE_NAME)"
+
+          # --- (optional) upstream scheduler handoff ---
+          # When ARC injects a schedule-span context (see actions-runner-controller
+          # issue #1386), expose it here and the runner's job span gets a span LINK
+          # to it ("Scheduled by controller" in ote). No-op until ARC supports it.
+          # - name: ACTIONS_RUNNER_PARENT_TRACEPARENT
+          #   valueFrom:
+          #     fieldRef:
+          #       fieldPath: metadata.annotations['otel.actions.github.com/traceparent']

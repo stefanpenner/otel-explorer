@@ -1,0 +1,64 @@
+# OpenTelemetry Collector config for the ARC + runner OTel stack.
+#
+# - Receives OTLP traces/logs/metrics from the runner pods.
+# - Scrapes actions-runner-controller's Prometheus gha_* metrics and converts
+#   them to OTLP — so otel-explorer (and any backend) reads them as ordinary OTLP
+#   metrics, with no ARC-specific code anywhere downstream.
+# - The k8sattributes processor enriches spans with k8s.* from the pod metadata,
+#   complementing the Downward-API attributes the runner already sets.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+  # ARC controller-manager / listener expose Prometheus metrics on :8080/metrics.
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: arc
+          scrape_interval: 15s
+          static_configs:
+            - targets:
+                - "arc-gha-rs-controller.arc-systems.svc:8080"
+          # (or kubernetes_sd_configs with role: pod + relabeling on the ARC labels)
+
+processors:
+  batch: {}
+  k8sattributes:
+    auth_type: serviceAccount
+    extract:
+      metadata:
+        - k8s.pod.name
+        - k8s.namespace.name
+        - k8s.node.name
+        - k8s.deployment.name
+
+exporters:
+  otlp/tempo:
+    endpoint: tempo.observability.svc:4317
+    tls:
+      insecure: true
+  otlphttp/loki:
+    endpoint: http://loki.observability.svc:3100/otlp
+  prometheusremotewrite:
+    endpoint: http://prometheus.observability.svc:9090/api/v1/write
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [k8sattributes, batch]
+      exporters: [otlp/tempo]
+    metrics:
+      # OTLP metrics from runners + gha_* scraped from ARC, unified as OTLP.
+      receivers: [otlp, prometheus]
+      processors: [batch]
+      exporters: [prometheusremotewrite]
+    logs:
+      receivers: [otlp]
+      processors: [k8sattributes, batch]
+      exporters: [otlphttp/loki]
