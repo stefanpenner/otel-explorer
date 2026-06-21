@@ -32,6 +32,7 @@ import (
 	"github.com/stefanpenner/otel-explorer/pkg/perfetto"
 	"github.com/stefanpenner/otel-explorer/pkg/store"
 	"github.com/stefanpenner/otel-explorer/pkg/tui"
+	tuidiff "github.com/stefanpenner/otel-explorer/pkg/tui/diff"
 	tuiresults "github.com/stefanpenner/otel-explorer/pkg/tui/results"
 	"github.com/stefanpenner/otel-explorer/pkg/utils"
 	"go.opentelemetry.io/otel/attribute"
@@ -146,6 +147,8 @@ type config struct {
 	noArtifacts      bool
 	convertMode      bool
 	convertFiles     []string
+	diffMode         bool
+	diffInputs       []string // ordered [before, after]: GitHub URLs or trace files
 	// OTel alignment features
 	filterExpr     string // --filter=<expr>
 	errorsOnly     bool   // --errors-only
@@ -170,11 +173,15 @@ func parseArgs(args []string, terminal bool) (config, error) {
 		if strings.HasPrefix(a, "-") {
 			continue
 		}
-		if a == "convert" || a == "trends" || a == "sync" {
+		if a == "convert" || a == "trends" || a == "sync" || a == "diff" {
 			subcommand = a
 			args = append(append([]string{}, args[:i]...), args[i+1:]...)
 		}
 		break // only the first non-flag argument can be a subcommand
+	}
+
+	if subcommand == "diff" {
+		cfg.diffMode = true
 	}
 
 	if subcommand == "convert" {
@@ -392,6 +399,13 @@ func parseArgs(args []string, terminal bool) (config, error) {
 			continue
 		}
 
+		// For diff mode, positional args are the two inputs (before, after),
+		// kept in order regardless of whether each is a URL or a trace file.
+		if cfg.diffMode && !strings.HasPrefix(arg, "-") {
+			cfg.diffInputs = append(cfg.diffInputs, arg)
+			continue
+		}
+
 		// For trends mode, first non-flag arg is the repo
 		if (cfg.trendsMode || cfg.syncMode) && cfg.trendsRepo == "" && !strings.HasPrefix(arg, "-") {
 			cfg.trendsRepo = arg
@@ -425,7 +439,7 @@ func parseArgs(args []string, terminal bool) (config, error) {
 	if cfg.tempoURL != "" && cfg.jaegerURL != "" {
 		return cfg, fmt.Errorf("--tempo and --jaeger cannot be used together; specify a single trace backend")
 	}
-	if (cfg.tempoURL != "" || cfg.jaegerURL != "") && len(cfg.traceIDs) == 0 {
+	if (cfg.tempoURL != "" || cfg.jaegerURL != "") && len(cfg.traceIDs) == 0 && !cfg.diffMode {
 		return cfg, fmt.Errorf("--tempo/--jaeger requires at least one --trace-id=<id>")
 	}
 
@@ -470,7 +484,7 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Fprintf(os.Stderr, "Cache cleared: %s\n", cacheDir)
-		if len(args) == 0 && !cfg.trendsMode {
+		if len(args) == 0 && !cfg.trendsMode && !cfg.diffMode {
 			os.Exit(0)
 		}
 	}
@@ -690,6 +704,16 @@ func main() {
 	}
 	enrichers = append(enrichers, &enrichment.GenericEnricher{})
 	enricher = enrichment.NewChainEnricher(enrichers...)
+
+	// Trace diff mode: semantically compare two traces (e.g. two back-to-back
+	// commits' CI runs) the way `git diff` compares two trees.
+	if cfg.diffMode {
+		if err := runDiff(ctx, cfg, enricher); err != nil {
+			printError(err, "diff failed")
+			os.Exit(1)
+		}
+		return
+	}
 
 	// Setup span filter (needed by both receiver and normal modes)
 	var spanFilter *filter.Filter
@@ -1384,6 +1408,202 @@ func makeLogFetchFunc(client *githubapi.Client) tuiresults.LogFetchFunc {
 	}
 }
 
+// runDiff compares two traces (the diff subcommand). Each input is a GitHub
+// URL (fetched live) or a local trace file. The two are built into independent
+// forests and compared semantically; the report goes to the TUI on a terminal,
+// or to stdout as styled text / markdown / JSON otherwise.
+func runDiff(ctx context.Context, cfg config, enricher enrichment.Enricher) error {
+	if len(cfg.diffInputs) != 2 {
+		return fmt.Errorf("diff needs exactly two inputs (before and after), got %d\n\n"+
+			"  Usage: ote diff <before> <after>\n"+
+			"  where each is a GitHub URL or a trace file (e.g. two back-to-back commit runs),\n"+
+			"  or a trace ID when --tempo/--jaeger selects a backend", len(cfg.diffInputs))
+	}
+	switch cfg.outputFormat {
+	case "", "stdout", "markdown", "json":
+	default:
+		return fmt.Errorf("--output=%s is not supported for diff (use stdout, markdown, or json)", cfg.outputFormat)
+	}
+	// Reject flags that select an entirely different mode rather than silently
+	// ignoring them.
+	switch {
+	case cfg.listenAddr != "":
+		return fmt.Errorf("--listen (receiver mode) is not compatible with diff")
+	case cfg.otelStdout || cfg.otelEndpoint != "" || cfg.otelGRPCEndpoint != "":
+		return fmt.Errorf("--otel export is not compatible with diff")
+	}
+
+	// In trace-backend mode (--tempo/--jaeger) both inputs are trace ids fetched
+	// from the backend, so no GitHub token is needed. Otherwise resolve a token
+	// if either side is a GitHub URL (not an existing local file).
+	backendMode := cfg.tempoURL != "" || cfg.jaegerURL != ""
+	var token string
+	if !backendMode {
+		for _, in := range cfg.diffInputs {
+			if !looksLikeLocalFile(in) && !isTraceBackendURL(in) {
+				token = resolveGitHubToken()
+				break
+			}
+		}
+	}
+
+	beforeRoots, beforeLabel, err := loadDiffSide(ctx, cfg.diffInputs[0], token, enricher, cfg)
+	if err != nil {
+		return fmt.Errorf("loading before (%s): %w", cfg.diffInputs[0], err)
+	}
+	afterRoots, afterLabel, err := loadDiffSide(ctx, cfg.diffInputs[1], token, enricher, cfg)
+	if err != nil {
+		return fmt.Errorf("loading after (%s): %w", cfg.diffInputs[1], err)
+	}
+
+	d := analyzer.DiffTraces(beforeRoots, afterRoots)
+
+	// The TUI needs a real terminal; if output is piped/redirected, fall back to
+	// the styled report instead of crashing with a raw TTY error.
+	if cfg.tuiMode && isTerminal() {
+		return tuidiff.Run(d, beforeLabel, afterLabel)
+	}
+
+	return renderDiffNonTUI(d, cfg.outputFormat, beforeLabel, afterLabel)
+}
+
+// looksLikeLocalFile reports whether a diff input should be treated as a local
+// trace file: it exists on disk. (Checked before URL parsing so a file whose
+// name happens to start with "http" is not mistaken for a URL.)
+func looksLikeLocalFile(input string) bool {
+	info, err := os.Stat(input)
+	return err == nil && !info.IsDir()
+}
+
+// renderDiffNonTUI writes a diff report to stdout in the requested format.
+func renderDiffNonTUI(d *analyzer.TraceDiff, format, beforeLabel, afterLabel string) error {
+	switch format {
+	case "markdown":
+		output.RenderTraceDiffMarkdown(os.Stdout, d, beforeLabel, afterLabel)
+	case "json":
+		return output.RenderTraceDiffJSON(os.Stdout, d, beforeLabel, afterLabel)
+	default:
+		colorsEnabled := colorsEnabledFor(os.Stdout)
+		utils.SetColorEnabled(colorsEnabled)
+		var w io.Writer = os.Stdout
+		if !colorsEnabled {
+			w = utils.NewStripANSIWriter(os.Stdout)
+		}
+		output.RenderTraceDiff(w, d, beforeLabel, afterLabel)
+	}
+	return nil
+}
+
+// loadDiffSide loads one side of a diff into a forest of TreeNodes, returning a
+// human label for it. A local file is parsed directly; a GitHub URL is fetched
+// through the same polling ingestor the normal analysis uses.
+func loadDiffSide(ctx context.Context, input, token string, enricher enrichment.Enricher, cfg config) ([]*analyzer.TreeNode, string, error) {
+	// Trace-backend mode: the input is a trace id fetched from Tempo/Jaeger.
+	// This takes precedence over file/URL handling so a trace id is never
+	// misread as a (missing) local file or GitHub URL.
+	if cfg.tempoURL != "" || cfg.jaegerURL != "" {
+		backendURL, backendName := cfg.tempoURL, "Tempo"
+		if cfg.jaegerURL != "" {
+			backendURL, backendName = cfg.jaegerURL, "Jaeger"
+		}
+		spans, err := traceapi.New(backendURL).FetchTrace(input)
+		if err != nil {
+			return nil, "", fmt.Errorf("fetch trace %q from %s: %w", input, backendName, err)
+		}
+		roots := analyzer.BuildTreeFromSpans(spans, time.Time{}, time.Time{}, enricher)
+		return roots, shortTraceID(input), nil
+	}
+
+	// An existing local file wins, even if its name starts with "http".
+	if looksLikeLocalFile(input) {
+		spans, err := otlpfile.ParseFile(input)
+		if err != nil {
+			return nil, "", err
+		}
+		roots := analyzer.BuildTreeFromSpans(spans, time.Time{}, time.Time{}, enricher)
+		return roots, filepath.Base(input), nil
+	}
+
+	// A full ".../api/traces/<id>" URL is fetched directly (format auto-detected),
+	// so each side may point at a different backend (e.g. Jaeger vs Tempo).
+	if isTraceBackendURL(input) {
+		i := strings.Index(input, "/api/traces/")
+		base := input[:i]
+		id := input[i+len("/api/traces/"):]
+		spans, err := traceapi.New(base).FetchTrace(id)
+		if err != nil {
+			return nil, "", fmt.Errorf("fetch trace from %q: %w", input, err)
+		}
+		roots := analyzer.BuildTreeFromSpans(spans, time.Time{}, time.Time{}, enricher)
+		return roots, shortTraceID(id), nil
+	}
+
+	if _, err := utils.ParseGitHubURL(input); err != nil {
+		return nil, "", fmt.Errorf("%q is neither an existing trace file nor a valid GitHub URL: %w", input, err)
+	}
+	if token == "" {
+		return nil, "", fmt.Errorf("GITHUB_TOKEN or gh auth is required to fetch GitHub URLs")
+	}
+
+	client := githubapi.NewClient(githubapi.NewContext(token))
+	progress := tui.NewProgress(1, os.Stderr)
+	progress.Start()
+	wireAPIMeter(progress, client)
+	ingestor := polling.NewPollingIngestor(client, []string{input}, progress, analyzer.AnalyzeOptions{
+		Window:      cfg.window,
+		NoArtifacts: cfg.noArtifacts,
+		FetchLogs:   cfg.fetchLogs,
+	})
+	results, _, _, spans, err := ingestor.Ingest(ctx)
+	progress.Finish()
+	progress.Wait()
+	printAPIMeter(client)
+	if err != nil {
+		return nil, "", err
+	}
+	roots := analyzer.BuildTreeFromSpans(spans, time.Time{}, time.Time{}, enricher)
+	return roots, diffLabel(input, results), nil
+}
+
+// isTraceBackendURL reports whether input is a full Tempo/Jaeger trace URL
+// (".../api/traces/<id>"). Such a URL is fetched directly with the response
+// format auto-detected, so the two diff sides can name different backends.
+// The "/api/traces/" path also disambiguates it from a GitHub URL.
+func isTraceBackendURL(input string) bool {
+	return (strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://")) &&
+		strings.Contains(input, "/api/traces/")
+}
+
+// shortTraceID trims a trace id for display, keeping the first 12 hex chars
+// (mirrors the 12-char SHA convention used for run labels) with an ellipsis.
+func shortTraceID(id string) string {
+	if len(id) > 12 {
+		return id[:12] + "…"
+	}
+	return id
+}
+
+// diffLabel builds a concise label for one diff side, preferring the commit
+// SHA so back-to-back commits read clearly.
+func diffLabel(input string, results []analyzer.URLResult) string {
+	if len(results) > 0 {
+		r := results[0]
+		sha := r.HeadSHA
+		if len(sha) > 12 {
+			sha = sha[:12]
+		}
+		switch {
+		case r.DisplayName != "" && sha != "":
+			return fmt.Sprintf("%s @ %s", r.DisplayName, sha)
+		case sha != "":
+			return sha
+		case r.DisplayName != "":
+			return r.DisplayName
+		}
+	}
+	return input
+}
+
 // tagSpansWithIndex wraps ReadOnlySpans with a github.url_index attribute
 // so the TUI can group spans by their source file.
 func tagSpansWithIndex(spans []sdktrace.ReadOnlySpan, urlIndex int) []sdktrace.ReadOnlySpan {
@@ -1402,6 +1622,7 @@ func printUsage() {
 	fmt.Println("  ote convert <file1> [file2...] [flags]")
 	fmt.Println("  ote trends <owner/repo> [flags]")
 	fmt.Println("  ote sync <owner/repo> [--days=30]")
+	fmt.Println("  ote diff <before> <after> [flags]")
 	fmt.Println("\nFlags:")
 	fmt.Println("  --tui                     Force interactive TUI mode (default when terminal is available)")
 	fmt.Println("  --no-tui                  Disable interactive TUI, use CLI output instead")
@@ -1445,6 +1666,13 @@ func printUsage() {
 	fmt.Println("\nConvert Mode:")
 	fmt.Println("  Converts any supported trace format to OTel JSON on stdout.")
 	fmt.Println("  Supported formats: Chrome Tracing, Jaeger, Zipkin, OTLP proto-JSON, stdouttrace, binary protobuf.")
+	fmt.Println("\nDiff Mode:")
+	fmt.Println("  Semantically compares two traces (like `git diff`, but over spans): wall-clock")
+	fmt.Println("  delta, added/removed/changed jobs and steps, status flips, and the top movers")
+	fmt.Println("  attributed to the responsible spans. Each input is a GitHub URL or a trace file;")
+	fmt.Println("  with --tempo/--jaeger the two inputs are trace IDs fetched from that backend.")
+	fmt.Println("  Pass full .../api/traces/<id> URLs to diff across different backends (Jaeger vs Tempo).")
+	fmt.Println("  Opens an interactive TUI on a terminal; --output=stdout|markdown|json otherwise.")
 	fmt.Println("\nEnvironment Variables:")
 	fmt.Println("  GITHUB_TOKEN              GitHub PAT (alternatively pass as argument)")
 	fmt.Println("\nExamples:")
@@ -1478,6 +1706,13 @@ func printUsage() {
 	fmt.Println("  ote convert spans.json                # any format → OTel JSON")
 	fmt.Println("  ote convert file1.json file2.json     # multiple files")
 	fmt.Println("  cat trace.json | ote convert          # stdin → OTel JSON")
+	fmt.Println("  ote diff before.json after.json       # diff two trace files in the TUI")
+	fmt.Println("  ote diff <run-url-A> <run-url-B>      # diff two back-to-back CI runs")
+	fmt.Println("  ote diff before.json after.json --output=markdown > diff.md")
+	fmt.Println("  ote diff <run-A> <run-B> --output=json | jq '.top_movers'")
+	fmt.Println("  ote diff --jaeger=http://localhost:16686 <trace-id-A> <trace-id-B>")
+	fmt.Println("  ote diff --tempo=http://localhost:3200 <trace-id-A> <trace-id-B>")
+	fmt.Println("  ote diff http://jaeger:16686/api/traces/A http://tempo:3200/api/traces/B  # cross-backend")
 	fmt.Println("  ote --clear-cache")
 }
 

@@ -149,6 +149,21 @@ ote sync owner/repo --days=7
 
 Syncs are incremental: completed runs never change, so a re-sync lists only what's newer than the stored watermark and fetches job detail only for runs the store doesn't hold — a rails/rails week costs ~90s once, then ~10s and zero job-detail API calls to stay current. Once a repo is synced, `ote trends` automatically analyzes from the store: **exact** job detail for every run (no sampling), full commit coverage, ~10s end-to-end. Branch/workflow filters and `--no-sample`/`--dump-runs` still use the API path.
 
+## Diff
+
+Compare two traces the way `git diff` compares two trees — but semantically, over spans. Point it at two back-to-back CI runs and it tells you what changed: jobs/steps added, removed, slower/faster, or flipped pass/fail, with the wall-clock delta attributed to the responsible spans.
+
+```bash
+ote diff <run-A> <run-B>                      # two CI runs, interactive TUI
+ote diff before.json after.json               # two local trace files
+ote diff <run-A> <run-B> --output=markdown    # PR-comment-ready report
+ote diff <run-A> <run-B> --output=json | jq '.top_movers'
+ote diff --jaeger=http://localhost:16686 <trace-id-A> <trace-id-B>  # from a backend
+ote diff http://jaeger:16686/api/traces/A http://tempo:3200/api/traces/B  # cross-backend
+```
+
+Each side is a GitHub URL (run/commit/PR, fetched live) or any trace file `ote` reads — or a trace ID fetched live from Tempo/Jaeger via `--tempo`/`--jaeger`. Pass full `.../api/traces/<id>` URLs to diff across different backends (Jaeger vs Tempo), with the format auto-detected per side. See [docs/trace-diff.md](docs/trace-diff.md) for the full output and how matching works.
+
 ## OpenTelemetry
 
 Export analysis data as OpenTelemetry spans — feed them into any observability stack:

@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "diff",
+    srcs = [
+        "diff.go",
+        "keys.go",
+        "view.go",
+    ],
+    importpath = "github.com/stefanpenner/otel-explorer/pkg/tui/diff",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/analyzer",
+        "//pkg/utils",
+        "@com_github_charmbracelet_bubbles//key",
+        "@com_github_charmbracelet_bubbletea//:bubbletea",
+        "@com_github_charmbracelet_lipgloss//:lipgloss",
+    ],
+)
+
+go_test(
+    name = "diff_test",
+    srcs = ["diff_test.go"],
+    embed = [":diff"],
+    deps = [
+        "//pkg/analyzer",
+        "//pkg/enrichment",
+        "//pkg/utils",
+        "@com_github_charmbracelet_bubbletea//:bubbletea",
+    ],
+)

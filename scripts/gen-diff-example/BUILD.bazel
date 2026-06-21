@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "gen-diff-example_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/stefanpenner/otel-explorer/scripts/gen-diff-example",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//pkg/analyzer",
+        "//pkg/export/otel",
+        "//pkg/githubapi",
+        "@io_opentelemetry_go_otel//attribute",
+        "@io_opentelemetry_go_otel_sdk//trace/tracetest",
+        "@io_opentelemetry_go_otel_trace//:trace",
+    ],
+)
+
+go_binary(
+    name = "gen-diff-example",
+    embed = [":gen-diff-example_lib"],
+    visibility = ["//visibility:public"],
+)

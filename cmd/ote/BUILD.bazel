@@ -28,6 +28,7 @@ go_library(
         "//pkg/perfetto",
         "//pkg/store",
         "//pkg/tui",
+        "//pkg/tui/diff",
         "//pkg/tui/results",
         "//pkg/utils",
         "@io_opentelemetry_go_otel//attribute",
@@ -47,6 +48,7 @@ go_test(
     srcs = [
         "args_fuzz_test.go",
         "args_test.go",
+        "diff_test.go",
         "exportout_test.go",
         "persist_test.go",
         "slack_test.go",
@@ -54,6 +56,7 @@ go_test(
     embed = [":ote_lib"],
     deps = [
         "//pkg/analyzer",
+        "//pkg/enrichment",
         "//pkg/export",
         "//pkg/githubapi",
         "//pkg/store",
