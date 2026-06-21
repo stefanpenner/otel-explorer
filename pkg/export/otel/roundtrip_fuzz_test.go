@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stefanpenner/otel-explorer/pkg/ingest/otlpfile"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 // FuzzRoundTrip is a property fuzzer (not just a panic check): it parses
@@ -48,6 +49,23 @@ func FuzzRoundTrip(f *testing.F) {
 		if len(spans2) != len(spans1) {
 			t.Fatalf("round-trip span count drift: parsed %d, re-parsed %d after emit\nemitted:\n%s",
 				len(spans1), len(spans2), buf.String())
+		}
+		// Stronger invariant: the multiset of (traceID, spanID) identities must
+		// survive the round-trip. Equal counts with different IDs would mean a
+		// span's identity was corrupted or swapped through emit → re-parse.
+		ids := func(spans []sdktrace.ReadOnlySpan) map[string]int {
+			m := make(map[string]int, len(spans))
+			for _, s := range spans {
+				m[s.SpanContext().TraceID().String()+"/"+s.SpanContext().SpanID().String()]++
+			}
+			return m
+		}
+		before, after := ids(spans1), ids(spans2)
+		for k, n := range before {
+			if after[k] != n {
+				t.Fatalf("round-trip identity drift for %s: before=%d after=%d\nemitted:\n%s",
+					k, n, after[k], buf.String())
+			}
 		}
 	})
 }
