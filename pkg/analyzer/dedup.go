@@ -22,10 +22,19 @@ func DedupeRunnerSpans(spans []sdktrace.ReadOnlySpan) []sdktrace.ReadOnlySpan {
 		}
 		key := sc.TraceID().String() + ":" + sc.SpanID().String()
 		if idx, ok := seen[key]; ok {
-			// Prefer the runner span over a non-runner duplicate.
-			if spanIsRunner(s) && !spanIsRunner(out[idx]) {
-				out[idx] = s
+			// A prior span shares this trace+span ID. Only treat it as the SAME
+			// logical span — the GitHub API reconstruction vs the native runner —
+			// when exactly one side is the runner; then the runner wins (it has
+			// sub-second timing). If neither (or both) is the runner, these are
+			// legitimately distinct spans that happen to collide on a deterministic
+			// ID (e.g. two identically-named steps in one job), so keep both.
+			if spanIsRunner(s) != spanIsRunner(out[idx]) {
+				if spanIsRunner(s) {
+					out[idx] = s
+				}
+				continue
 			}
+			out = append(out, s)
 			continue
 		}
 		seen[key] = len(out)
