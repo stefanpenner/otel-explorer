@@ -340,7 +340,7 @@ func renderNode(w io.Writer, node *SpanNode, depth int, globalStart time.Time, t
 	// generic OTel spans — HTTP, DB, RPC, GenAI — read at a glance in the
 	// waterfall rather than as anonymous bars. Markers carry no detail.
 	if h.Detail != "" && !h.IsMarker {
-		if extra := nonRedundantDetail(s.Name(), h.Detail); extra != "" {
+		if extra := enrichment.NonRedundantDetail(s.Name(), h.Detail); extra != "" {
 			label = fmt.Sprintf("%s  %s", label, colorizeText(extra, "gray"))
 		}
 	}
@@ -376,21 +376,6 @@ func renderNode(w io.Writer, node *SpanNode, depth int, globalStart time.Time, t
 }
 
 // colorizeText applies terminal color based on color name.
-// nonRedundantDetail drops detail segments (joined by " · ") that already
-// appear verbatim in the span name, so e.g. a GenAI span named
-// "chat claude-opus-4" with detail "chat claude-opus-4 · 1.2k→340 tok" renders
-// only the additive "1.2k→340 tok" rather than restating the name.
-func nonRedundantDetail(name, detail string) string {
-	segments := strings.Split(detail, " · ")
-	kept := segments[:0]
-	for _, seg := range segments {
-		if seg != "" && !strings.Contains(name, seg) {
-			kept = append(kept, seg)
-		}
-	}
-	return strings.Join(kept, " · ")
-}
-
 func colorizeText(text, color string) string {
 	switch color {
 	case "green":

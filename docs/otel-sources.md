@@ -323,7 +323,10 @@ The conventions above are recognized regardless of how the spans arrive:
 
 ## Output formats
 
-The same enrichment drives every output. The interactive TUI is the default;
+The same enrichment drives every output. The interactive TUI is the default —
+its timeline rows show the same inline semantic detail (model, route, SQL,
+token usage, feature flags, exception type) next to each span name, and the
+inspector panel exposes every raw attribute, event, and link;
 `--no-tui` prints the styled terminal view shown throughout this page; and
 `--output=markdown` produces a shareable report that includes the **Resources**
 and **LLM Usage** summaries followed by the timeline in a fenced block:
