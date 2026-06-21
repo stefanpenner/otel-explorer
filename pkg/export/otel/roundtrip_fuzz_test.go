@@ -3,6 +3,7 @@ package otel
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stefanpenner/otel-explorer/pkg/ingest/otlpfile"
@@ -65,6 +66,76 @@ func FuzzRoundTrip(f *testing.F) {
 			if after[k] != n {
 				t.Fatalf("round-trip identity drift for %s: before=%d after=%d\nemitted:\n%s",
 					k, n, after[k], buf.String())
+			}
+		}
+	})
+}
+
+// FuzzRoundTripStable checks a FIXED-POINT fidelity property: once spans have
+// been through one parse → emit → re-parse, a *second* identical round-trip
+// must not change their key semantic fields. Comparing the two post-round-trip
+// snapshots (spans2 vs spans3) — rather than the original arbitrary parse —
+// isolates true non-idempotency in the stdout emit/re-parse path from benign
+// cross-parser differences. A drift means some field (name, times, status,
+// attribute set) is silently mangled each time the tool re-ingests its own
+// --otel output.
+func FuzzRoundTripStable(f *testing.F) {
+	seeds := [][]byte{
+		[]byte(`{"resourceSpans":[{"scopeSpans":[{"spans":[{"traceId":"00000000000000000000000000000001","spanId":"0000000000000001","name":"build","startTimeUnixNano":"1","endTimeUnixNano":"2","attributes":[{"key":"k","value":{"stringValue":"v"}}]}]}]}]}`),
+		[]byte(`{"SpanContext":{"TraceID":"00000000000000000000000000000001","SpanID":"0000000000000001"},"Name":"n","StartTime":"2024-01-01T00:00:00Z","EndTime":"2024-01-01T00:00:01Z"}`),
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+
+	ctx := context.Background()
+	emit := func(spans []sdktrace.ReadOnlySpan) ([]sdktrace.ReadOnlySpan, string) {
+		var buf bytes.Buffer
+		exp, err := NewStdoutExporter(&buf)
+		if err != nil {
+			return nil, ""
+		}
+		if err := exp.Export(ctx, spans); err != nil {
+			return nil, ""
+		}
+		_ = exp.Finish(ctx)
+		out, err := otlpfile.Parse(bytes.NewReader(buf.Bytes()))
+		if err != nil {
+			return nil, buf.String()
+		}
+		return out, buf.String()
+	}
+
+	// fingerprint of the fields the tool semantically round-trips, keyed by ID.
+	fp := func(spans []sdktrace.ReadOnlySpan) map[string]string {
+		m := make(map[string]string, len(spans))
+		for _, s := range spans {
+			id := s.SpanContext().TraceID().String() + "/" + s.SpanContext().SpanID().String()
+			m[id] = fmt.Sprintf("name=%q start=%d end=%d status=%s attrs=%d",
+				s.Name(), s.StartTime().UnixNano(), s.EndTime().UnixNano(),
+				s.Status().Code, len(s.Attributes()))
+		}
+		return m
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		spans1, err := otlpfile.Parse(bytes.NewReader(data))
+		if err != nil || len(spans1) == 0 {
+			return
+		}
+		spans2, _ := emit(spans1)
+		if len(spans2) == 0 {
+			return
+		}
+		spans3, buf2 := emit(spans2)
+
+		a, b := fp(spans2), fp(spans3)
+		if len(a) != len(b) {
+			t.Fatalf("fixed-point count drift: round-trip 1 -> %d spans, round-trip 2 -> %d\n%s", len(a), len(b), buf2)
+		}
+		for id, v := range a {
+			if b[id] != v {
+				t.Fatalf("fixed-point field drift for %s:\n  rt1: %s\n  rt2: %s\nemitted:\n%s", id, v, b[id], buf2)
 			}
 		}
 	})
