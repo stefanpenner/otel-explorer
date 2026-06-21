@@ -214,7 +214,9 @@ human-readable detail string for each — visible inline in the hero trace above
 
 - **HTTP** (`http.request.method`, or legacy `http.method`):
   `POST /v1/answer → rag.internal:8080 [200]`; 4xx/5xx status codes color the
-  bar red.
+  bar red. The target is the low-cardinality `http.route` when present, falling
+  back to `url.path` then the full `url.full`/`http.url` (so client spans show
+  where they went, not just the method).
 - **Database** (`db.system.name`, or legacy `db.system`):
   `postgresql: SELECT * FROM users WHERE id = $1` (query truncated to 80
   chars), or `system: operation collection`. Both the stable v1.30+ names

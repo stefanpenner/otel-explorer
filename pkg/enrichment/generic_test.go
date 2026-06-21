@@ -28,6 +28,22 @@ func TestGenericEnricher_HTTP(t *testing.T) {
 	}
 }
 
+func TestGenericEnricher_HTTPClientURLFull(t *testing.T) {
+	e := &GenericEnricher{}
+
+	// A client span with only url.full (no route/path) should still show the
+	// target, not just the bare method.
+	attrs := map[string]string{
+		"http.request.method": "GET",
+		"url.full":            "https://api.example.com/v1/widgets",
+	}
+	h := e.Enrich("GET", attrs, false)
+
+	if h.Detail != "GET https://api.example.com/v1/widgets" {
+		t.Errorf("expected url.full in detail, got %q", h.Detail)
+	}
+}
+
 func TestGenericEnricher_HTTPError(t *testing.T) {
 	e := &GenericEnricher{}
 

@@ -99,9 +99,14 @@ func (e *GenericEnricher) Enrich(name string, attrs map[string]string, isZeroDur
 			if method == "" {
 				method = attrs["http.method"]
 			}
+			// Prefer the low-cardinality route; fall back to url.path, then to
+			// the full URL (client spans often carry only url.full / http.url).
 			route := attrs["http.route"]
 			if route == "" {
 				route = attrs["url.path"]
+			}
+			if route == "" {
+				route = firstNonEmpty(attrs, "url.full", "http.url")
 			}
 			if method != "" && route != "" {
 				h.Detail = method + " " + route
