@@ -287,6 +287,17 @@ func findDebugAnnotationString(t *testing.T, data []byte, name string) (string, 
 	return "", false
 }
 
+func TestTimestampZeroNotDropped(t *testing.T) {
+	// A timestamp of 0 is valid (start of trace) and must be encoded,
+	// not silently omitted.
+	trackEvent := buildTrackEvent(typeInstant, 1, "zero-ts-event", nil)
+	pkt := buildTracePacketEvent(0, 1, trackEvent)
+
+	ts, found := extractVarintField(pkt, 8)
+	assert.True(t, found, "timestamp field 8 must be present even when value is 0")
+	assert.Equal(t, uint64(0), ts)
+}
+
 func TestWriteTraceLongAttributeStrippedAndTruncated(t *testing.T) {
 	globalStart := time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)
 

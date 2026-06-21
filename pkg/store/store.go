@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/stefanpenner/otel-explorer/pkg/analyzer"
@@ -20,6 +21,7 @@ import (
 // Store wraps the SQLite database holding synced run/job history.
 type Store struct {
 	db *sql.DB
+	mu sync.RWMutex
 }
 
 const schema = `
@@ -109,11 +111,17 @@ func Open(path string) (*Store, error) {
 }
 
 // Close closes the underlying database.
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.db.Close()
+}
 
 // UpsertRuns inserts or updates runs (and, for runs carrying job detail,
 // replaces their jobs) inside one transaction.
 func (s *Store) UpsertRuns(owner, repo string, runs []analyzer.RunData) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -189,6 +197,8 @@ func (s *Store) UpsertRuns(owner, repo string, runs []analyzer.RunData) error {
 // LoadRuns returns the stored runs (with jobs) created within [since, until],
 // oldest first.
 func (s *Store) LoadRuns(owner, repo string, since, until time.Time) ([]analyzer.RunData, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	rows, err := s.db.Query(`
 		SELECT id, workflow_name, head_sha, head_branch, event, status, conclusion,
 			created_at, started_at, updated_at, duration_ms, run_attempt
@@ -253,6 +263,8 @@ func (s *Store) LoadRuns(owner, repo string, since, until time.Time) ([]analyzer
 // Watermark returns the newest run CreatedAt stored for the repo, or the
 // zero time when nothing is stored yet.
 func (s *Store) Watermark(owner, repo string) (time.Time, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	var ms sql.NullInt64
 	err := s.db.QueryRow(`SELECT MAX(created_at) FROM runs WHERE owner=? AND repo=?`,
 		owner, repo).Scan(&ms)
@@ -265,6 +277,8 @@ func (s *Store) Watermark(owner, repo string) (time.Time, error) {
 // RunsNeedingJobs returns IDs of completed runs in the window whose job
 // detail has not been fetched yet, oldest first.
 func (s *Store) RunsNeedingJobs(owner, repo string, since, until time.Time) ([]int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	rows, err := s.db.Query(`
 		SELECT id FROM runs
 		WHERE owner=? AND repo=? AND status='completed' AND jobs_fetched=0
@@ -328,6 +342,8 @@ func timeOf(ms int64) time.Time {
 // fetched, without touching any other run column — safe to call with data
 // from a jobs-only fetch where the run listing fields are unknown.
 func (s *Store) UpsertJobs(owner, repo string, runID int64, jobs []analyzer.JobData) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -366,6 +382,8 @@ func (s *Store) UpsertJobs(owner, repo string, runID int64, jobs []analyzer.JobD
 // OldestRun returns the oldest run CreatedAt stored for the repo, or the
 // zero time when nothing is stored yet.
 func (s *Store) OldestRun(owner, repo string) (time.Time, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	var ms sql.NullInt64
 	err := s.db.QueryRow(`SELECT MIN(created_at) FROM runs WHERE owner=? AND repo=? AND created_at > 0`,
 		owner, repo).Scan(&ms)

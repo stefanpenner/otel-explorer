@@ -23,8 +23,10 @@ go_test(
     deps = [
         "//pkg/ingest/otlpfile",
         "//pkg/utils",
+        "@com_github_stretchr_testify//assert",
         "@io_opentelemetry_go_otel//attribute",
         "@io_opentelemetry_go_otel//codes",
+        "@io_opentelemetry_go_otel_sdk//resource",
         "@io_opentelemetry_go_otel_sdk//trace",
         "@io_opentelemetry_go_otel_sdk//trace/tracetest",
     ],

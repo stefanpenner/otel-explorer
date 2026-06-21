@@ -55,11 +55,20 @@ func (w *protoWriter) appendTag(field uint32, wireType uint32) {
 	w.appendVarint(uint64(field)<<3 | uint64(wireType))
 }
 
-// writeVarintField writes a varint field.
+// writeVarintField writes a varint field, omitting it when v == 0
+// (default proto semantics). Use writeVarintFieldAlways for fields
+// where zero is meaningful, such as timestamps.
 func (w *protoWriter) writeVarintField(field uint32, v uint64) {
 	if v == 0 {
 		return
 	}
+	w.appendTag(field, wireVarint)
+	w.appendVarint(v)
+}
+
+// writeVarintFieldAlways writes a varint field, including v == 0,
+// for fields where presence is explicit (e.g. timestamp).
+func (w *protoWriter) writeVarintFieldAlways(field uint32, v uint64) {
 	w.appendTag(field, wireVarint)
 	w.appendVarint(v)
 }
@@ -213,7 +222,7 @@ func buildTrackEvent(eventType uint64, trackUUID uint64, name string, annotation
 // Field numbers: timestamp=8, trusted_packet_sequence_id=10, track_event=11, track_descriptor=60
 func buildTracePacketEvent(timestampNs uint64, seqID uint32, trackEvent []byte) []byte {
 	var w protoWriter
-	w.writeVarintField(8, timestampNs)
+	w.writeVarintFieldAlways(8, timestampNs)
 	w.writeVarintField(10, uint64(seqID))
 	w.writeBytesField(11, trackEvent)
 	return w.bytes()

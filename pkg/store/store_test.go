@@ -2,6 +2,7 @@ package store
 
 import (
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -191,4 +192,50 @@ func TestStoreRunAttemptRoundTrip(t *testing.T) {
 	require.Len(t, got, 2)
 	assert.Equal(t, int64(3), got[0].Attempt)
 	assert.Equal(t, int64(1), got[1].Attempt, "unset attempt defaults to 1")
+}
+
+func TestConcurrentReadWrite(t *testing.T) {
+	t.Parallel()
+	st := openTestStore(t)
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	var wg sync.WaitGroup
+	const readers = 10
+	const writers = 5
+
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			run := analyzer.RunData{
+				ID:           int64(100 + i),
+				WorkflowName: "CI",
+				HeadSHA:      "aaa",
+				Status:        "completed",
+				Conclusion:   "success",
+				CreatedAt:    base.Add(time.Duration(i) * time.Hour),
+				StartedAt:    base.Add(time.Duration(i) * time.Hour),
+				UpdatedAt:    base.Add(time.Duration(i)*time.Hour + 10*time.Minute),
+				Duration:     600_000,
+			}
+			_ = st.UpsertRuns("o", "r", []analyzer.RunData{run})
+		}(i)
+	}
+
+	for i := 0; i < readers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = st.LoadRuns("o", "r", base.Add(-time.Hour), base.Add(100*time.Hour))
+			_, _ = st.Watermark("o", "r")
+			_, _ = st.RunsNeedingJobs("o", "r", base.Add(-time.Hour), base.Add(100*time.Hour))
+			_, _ = st.OldestRun("o", "r")
+		}()
+	}
+
+	wg.Wait()
+
+	got, err := st.LoadRuns("o", "r", base.Add(-time.Hour), base.Add(100*time.Hour))
+	require.NoError(t, err)
+	require.Len(t, got, writers, "all writes should be visible after concurrent access")
 }

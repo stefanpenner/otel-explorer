@@ -14,6 +14,7 @@ import (
 
 	"github.com/stefanpenner/otel-explorer/pkg/githubapi"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func makeRunData(conclusion string, durationMs int64, createdAt time.Time, jobs []JobData) RunData {
@@ -129,6 +130,32 @@ func TestGenerateSuccessRateTrend(t *testing.T) {
 		assert.Equal(t, 50.0, points[0].Value)
 		assert.Equal(t, 2, points[0].Count)
 	})
+}
+
+func TestDayBucketingIsTimezoneIndependent(t *testing.T) {
+	t.Parallel()
+
+	// 2026-01-02 00:30 UTC is Jan 2 in UTC, but Jan 1 in UTC-5 (EST).
+	// Bucketing must use UTC so the same instant always maps to the same day.
+	utcTime := time.Date(2026, 1, 2, 0, 30, 0, 0, time.UTC)
+
+	// Same instant expressed in EST (UTC-5): locally 2026-01-01 19:30.
+	est := time.FixedZone("EST", -5*3600)
+	estTime := utcTime.In(est)
+
+	runs := []RunData{
+		{CreatedAt: utcTime, Duration: 60000, Conclusion: "success", Status: "completed"},
+		{CreatedAt: estTime, Duration: 120000, Conclusion: "failure", Status: "completed"},
+	}
+
+	// Both runs represent the same UTC instant → must land in one bucket.
+	durationPoints := generateDurationTrend(runs)
+	assert.Len(t, durationPoints, 1, "same-utc-instant runs must merge into one bucket")
+	assert.Equal(t, "2026-01-02", durationPoints[0].Timestamp.Format("2006-01-02"))
+
+	srPoints := generateSuccessRateTrend(runs)
+	assert.Len(t, srPoints, 1, "same-utc-instant runs must merge into one bucket")
+	assert.Equal(t, "2026-01-02", srPoints[0].Timestamp.Format("2006-01-02"))
 }
 
 func TestDetectFlakyJobs(t *testing.T) {
@@ -1667,6 +1694,88 @@ func TestAnalyzeTrendsFromRuns(t *testing.T) {
 		assert.Equal(t, "CI", analysis.Typical.Workflows[0].Name)
 		assert.Len(t, analysis.Typical.Workflows[0].Jobs, 1)
 	}
+}
+
+func TestAnalyzeTrendsFromRuns_JobsFetchedReflectsJobPresence(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	// 4 completed runs: 2 with job detail, 2 without (e.g., partial store).
+	// JobsFetched should be true only for runs with job data so that
+	// facet extrapolation correctly scales sampled counts to population.
+	runs := []RunData{
+		{ID: 1, WorkflowName: "ci", Branch: "main", Event: "push",
+			Status: "completed", Conclusion: "success", CreatedAt: base, Duration: 60000,
+			Jobs: []JobData{{Name: "build", Duration: 60000, Conclusion: "success", Labels: []string{"ubuntu"}}}},
+		{ID: 2, WorkflowName: "ci", Branch: "main", Event: "push",
+			Status: "completed", Conclusion: "success", CreatedAt: base.Add(time.Hour), Duration: 60000,
+			Jobs: []JobData{{Name: "build", Duration: 60000, Conclusion: "success", Labels: []string{"ubuntu"}}}},
+		{ID: 3, WorkflowName: "ci", Branch: "main", Event: "push",
+			Status: "completed", Conclusion: "success", CreatedAt: base.Add(2 * time.Hour), Duration: 60000},
+		{ID: 4, WorkflowName: "ci", Branch: "main", Event: "push",
+			Status: "completed", Conclusion: "success", CreatedAt: base.Add(3 * time.Hour), Duration: 60000},
+	}
+
+	result := AnalyzeTrendsFromRuns("o", "r", 7, runs)
+	require.NotNil(t, result)
+
+	// SampleSize counts only runs that have actual job data.
+	assert.Equal(t, 2, result.Sampling.SampleSize,
+		"SampleSize should count only runs with jobs, not all completed runs")
+	assert.Equal(t, 4, result.Sampling.TotalRuns)
+
+	// Verify facet extrapolation is correct: 2 of 4 runs fetched,
+	// so weight = 4/2 = 2; 2 ubuntu observations extrapolate to 4.
+	processed := make([]RunData, 0, len(runs))
+	for _, r := range runs {
+		if r.Status == "completed" {
+			r.JobsFetched = len(r.Jobs) > 0
+			processed = append(processed, r)
+		}
+	}
+	c := computeFacets(processed, []FacetDimension{FacetRunner}, "main")
+	require.NotNil(t, c)
+	row := rowByKeys(t, c, "ubuntu")
+	assert.Equal(t, 4, row.Count,
+		"2 observed × (4 total / 2 fetched) = 4; if JobsFetched were true for all, count would be 2")
+}
+
+func TestAnalyzeTrendsFromRuns_JobsFetchedTrueWhenJobsPresent(t *testing.T) {
+	t.Parallel()
+
+	// A run with jobs should have JobsFetched = true after AnalyzeTrendsFromRuns.
+	run := RunData{
+		ID: 1, WorkflowName: "ci", Status: "completed", Conclusion: "success",
+		CreatedAt: time.Now(), Duration: 60000,
+		Jobs: []JobData{{Name: "build", Duration: 60000, Conclusion: "success"}},
+	}
+	result := AnalyzeTrendsFromRuns("o", "r", 1, []RunData{run})
+	require.NotNil(t, result)
+	assert.Equal(t, 1, result.Sampling.SampleSize)
+}
+
+func TestAnalyzeTrendsFromRuns_JobsFetchedFalseWhenNoJobs(t *testing.T) {
+	t.Parallel()
+
+	// A run without jobs should have JobsFetched = false (its zero value).
+	// The analysis should still succeed — the run contributes to run-level
+	// stats but not to job-level stats.
+	run := RunData{
+		ID: 1, WorkflowName: "ci", Status: "completed", Conclusion: "success",
+		CreatedAt: time.Now(), Duration: 60000,
+	}
+	// Avoid "no completed workflow runs" error by including a run with jobs.
+	runs := []RunData{
+		run,
+		{ID: 2, WorkflowName: "ci", Status: "completed", Conclusion: "success",
+			CreatedAt: time.Now().Add(time.Hour), Duration: 60000,
+			Jobs: []JobData{{Name: "build", Duration: 60000, Conclusion: "success"}}},
+	}
+	result := AnalyzeTrendsFromRuns("o", "r", 1, runs)
+	require.NotNil(t, result)
+	// SampleSize counts runs with job data only.
+	assert.Equal(t, 1, result.Sampling.SampleSize)
+	assert.Equal(t, 2, result.Sampling.TotalRuns)
 }
 
 func TestDetectFlakyJobs_SameSHAAndTransitions(t *testing.T) {

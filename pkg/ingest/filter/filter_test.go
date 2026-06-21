@@ -3,8 +3,10 @@ package filter
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -171,9 +173,75 @@ func TestApply_NilFilter(t *testing.T) {
 
 func TestApply_EmptyFilter(t *testing.T) {
 	f := &Filter{}
-	// Empty filter should pass everything through
 	result := f.Apply(nil)
 	if result != nil {
 		t.Error("expected nil from empty filter on nil input")
+	}
+}
+
+func TestMatches_SpanAttrsTakePrecedenceOverResourceAttrs(t *testing.T) {
+	tests := []struct {
+		name           string
+		spanAttrs      []attribute.KeyValue
+		resourceAttrs  []attribute.KeyValue
+		filterExpr     string
+		expectMatch    bool
+	}{
+		{
+			name: "span attr wins over resource attr with same key",
+			spanAttrs: []attribute.KeyValue{
+				attribute.String("service.name", "span-service"),
+			},
+			resourceAttrs: []attribute.KeyValue{
+				attribute.String("service.name", "resource-service"),
+			},
+			filterExpr:  "service.name=span-service",
+			expectMatch: true,
+		},
+		{
+			name: "resource attr value does NOT match when span overrides it",
+			spanAttrs: []attribute.KeyValue{
+				attribute.String("service.name", "span-service"),
+			},
+			resourceAttrs: []attribute.KeyValue{
+				attribute.String("service.name", "resource-service"),
+			},
+			filterExpr:  "service.name=resource-service",
+			expectMatch: false,
+		},
+		{
+			name: "resource-only attr still available when no span override",
+			spanAttrs: []attribute.KeyValue{
+				attribute.String("service.name", "span-service"),
+			},
+			resourceAttrs: []attribute.KeyValue{
+				attribute.String("service.name", "resource-service"),
+				attribute.String("deployment.environment", "production"),
+			},
+			filterExpr:  "deployment.environment=production",
+			expectMatch: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f, err := Parse(tt.filterExpr)
+			assert.NoError(t, err)
+
+			var res *resource.Resource
+			if len(tt.resourceAttrs) > 0 {
+				res = resource.NewSchemaless(tt.resourceAttrs...)
+			}
+
+			span := tracetest.SpanStub{
+				Name:       "test-span",
+				Attributes: tt.spanAttrs,
+				Resource:   res,
+				Status:     sdktrace.Status{Code: codes.Unset},
+			}.Snapshot()
+
+			matched := f.matches(span)
+			assert.Equal(t, tt.expectMatch, matched)
+		})
 	}
 }

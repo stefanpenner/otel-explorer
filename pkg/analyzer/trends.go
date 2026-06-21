@@ -231,7 +231,7 @@ type RunDump struct {
 // When opts.NoSample is false (default), job detail fetching uses statistical
 // sampling to reduce API calls. Run-level metrics use all fetched runs.
 func AnalyzeTrends(ctx context.Context, client githubapi.GitHubProvider, owner, repo string, days int, branch, workflow string, opts TrendOptions, reporter ProgressReporter) (*TrendAnalysis, error) {
-	endTime := time.Now()
+	endTime := time.Now().UTC()
 	startTime := endTime.Add(-time.Duration(days) * 24 * time.Hour)
 
 	marginOfError := opts.MarginOfError
@@ -392,9 +392,11 @@ func AnalyzeTrendsFromRuns(owner, repo string, days int, runs []RunData) *TrendA
 	completed := make([]RunData, 0, len(runs))
 	for _, run := range runs {
 		if run.Status == "completed" {
-			// Store-backed runs carry exact job detail (ote sync fetches all
-			// jobs), so every run counts as fetched — no extrapolation.
-			run.JobsFetched = true
+// JobsFetched marks whether a run's job detail is available for
+		// faceting extrapolation. A run that genuinely has no jobs from the
+		// store still counts as fetched; only runs that were never synced
+		// or whose detail is missing should be false.
+			run.JobsFetched = len(run.Jobs) > 0
 			completed = append(completed, run)
 		}
 	}
@@ -413,7 +415,7 @@ func AnalyzeTrendsFromRuns(owner, repo string, days int, runs []RunData) *TrendA
 		Rationale: fmt.Sprintf("%s runs loaded from the local store (exact job detail for %d; run `ote sync` to refresh).",
 			formatCount(len(completed)), withJobs),
 	}
-	endTime := time.Now()
+	endTime := time.Now().UTC()
 	return analyzeRunData(owner, repo, completed, sampling,
 		TimeRange{Start: endTime.Add(-time.Duration(days) * 24 * time.Hour), End: endTime, Days: days})
 }
@@ -869,7 +871,7 @@ func generateDurationTrend(runs []RunData) []DataPoint {
 
 	for _, run := range runs {
 		if run.Duration > 0 {
-			dayKey := run.CreatedAt.Format("2006-01-02")
+			dayKey := run.CreatedAt.UTC().Format("2006-01-02")
 			durationSec := float64(run.Duration) / 1000.0
 			dayBuckets[dayKey] = append(dayBuckets[dayKey], durationSec)
 		}
@@ -898,7 +900,7 @@ func generateSuccessRateTrend(runs []RunData) []DataPoint {
 	dayBuckets := make(map[string]struct{ success, total int })
 
 	for _, run := range runs {
-		dayKey := run.CreatedAt.Format("2006-01-02")
+		dayKey := run.CreatedAt.UTC().Format("2006-01-02")
 		bucket := dayBuckets[dayKey]
 		bucket.total++
 		if run.Conclusion == "success" {

@@ -92,15 +92,13 @@ func (f *Filter) matches(s sdktrace.ReadOnlySpan) bool {
 	// attributes — e.g. http.status_code, http.response.status_code —
 	// stringify instead of collapsing to "" and never matching a glob.
 	attrs := make(map[string]string)
-	for _, a := range s.Attributes() {
-		attrs[string(a.Key)] = a.Value.Emit()
-	}
-
-	// Also check resource attributes
 	if s.Resource() != nil {
 		for _, a := range s.Resource().Attributes() {
 			attrs[string(a.Key)] = a.Value.Emit()
 		}
+	}
+	for _, a := range s.Attributes() {
+		attrs[string(a.Key)] = a.Value.Emit()
 	}
 
 	// Check span-level properties. The Go SDK renders status codes Go-style
