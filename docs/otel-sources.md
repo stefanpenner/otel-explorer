@@ -220,7 +220,10 @@ human-readable detail string for each — visible inline in the hero trace above
   chars), or `system: operation collection`. Both the stable v1.30+ names
   (`db.query.text`, `db.operation.name`, `db.collection.name`) and the older
   ones (`db.statement`, `db.operation`, `db.sql.table`) are recognized.
-- **RPC** (`rpc.system`): `grpc UserService/GetUser`. A logical downstream
+- **RPC** (`rpc.system`): `grpc UserService/GetUser`. A non-zero
+  `rpc.grpc.status_code` marks the span failed and names the status, e.g.
+  `grpc Cart/Get [UNAVAILABLE] ❌` — the only error signal for gRPC
+  instrumentations that leave `otel.status_code` unset. A logical downstream
   service (`service.peer.name`, or legacy `peer.service`) is appended as
   `→ payments` when not already shown as a host.
 - **Messaging** (`messaging.system`): `kafka answers (publish)` — operation

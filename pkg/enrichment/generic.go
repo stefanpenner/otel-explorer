@@ -6,6 +6,23 @@ import (
 	"strings"
 )
 
+// grpcStatusNames maps canonical gRPC status codes to their names.
+var grpcStatusNames = map[int]string{
+	1: "CANCELLED", 2: "UNKNOWN", 3: "INVALID_ARGUMENT", 4: "DEADLINE_EXCEEDED",
+	5: "NOT_FOUND", 6: "ALREADY_EXISTS", 7: "PERMISSION_DENIED", 8: "RESOURCE_EXHAUSTED",
+	9: "FAILED_PRECONDITION", 10: "ABORTED", 11: "OUT_OF_RANGE", 12: "UNIMPLEMENTED",
+	13: "INTERNAL", 14: "UNAVAILABLE", 15: "DATA_LOSS", 16: "UNAUTHENTICATED",
+}
+
+// grpcStatusName returns the canonical gRPC status name for a non-zero code,
+// falling back to "code N" for unknown codes.
+func grpcStatusName(code int) string {
+	if name, ok := grpcStatusNames[code]; ok {
+		return name
+	}
+	return fmt.Sprintf("code %d", code)
+}
+
 // GenericEnricher handles any OTel span that wasn't recognized by a more
 // specific enricher. It recognizes OTel semantic conventions for HTTP, database,
 // RPC, and messaging spans, and provides sensible defaults for everything else.
@@ -152,6 +169,21 @@ func (e *GenericEnricher) Enrich(name string, attrs map[string]string, isZeroDur
 					h.Detail = rpcSystem + " " + svc + "/" + method
 				} else {
 					h.Detail = rpcSystem + " " + svc
+				}
+			}
+			// gRPC status code: 0 is OK, any non-zero is a failure. The span's
+			// otel.status_code is often left unset, so this is the only error
+			// signal for many gRPC instrumentations.
+			if code, err := strconv.Atoi(attrs["rpc.grpc.status_code"]); err == nil {
+				if code == 0 {
+					if h.Outcome == "" {
+						h.Outcome = "success"
+						h.Color = "green"
+					}
+				} else {
+					h.Outcome = "failure"
+					h.Color = "red"
+					h.Detail += " [" + grpcStatusName(code) + "]"
 				}
 			}
 

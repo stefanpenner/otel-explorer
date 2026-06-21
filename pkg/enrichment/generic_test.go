@@ -118,6 +118,47 @@ func TestGenericEnricher_RPC(t *testing.T) {
 	}
 }
 
+func TestGenericEnricher_GRPCStatusError(t *testing.T) {
+	e := &GenericEnricher{}
+
+	attrs := map[string]string{
+		"rpc.system":           "grpc",
+		"rpc.service":          "Cart",
+		"rpc.method":           "Get",
+		"rpc.grpc.status_code": "5",
+	}
+	h := e.Enrich("grpc.Cart/Get", attrs, false)
+
+	if h.Outcome != "failure" {
+		t.Errorf("expected failure for non-zero gRPC status, got %q", h.Outcome)
+	}
+	if h.Color != "red" {
+		t.Errorf("expected red, got %q", h.Color)
+	}
+	if !strings.Contains(h.Detail, "NOT_FOUND") {
+		t.Errorf("expected NOT_FOUND in detail, got %q", h.Detail)
+	}
+}
+
+func TestGenericEnricher_GRPCStatusOK(t *testing.T) {
+	e := &GenericEnricher{}
+
+	attrs := map[string]string{
+		"rpc.system":           "grpc",
+		"rpc.service":          "Cart",
+		"rpc.method":           "Get",
+		"rpc.grpc.status_code": "0",
+	}
+	h := e.Enrich("grpc.Cart/Get", attrs, false)
+
+	if h.Outcome != "success" {
+		t.Errorf("expected success for status 0, got %q", h.Outcome)
+	}
+	if strings.Contains(h.Detail, "[") {
+		t.Errorf("expected no status suffix for OK, got %q", h.Detail)
+	}
+}
+
 func TestGenericEnricher_Messaging(t *testing.T) {
 	e := &GenericEnricher{}
 
