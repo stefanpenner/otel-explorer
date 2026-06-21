@@ -54,6 +54,9 @@ func (m Model) header() string {
 	if d.NumChanged > 0 {
 		parts = append(parts, warnStyle.Render(fmt.Sprintf("~%d", d.NumChanged)))
 	}
+	if d.NumRenamed > 0 {
+		parts = append(parts, headStyle.Render(fmt.Sprintf("R%d", d.NumRenamed)))
+	}
 	if f := len(d.StatusFlips()); f > 0 {
 		parts = append(parts, badStyle.Render(fmt.Sprintf("%d flip%s", f, plural(f))))
 	}
@@ -99,7 +102,7 @@ func (m Model) renderRow(row analyzer.FlatDiffNode, selected bool) string {
 	marker, mstyle := marker(n)
 	indent := strings.Repeat("  ", row.Depth)
 
-	left := mstyle.Render(marker) + " " + indent + n.Name
+	left := mstyle.Render(marker) + " " + indent + displayName(n)
 	right := rowTiming(n)
 	if n.StatusChanged() {
 		_, st := statusStyle(n.OutcomeAfter)
@@ -169,7 +172,7 @@ func (m Model) detailLine() string {
 		if n.StatusChanged() {
 			detail += fmt.Sprintf("  %s → %s", n.OutcomeBefore, n.OutcomeAfter)
 		}
-		return whiteStyle.Render(n.Name) + dimStyle.Render(detail)
+		return whiteStyle.Render(displayName(n)) + dimStyle.Render(detail)
 	}
 }
 
@@ -186,9 +189,19 @@ func marker(n *analyzer.DiffNode) (string, lipgloss.Style) {
 			return "~", okStyle
 		}
 		return "~", badStyle
+	case analyzer.Renamed:
+		return "R", headStyle
 	default:
 		return " ", dimStyle
 	}
+}
+
+// displayName shows "old → new" for a rename, else the plain name.
+func displayName(n *analyzer.DiffNode) string {
+	if n.Kind == analyzer.Renamed && n.OldName != "" && n.OldName != n.Name {
+		return n.OldName + " → " + n.Name
+	}
+	return n.Name
 }
 
 func rowTiming(n *analyzer.DiffNode) string {

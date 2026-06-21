@@ -61,6 +61,9 @@ func renderDiffSummary(w io.Writer, d *analyzer.TraceDiff) {
 	if d.NumChanged > 0 {
 		parts = append(parts, fmt.Sprintf("%d changed", d.NumChanged))
 	}
+	if d.NumRenamed > 0 {
+		parts = append(parts, fmt.Sprintf("%d renamed", d.NumRenamed))
+	}
 	if flips := len(d.StatusFlips()); flips > 0 {
 		parts = append(parts, failureStyle.Render(fmt.Sprintf("%d status flip%s", flips, plural(flips))))
 	}
@@ -98,7 +101,7 @@ func renderTopMovers(w io.Writer, d *analyzer.TraceDiff) {
 	for _, m := range movers {
 		n := m.DiffNode
 		marker, mstyle := diffMarker(n)
-		styled, plain := n.Name, n.Name
+		styled, plain := diffDisplayName(n), diffDisplayName(n)
 		switch {
 		case m.SelfOnly:
 			styled += dimStyle.Render(" (own time)")
@@ -121,12 +124,12 @@ func renderDiffTree(w io.Writer, d *analyzer.TraceDiff) {
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "  %s %s\n", subheaderStyle.Render("Tree"),
-		dimStyle.Render("(- removed  + added  ~ changed)"))
+		dimStyle.Render("(- removed  + added  ~ changed  R renamed)"))
 	for _, row := range rows {
 		n := row.Node
 		marker, mstyle := diffMarker(n)
 		indent := strings.Repeat("  ", row.Depth)
-		name := indent + n.Name
+		name := indent + diffDisplayName(n)
 		timing := nodeTiming(n)
 		status := ""
 		if n.StatusChanged() {
@@ -190,9 +193,20 @@ func diffMarker(n *analyzer.DiffNode) (string, lipgloss.Style) {
 			return "~", successStyle
 		}
 		return "~", failureStyle
+	case analyzer.Renamed:
+		return "R", labelStyle
 	default:
 		return " ", dimStyle
 	}
+}
+
+// diffDisplayName renders a node's name, showing "old → new" for a rename so
+// the relabel (e.g. a matrix dimension bump) is visible at a glance.
+func diffDisplayName(n *analyzer.DiffNode) string {
+	if n.Kind == analyzer.Renamed && n.OldName != "" && n.OldName != n.Name {
+		return n.OldName + " → " + n.Name
+	}
+	return n.Name
 }
 
 // deltaStyle colours a duration delta: slower is red, faster is green.

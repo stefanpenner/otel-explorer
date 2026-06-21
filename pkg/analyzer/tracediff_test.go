@@ -199,14 +199,21 @@ func TestDiffMatrixJobShift(t *testing.T) {
 
 	d := DiffTraces(before, after)
 
-	if n := find(d.Roots, "test (ruby 3.2)"); kindOf(n) != Removed {
-		t.Errorf("ruby 3.2 kind = %v, want Removed", kindOf(n))
+	// The near-identical names collapse 3.2 → 3.4 into a single rename (git -M),
+	// rather than a separate add + remove; 3.3 matches exactly and is unchanged.
+	if n := find(d.Roots, "test (ruby 3.4)"); kindOf(n) != Renamed {
+		t.Errorf("ruby 3.4 kind = %v, want Renamed", kindOf(n))
+	} else if n.OldName != "test (ruby 3.2)" {
+		t.Errorf("ruby 3.4 OldName = %q, want %q", n.OldName, "test (ruby 3.2)")
 	}
-	if n := find(d.Roots, "test (ruby 3.4)"); kindOf(n) != Added {
-		t.Errorf("ruby 3.4 kind = %v, want Added", kindOf(n))
+	if n := find(d.Roots, "test (ruby 3.2)"); n != nil {
+		t.Errorf("ruby 3.2 should be collapsed into the rename, got separate %v", kindOf(n))
 	}
 	if n := find(d.Roots, "test (ruby 3.3)"); kindOf(n) != Unchanged {
 		t.Errorf("ruby 3.3 kind = %v, want Unchanged", kindOf(n))
+	}
+	if d.NumRenamed != 1 || d.NumAdded != 0 || d.NumRemoved != 0 {
+		t.Errorf("counts: renamed=%d added=%d removed=%d, want 1/0/0", d.NumRenamed, d.NumAdded, d.NumRemoved)
 	}
 }
 

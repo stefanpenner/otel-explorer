@@ -40,6 +40,9 @@ func RenderTraceDiffMarkdown(w io.Writer, d *analyzer.TraceDiff, beforeLabel, af
 	if d.NumChanged > 0 {
 		counts = append(counts, fmt.Sprintf("%d changed", d.NumChanged))
 	}
+	if d.NumRenamed > 0 {
+		counts = append(counts, fmt.Sprintf("%d renamed", d.NumRenamed))
+	}
 	if f := len(d.StatusFlips()); f > 0 {
 		counts = append(counts, fmt.Sprintf("%d status flip%s", f, plural(f)))
 	}
@@ -64,7 +67,7 @@ func RenderTraceDiffMarkdown(w io.Writer, d *analyzer.TraceDiff, beforeLabel, af
 		fmt.Fprintln(w, "|---|---|---|---|")
 		for _, m := range movers {
 			n := m.DiffNode
-			name, delta, rng := n.Name, markdownDelta(n), markdownRange(n)
+			name, delta, rng := diffDisplayName(n), markdownDelta(n), markdownRange(n)
 			switch {
 			case m.SelfOnly:
 				name += " (own time)"
@@ -88,7 +91,7 @@ func RenderTraceDiffMarkdown(w io.Writer, d *analyzer.TraceDiff, beforeLabel, af
 			status = fmt.Sprintf("   [%s → %s]", n.OutcomeBefore, n.OutcomeAfter)
 		}
 		fmt.Fprintf(w, "%s %s%s   %s%s\n",
-			markdownMarker(n), indent, n.Name, markdownRange(n), status)
+			markdownMarker(n), indent, diffDisplayName(n), markdownRange(n), status)
 	}
 	fmt.Fprintln(w, "```")
 }
@@ -110,6 +113,8 @@ func markdownMarker(n *analyzer.DiffNode) string {
 		return "-"
 	case analyzer.Changed:
 		return "~"
+	case analyzer.Renamed:
+		return "R"
 	default:
 		return " "
 	}
@@ -160,6 +165,7 @@ type jsonDiffSummary struct {
 	Added       int `json:"added"`
 	Removed     int `json:"removed"`
 	Changed     int `json:"changed"`
+	Renamed     int `json:"renamed"`
 	StatusFlips int `json:"status_flips"`
 }
 
@@ -172,6 +178,8 @@ type jsonFlip struct {
 
 type jsonMover struct {
 	Name string `json:"name"`
+	// OldName: the prior name when this mover is a rename match; empty otherwise.
+	OldName string `json:"old_name,omitempty"`
 	// SelfOnly: the attributed change is in this node's own scheduling/overhead
 	// rather than its whole subtree; AttributedSec is then the self-time delta.
 	SelfOnly      bool    `json:"self_only,omitempty"`
@@ -187,6 +195,7 @@ type jsonMover struct {
 
 type jsonDiffNode struct {
 	Name          string         `json:"name"`
+	OldName       string         `json:"old_name,omitempty"`
 	Category      string         `json:"category"`
 	Kind          string         `json:"kind"`
 	BeforeSec     float64        `json:"before_sec"`
@@ -214,6 +223,7 @@ func RenderTraceDiffJSON(w io.Writer, d *analyzer.TraceDiff, beforeLabel, afterL
 			Added:       d.NumAdded,
 			Removed:     d.NumRemoved,
 			Changed:     d.NumChanged,
+			Renamed:     d.NumRenamed,
 			StatusFlips: len(d.StatusFlips()),
 		},
 		StatusFlips: []jsonFlip{},
@@ -232,7 +242,7 @@ func RenderTraceDiffJSON(w io.Writer, d *analyzer.TraceDiff, beforeLabel, afterL
 			parent = ""
 		}
 		out.TopMovers = append(out.TopMovers, jsonMover{
-			Name: n.Name, SelfOnly: m.SelfOnly, Parent: parent, Category: n.Category, Kind: n.Kind.String(),
+			Name: n.Name, OldName: n.OldName, SelfOnly: m.SelfOnly, Parent: parent, Category: n.Category, Kind: n.Kind.String(),
 			BeforeSec: n.DurBefore.Seconds(), AfterSec: n.DurAfter.Seconds(),
 			DeltaSec: n.DurDelta.Seconds(), DeltaPct: pct(n.DurDelta, n.DurBefore),
 			AttributedSec: m.Delta.Seconds(),
@@ -249,7 +259,7 @@ func RenderTraceDiffJSON(w io.Writer, d *analyzer.TraceDiff, beforeLabel, afterL
 
 func toJSONNode(n *analyzer.DiffNode) jsonDiffNode {
 	j := jsonDiffNode{
-		Name: n.Name, Category: n.Category, Kind: n.Kind.String(),
+		Name: n.Name, OldName: n.OldName, Category: n.Category, Kind: n.Kind.String(),
 		BeforeSec: n.DurBefore.Seconds(), AfterSec: n.DurAfter.Seconds(),
 		DeltaSec: n.DurDelta.Seconds(), DeltaPct: pct(n.DurDelta, n.DurBefore),
 		OutcomeBefore: n.OutcomeBefore, OutcomeAfter: n.OutcomeAfter,

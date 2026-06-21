@@ -186,3 +186,68 @@ func treeSection(out string) string {
 	}
 	return ""
 }
+
+// renameMatrixJob builds a job with identical child steps so two variants are
+// detected as a rename rather than add+remove.
+func renameMatrixJob(name string, dur time.Duration) *analyzer.TreeNode {
+	return tn(name, "job", "success", dur,
+		tn("Checkout", "step", "success", 10*time.Second),
+		tn("Run specs", "step", "success", dur-10*time.Second))
+}
+
+func TestRenderTraceDiffRename(t *testing.T) {
+	before := []*analyzer.TreeNode{
+		tn("CI", "workflow", "success", 8*time.Minute, renameMatrixJob("test (ruby 3.2)", 8*time.Minute)),
+	}
+	after := []*analyzer.TreeNode{
+		tn("CI", "workflow", "success", 8*time.Minute, renameMatrixJob("test (ruby 3.4)", 8*time.Minute)),
+	}
+	d := analyzer.DiffTraces(before, after)
+	if d.NumRenamed != 1 {
+		t.Fatalf("NumRenamed=%d, want 1", d.NumRenamed)
+	}
+
+	// Styled: shows the rename with old → new and the summary count.
+	styled := renderToString(d, "a", "b")
+	if !strings.Contains(styled, "test (ruby 3.2) → test (ruby 3.4)") {
+		t.Errorf("styled output missing rename arrow:\n%s", styled)
+	}
+	if !strings.Contains(styled, "1 renamed") {
+		t.Errorf("styled summary missing '1 renamed':\n%s", styled)
+	}
+
+	// Markdown: counts renamed and shows the arrow.
+	var md bytes.Buffer
+	RenderTraceDiffMarkdown(&md, d, "a", "b")
+	if !strings.Contains(md.String(), "renamed") || !strings.Contains(md.String(), "test (ruby 3.2) → test (ruby 3.4)") {
+		t.Errorf("markdown missing rename:\n%s", md.String())
+	}
+
+	// JSON: summary.renamed and the tree node's old_name + kind.
+	var jb bytes.Buffer
+	if err := RenderTraceDiffJSON(&jb, d, "a", "b"); err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		Summary struct {
+			Renamed int `json:"renamed"`
+		} `json:"summary"`
+		Tree []struct {
+			Children []struct {
+				Kind    string `json:"kind"`
+				Name    string `json:"name"`
+				OldName string `json:"old_name"`
+			} `json:"children"`
+		} `json:"tree"`
+	}
+	if err := json.Unmarshal(jb.Bytes(), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Summary.Renamed != 1 {
+		t.Errorf("json summary.renamed=%d, want 1", parsed.Summary.Renamed)
+	}
+	job := parsed.Tree[0].Children[0]
+	if job.Kind != "renamed" || job.OldName != "test (ruby 3.2)" || job.Name != "test (ruby 3.4)" {
+		t.Errorf("json job = %+v, want kind=renamed old=3.2 new=3.4", job)
+	}
+}

@@ -21,6 +21,13 @@ const (
 	// Changed: present in both, but its duration or status moved materially,
 	// or a descendant changed.
 	Changed
+	// Renamed: a "before" node and an "after" node that didn't match by name
+	// but are similar enough (shared child structure and/or near-identical
+	// name) to be the same logical job/step relabeled — e.g. a matrix
+	// dimension bump test (ruby 3.2) → test (ruby 3.4). The pair is collapsed
+	// into one node (git diff -M) instead of a separate add + remove, and its
+	// children are still diffed so an inner regression surfaces.
+	Renamed
 )
 
 func (k ChangeKind) String() string {
@@ -31,6 +38,8 @@ func (k ChangeKind) String() string {
 		return "removed"
 	case Changed:
 		return "changed"
+	case Renamed:
+		return "renamed"
 	default:
 		return "unchanged"
 	}
@@ -62,6 +71,10 @@ type DiffNode struct {
 
 	Before *TreeNode // nil when Added
 	After  *TreeNode // nil when Removed
+
+	// OldName is the "before" name when this node is a Renamed match; empty
+	// otherwise. Name always holds the current ("after") name.
+	OldName string
 
 	Children []*DiffNode
 
@@ -122,6 +135,7 @@ type TraceDiff struct {
 	NumAdded   int // count of added subtrees (a new job counts once, not per step)
 	NumRemoved int
 	NumChanged int // count of nodes whose own duration/status moved
+	NumRenamed int // count of rename-collapsed pairs
 
 	opts DiffOptions
 }
@@ -147,6 +161,7 @@ func DiffTracesWithOptions(before, after []*TreeNode, opts DiffOptions) *TraceDi
 		NumAdded:   b.numAdded,
 		NumRemoved: b.numRemoved,
 		NumChanged: b.numChanged,
+		NumRenamed: b.numRenamed,
 		opts:       opts,
 	}
 }
@@ -156,6 +171,7 @@ type diffBuilder struct {
 	numAdded   int
 	numRemoved int
 	numChanged int
+	numRenamed int
 }
 
 // diffLevel matches one level of siblings between two forests and recurses.
@@ -176,25 +192,88 @@ func (b *diffBuilder) diffLevel(before, after []*TreeNode) []*DiffNode {
 	}
 	matchedBefore := make(map[string]bool, len(before))
 
-	var out []*DiffNode
+	// Pass 1: exact key matches, in "after" order. Unmatched "after" nodes get
+	// a placeholder slot so renames (resolved next) keep their position.
+	out := make([]*DiffNode, 0, len(after)+len(before))
+	type addedSlot struct {
+		idx int
+		an  *TreeNode
+	}
+	var addedSlots []addedSlot
 	for i, an := range after {
 		key := afterKeys[i]
 		if bn, ok := beforeByKey[key]; ok {
 			matchedBefore[key] = true
 			out = append(out, b.matched(bn, an))
 		} else {
-			b.numAdded++
-			out = append(out, buildSubtree(an, Added))
+			addedSlots = append(addedSlots, addedSlot{idx: len(out), an: an})
+			out = append(out, nil) // filled after rename detection
 		}
 	}
+
+	var unmatchedBefore []*TreeNode
 	for i, bn := range before {
-		if matchedBefore[beforeKeys[i]] {
+		if !matchedBefore[beforeKeys[i]] {
+			unmatchedBefore = append(unmatchedBefore, bn)
+		}
+	}
+
+	// Pass 2: rename detection over the leftovers — pair an unmatched "before"
+	// with an unmatched "after" by similarity (git diff -M), best score first.
+	renamedFor := make(map[*TreeNode]*TreeNode) // after node -> its before match
+	renamedBefore := make(map[*TreeNode]bool)
+	if len(unmatchedBefore) > 0 && len(addedSlots) > 0 {
+		unmatchedAfter := make([]*TreeNode, len(addedSlots))
+		for i, s := range addedSlots {
+			unmatchedAfter[i] = s.an
+		}
+		for _, p := range detectRenames(unmatchedBefore, unmatchedAfter) {
+			renamedFor[p.after] = p.before
+			renamedBefore[p.before] = true
+		}
+	}
+
+	// Fill the placeholder slots: a rename if paired, else a plain addition.
+	for _, s := range addedSlots {
+		if bn, ok := renamedFor[s.an]; ok {
+			out[s.idx] = b.renamed(bn, s.an)
+		} else {
+			b.numAdded++
+			out[s.idx] = buildSubtree(s.an, Added)
+		}
+	}
+
+	// Removals not consumed by a rename, in "before" order, at the tail.
+	for i, bn := range before {
+		if matchedBefore[beforeKeys[i]] || renamedBefore[bn] {
 			continue
 		}
 		b.numRemoved++
 		out = append(out, buildSubtree(bn, Removed))
 	}
 	return out
+}
+
+// renamed builds a diff node for a rename-collapsed pair: like matched, but it
+// records the old name and is always classified Renamed (the relabel is itself
+// the change), while still diffing children so an inner regression shows.
+func (b *diffBuilder) renamed(bn, an *TreeNode) *DiffNode {
+	d := &DiffNode{
+		Kind:          Renamed,
+		Name:          an.Name,
+		OldName:       bn.Name,
+		Category:      an.Hints.Category,
+		Before:        bn,
+		After:         an,
+		DurBefore:     bn.Duration(),
+		DurAfter:      an.Duration(),
+		OutcomeBefore: bn.Hints.Outcome,
+		OutcomeAfter:  an.Hints.Outcome,
+	}
+	d.DurDelta = d.DurAfter - d.DurBefore
+	d.Children = b.diffLevel(bn.Children, an.Children)
+	b.numRenamed++
+	return d
 }
 
 func (b *diffBuilder) matched(bn, an *TreeNode) *DiffNode {
@@ -286,6 +365,135 @@ func siblingKeys(nodes []*TreeNode) []string {
 	return keys
 }
 
+// renameThreshold is the minimum similarity for two unmatched siblings to be
+// collapsed into a rename (mirrors git's default -M50% rename threshold). Below
+// it, the pair stays a separate add + remove so spurious renames aren't faked.
+const renameThreshold = 0.5
+
+type renamePair struct {
+	before, after *TreeNode
+}
+
+// detectRenames pairs unmatched "before" nodes with unmatched "after" nodes by
+// similarity, greedily highest-score-first with each node used at most once
+// (the stable-marriage-lite git uses for rename detection). Only same-category
+// pairs are considered, so a step is never matched to a job.
+func detectRenames(before, after []*TreeNode) []renamePair {
+	type cand struct {
+		bi, ai int
+		score  float64
+	}
+	var cands []cand
+	for bi, bn := range before {
+		for ai, an := range after {
+			if bn.Hints.Category != an.Hints.Category {
+				continue
+			}
+			if s := renameSimilarity(bn, an); s >= renameThreshold {
+				cands = append(cands, cand{bi, ai, s})
+			}
+		}
+	}
+	// Highest score first; ties broken by position for determinism.
+	sort.SliceStable(cands, func(i, j int) bool {
+		if cands[i].score != cands[j].score {
+			return cands[i].score > cands[j].score
+		}
+		if cands[i].bi != cands[j].bi {
+			return cands[i].bi < cands[j].bi
+		}
+		return cands[i].ai < cands[j].ai
+	})
+
+	usedB := make(map[int]bool)
+	usedA := make(map[int]bool)
+	var pairs []renamePair
+	for _, c := range cands {
+		if usedB[c.bi] || usedA[c.ai] {
+			continue
+		}
+		usedB[c.bi] = true
+		usedA[c.ai] = true
+		pairs = append(pairs, renamePair{before: before[c.bi], after: after[c.ai]})
+	}
+	return pairs
+}
+
+// renameSimilarity scores how likely two nodes are the same logical unit
+// relabeled, in [0,1]. Parents are judged mostly on child structure (the
+// "content", like git) with name as a tiebreaker; leaves have no children so
+// they rely entirely on name similarity.
+func renameSimilarity(bn, an *TreeNode) float64 {
+	if len(bn.Children) == 0 && len(an.Children) == 0 {
+		return nameSimilarity(bn.Name, an.Name)
+	}
+	return 0.7*childSetSimilarity(bn, an) + 0.3*nameSimilarity(bn.Name, an.Name)
+}
+
+// childSetSimilarity is the Jaccard overlap of the two nodes' direct child keys
+// (category+name multiset). A matrix variant keeps the same steps, so this is
+// ~1.0 for a relabel and low for structurally different jobs.
+func childSetSimilarity(bn, an *TreeNode) float64 {
+	if len(bn.Children) == 0 && len(an.Children) == 0 {
+		return 0
+	}
+	bcount := make(map[string]int)
+	for _, c := range bn.Children {
+		bcount[c.Hints.Category+"\x00"+c.Name]++
+	}
+	inter := 0
+	for _, c := range an.Children {
+		k := c.Hints.Category + "\x00" + c.Name
+		if bcount[k] > 0 {
+			bcount[k]--
+			inter++
+		}
+	}
+	union := len(bn.Children) + len(an.Children) - inter
+	if union == 0 {
+		return 0
+	}
+	return float64(inter) / float64(union)
+}
+
+// nameSimilarity is the Sørensen–Dice coefficient over character bigrams, in
+// [0,1]. It rates near-identical names (a matrix dimension bump) very high and
+// unrelated names near zero, while tolerating the small edit a relabel makes.
+func nameSimilarity(a, b string) float64 {
+	if a == b {
+		return 1
+	}
+	ba, bb := bigrams(a), bigrams(b)
+	if len(ba) == 0 || len(bb) == 0 {
+		return 0
+	}
+	counts := make(map[string]int, len(ba))
+	for _, g := range ba {
+		counts[g]++
+	}
+	inter := 0
+	for _, g := range bb {
+		if counts[g] > 0 {
+			counts[g]--
+			inter++
+		}
+	}
+	return 2 * float64(inter) / float64(len(ba)+len(bb))
+}
+
+// bigrams returns the adjacent character pairs of s (over runes).
+func bigrams(s string) []string {
+	r := []rune(s)
+	if len(r) < 2 {
+		return nil
+	}
+	out := make([]string, 0, len(r)-1)
+	for i := 0; i+1 < len(r); i++ {
+		out = append(out, string(r[i:i+2]))
+	}
+	return out
+}
+
 // FlatDiffNode is a diff node paired with its depth in the tree, for flat
 // (row-oriented) rendering.
 type FlatDiffNode struct {
@@ -316,7 +524,7 @@ func (t *TraceDiff) Flatten(hideUnchanged bool) []FlatDiffNode {
 
 // HasChanges reports whether the two traces differ at all.
 func (t *TraceDiff) HasChanges() bool {
-	return t.NumAdded > 0 || t.NumRemoved > 0 || t.NumChanged > 0
+	return t.NumAdded > 0 || t.NumRemoved > 0 || t.NumChanged > 0 || t.NumRenamed > 0
 }
 
 // StatusFlips returns every node that changed pass/fail/skip status, in
@@ -371,7 +579,7 @@ func (t *TraceDiff) TopMovers(n int) []Mover {
 				movers = append(movers, Mover{DiffNode: d, Delta: d.DurAfter})
 			case Removed:
 				movers = append(movers, Mover{DiffNode: d, Delta: -d.DurBefore})
-			case Changed:
+			case Changed, Renamed:
 				if len(d.Children) == 0 || !anyChildChanged(d.Children) {
 					// Movers are about wall clock; a node that changed only in
 					// status (no material duration delta) is reported in the
