@@ -14,9 +14,15 @@ go_library(
 
 go_test(
     name = "filter_test",
-    srcs = ["filter_test.go"],
+    srcs = [
+        "apply_fuzz_test.go",
+        "filter_fuzz_test.go",
+        "filter_test.go",
+    ],
     embed = [":filter"],
     deps = [
+        "//pkg/ingest/otlpfile",
+        "//pkg/utils",
         "@io_opentelemetry_go_otel//attribute",
         "@io_opentelemetry_go_otel//codes",
         "@io_opentelemetry_go_otel_sdk//trace",

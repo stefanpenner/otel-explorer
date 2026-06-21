@@ -25,6 +25,7 @@ go_test(
         "cache_test.go",
         "client_test.go",
         "ids_test.go",
+        "logs_fuzz_test.go",
         "logs_test.go",
         "otel_test.go",
         "stats_test.go",

@@ -21,10 +21,13 @@ go_test(
     srcs = [
         "export_test.go",
         "origin_test.go",
+        "perfetto_fuzz_test.go",
     ],
     embed = [":perfetto"],
     deps = [
         "//pkg/analyzer",
+        "//pkg/enrichment",
+        "//pkg/ingest/otlpfile",
         "@com_github_stretchr_testify//assert",
         "@com_github_stretchr_testify//require",
         "@io_opentelemetry_go_otel//attribute",

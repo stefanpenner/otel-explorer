@@ -31,6 +31,9 @@ go_library(
 go_test(
     name = "otlpfile_test",
     srcs = [
+        "determinism_fuzz_test.go",
+        "fuzz_subparsers_test.go",
+        "fuzz_test.go",
         "otlpfile_test.go",
         "zeroid_test.go",
     ],

@@ -31,7 +31,9 @@ go_test(
     name = "output_test",
     srcs = [
         "markdown_test.go",
+        "render_fuzz_test.go",
         "timeline_test.go",
+        "trends_render_fuzz_test.go",
         "trends_test.go",
         "typical_test.go",
     ],
@@ -39,6 +41,7 @@ go_test(
     deps = [
         "//pkg/analyzer",
         "//pkg/enrichment",
+        "//pkg/ingest/otlpfile",
         "//pkg/utils",
         "@com_github_charmbracelet_lipgloss//:lipgloss",
         "@com_github_stretchr_testify//assert",

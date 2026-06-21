@@ -30,6 +30,7 @@ go_test(
         "enricher_test.go",
         "exception_test.go",
         "featureflag_test.go",
+        "fuzz_test.go",
         "genai_test.go",
         "generic_test.go",
         "lint_test.go",

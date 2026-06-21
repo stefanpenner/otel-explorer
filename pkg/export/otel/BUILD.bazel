@@ -18,9 +18,13 @@ go_library(
 
 go_test(
     name = "otel_test",
-    srcs = ["otel_test.go"],
+    srcs = [
+        "otel_test.go",
+        "roundtrip_fuzz_test.go",
+    ],
     embed = [":otel"],
     deps = [
+        "//pkg/ingest/otlpfile",
         "@io_opentelemetry_go_otel//attribute",
         "@io_opentelemetry_go_otel_sdk//trace",
         "@io_opentelemetry_go_otel_sdk//trace/tracetest",

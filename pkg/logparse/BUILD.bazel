@@ -16,7 +16,10 @@ go_library(
 
 go_test(
     name = "logparse_test",
-    srcs = ["logparse_test.go"],
+    srcs = [
+        "fuzz_test.go",
+        "logparse_test.go",
+    ],
     embed = [":logparse"],
     deps = [
         "@com_github_stretchr_testify//assert",

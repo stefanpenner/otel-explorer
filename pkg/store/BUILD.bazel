@@ -18,8 +18,10 @@ go_library(
 go_test(
     name = "store_test",
     srcs = [
+        "roundtrip_fuzz_test.go",
         "store_test.go",
         "sync_test.go",
+        "upsert_merge_fuzz_test.go",
     ],
     embed = [":store"],
     deps = [
