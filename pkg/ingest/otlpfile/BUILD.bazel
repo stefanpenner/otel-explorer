@@ -30,7 +30,10 @@ go_library(
 
 go_test(
     name = "otlpfile_test",
-    srcs = ["otlpfile_test.go"],
+    srcs = [
+        "otlpfile_test.go",
+        "zeroid_test.go",
+    ],
     embed = [":otlpfile"],
     deps = [
         "@com_github_klauspost_compress//zstd",

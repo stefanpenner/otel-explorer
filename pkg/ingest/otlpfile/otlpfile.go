@@ -277,8 +277,21 @@ func convertToStub(raw stdoutSpan) (tracetest.SpanStub, error) {
 	}, nil
 }
 
+// isZeroOrEmptyID reports whether an ID string is absent — empty or all-zero
+// hex. The stdouttrace exporter writes a zero TraceID/SpanID as "00…00" while
+// other inputs omit it (""); both denote "no ID" and must be handled the same
+// so parse→emit→re-parse is idempotent.
+func isZeroOrEmptyID(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] != '0' {
+			return false
+		}
+	}
+	return true
+}
+
 func parseSpanContext(sc spanContextJSON) (trace.SpanContext, error) {
-	if sc.TraceID == "" && sc.SpanID == "" {
+	if isZeroOrEmptyID(sc.TraceID) && isZeroOrEmptyID(sc.SpanID) {
 		return trace.SpanContext{}, nil
 	}
 
