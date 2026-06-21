@@ -168,6 +168,26 @@ func BuildInspectorTree(item *TreeItem) []*InspectorNode {
 		sections = append(sections, s)
 	}
 
+	// Kubernetes — promote standard k8s.* resource attributes to a first-class
+	// section (they otherwise live buried in the generic Resource dump). This is
+	// where a job ran when the runner is deployed on K8s (e.g. via ARC).
+	if item.ResourceAttrs != nil {
+		k8s := &InspectorNode{Label: "Kubernetes", IsSection: true, Expanded: true}
+		for _, f := range []struct{ label, key string }{
+			{"Pod", "k8s.pod.name"},
+			{"Namespace", "k8s.namespace.name"},
+			{"Node", "k8s.node.name"},
+			{"Deployment", "k8s.deployment.name"},
+		} {
+			if v := item.ResourceAttrs[f.key]; v != "" {
+				k8s.Children = append(k8s.Children, &InspectorNode{Label: f.label, Value: v})
+			}
+		}
+		if len(k8s.Children) > 0 {
+			sections = append(sections, k8s)
+		}
+	}
+
 	// Instrumentation
 	if item.ScopeName != "" {
 		s := &InspectorNode{Label: "Instrumentation", IsSection: true, Expanded: false}
@@ -233,8 +253,14 @@ func BuildInspectorTree(item *TreeItem) []*InspectorNode {
 			Expanded:  false,
 		}
 		for i, link := range item.Links {
+			// A link to a controller's span (cicd.system.component=controller) is an
+			// upstream scheduler — e.g. ARC scheduling this job. Label it as such.
+			label := fmt.Sprintf("Link %d", i+1)
+			if comp := link.Attrs["cicd.system.component"]; comp != "" {
+				label = "Scheduled by " + comp
+			}
 			linkNode := &InspectorNode{
-				Label:    fmt.Sprintf("Link %d", i+1),
+				Label:    label,
 				Expanded: false,
 			}
 			linkNode.Children = append(linkNode.Children, &InspectorNode{Label: "Trace ID", Value: link.TraceID})

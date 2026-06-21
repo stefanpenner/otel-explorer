@@ -458,3 +458,44 @@ func TestBuildInspectorTree_WithTraceIdentity(t *testing.T) {
 		t.Errorf("expected 2 children (TraceID, SpanID), got %d", len(traceSection.Children))
 	}
 }
+
+// k8s.* resource attrs surface as a first-class "Kubernetes" section, and a span
+// link to a controller renders as "Scheduled by ..." (the ARC handoff).
+func TestInspector_KubernetesAndScheduledByLink(t *testing.T) {
+	item := &TreeItem{
+		ID:          "x",
+		DisplayName: "build",
+		ResourceAttrs: map[string]string{
+			"k8s.pod.name":       "runner-abc123",
+			"k8s.namespace.name": "actions",
+			"service.name":       "github-actions-runner",
+		},
+		Links: []analyzer.SpanLink{
+			{TraceID: "0af7651916cd43dd8448eb211c80319c", SpanID: "b7ad6b7169203331",
+				Attrs: map[string]string{"cicd.system.component": "controller"}},
+		},
+	}
+
+	var k8s, links *InspectorNode
+	for _, s := range BuildInspectorTree(item) {
+		switch {
+		case s.Label == "Kubernetes":
+			k8s = s
+		case len(s.Label) >= 10 && s.Label[:10] == "Span Links":
+			links = s
+		}
+	}
+
+	if k8s == nil {
+		t.Fatal("expected a Kubernetes section")
+	}
+	if k8s.Children[0].Label != "Pod" || k8s.Children[0].Value != "runner-abc123" {
+		t.Errorf("expected Pod=runner-abc123, got %+v", k8s.Children[0])
+	}
+	if links == nil || len(links.Children) == 0 {
+		t.Fatal("expected a Span Links section")
+	}
+	if links.Children[0].Label != "Scheduled by controller" {
+		t.Errorf("expected link labeled 'Scheduled by controller', got %q", links.Children[0].Label)
+	}
+}
