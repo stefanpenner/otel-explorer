@@ -7,10 +7,15 @@ import (
 	"github.com/stefanpenner/otel-explorer/pkg/enrichment"
 	"github.com/stefanpenner/otel-explorer/pkg/githubapi"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/instrumentation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// runnerScope marks a stub span as runner-emitted via the standard instrumentation
+// scope (the signal spanIsRunner keys on, replacing the old source attribute).
+var runnerScope = instrumentation.Scope{Name: "github.actions.runner"}
 
 // TestRunnerSpanDedup verifies that when the same step is present both from the
 // GitHub API reconstruction and natively from the runner (identical trace+span
@@ -47,17 +52,17 @@ func TestRunnerSpanDedup(t *testing.T) {
 			attribute.String("cicd.pipeline.task.name", stepName),
 		},
 	})
-	// Runner-native step: sub-second precision, source=runner.
+	// Runner-native step: sub-second precision, identified by the runner scope.
 	runnerEnd := base.Add(12*time.Second + 310*time.Millisecond)
 	builder.Add(tracetest.SpanStub{
-		Name:        stepName,
-		SpanContext: stepSC,
-		Parent:      parentSC,
-		StartTime:   base,
-		EndTime:     runnerEnd, // precise
+		Name:                 stepName,
+		SpanContext:          stepSC,
+		Parent:               parentSC,
+		StartTime:            base,
+		EndTime:              runnerEnd, // precise
+		InstrumentationScope: runnerScope,
 		Attributes: []attribute.KeyValue{
 			attribute.String("type", "step"),
-			attribute.String("source", "runner"),
 			attribute.String("cicd.pipeline.task.name", stepName),
 		},
 	})
@@ -92,15 +97,16 @@ func TestBuildTreeDedupsDuplicateJob(t *testing.T) {
 		return trace.NewSpanContext(trace.SpanContextConfig{TraceID: tid, SpanID: sid, TraceFlags: trace.FlagsSampled})
 	}
 	b := &SpanBuilder{}
-	job := func(src string) tracetest.SpanStub {
+	job := func(runner bool) tracetest.SpanStub {
 		a := []attribute.KeyValue{attribute.String("type", "job")}
-		if src != "" {
-			a = append(a, attribute.String("source", src))
+		s := tracetest.SpanStub{Name: "build", SpanContext: scOf("00000000000000aa"), StartTime: base, EndTime: base.Add(5 * time.Second), Attributes: a}
+		if runner {
+			s.InstrumentationScope = runnerScope
 		}
-		return tracetest.SpanStub{Name: "build", SpanContext: scOf("00000000000000aa"), StartTime: base, EndTime: base.Add(5 * time.Second), Attributes: a}
+		return s
 	}
-	b.Add(job(""))       // API-reconstructed
-	b.Add(job("runner")) // runner-emitted, same span ID
+	b.Add(job(false)) // API-reconstructed
+	b.Add(job(true))  // runner-emitted, same span ID
 
 	roots := BuildTreeFromSpans(b.Spans(), time.Time{}, time.Time{}, &enrichment.GHAEnricher{})
 	count := 0

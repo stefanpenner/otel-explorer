@@ -43,10 +43,19 @@ func DedupeRunnerSpans(spans []sdktrace.ReadOnlySpan) []sdktrace.ReadOnlySpan {
 	return out
 }
 
+// spanIsRunner reports whether a span was emitted natively by the GitHub Actions
+// runner. It keys on standard OTel signals — the instrumentation scope name and
+// the resource service.name — rather than a custom "source" attribute, so the
+// distinction is the same one any OTel backend would make.
 func spanIsRunner(s sdktrace.ReadOnlySpan) bool {
-	for _, a := range s.Attributes() {
-		if string(a.Key) == "source" && a.Value.AsString() == "runner" {
-			return true
+	if s.InstrumentationScope().Name == runnerScopeName {
+		return true
+	}
+	if res := s.Resource(); res != nil {
+		for _, a := range res.Attributes() {
+			if string(a.Key) == "service.name" && a.Value.AsString() == runnerServiceName {
+				return true
+			}
 		}
 	}
 	return false

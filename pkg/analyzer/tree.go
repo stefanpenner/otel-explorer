@@ -62,9 +62,9 @@ func (n *TreeNode) SourceLabel() string {
 		svc = n.ResourceAttrs["service.name"]
 	}
 	switch {
-	case svc != "" && svc != "github-actions-runner":
+	case svc != "" && svc != runnerServiceName:
 		return svc
-	case svc == "github-actions-runner" || n.Attrs["source"] == "runner" || n.ScopeName == "github.actions.runner":
+	case svc == runnerServiceName || n.ScopeName == runnerScopeName:
 		return "runner"
 	case strings.Contains(n.ScopeName, "otel-explorer"):
 		return "github-api"
@@ -74,6 +74,13 @@ func (n *TreeNode) SourceLabel() string {
 		return "github-api"
 	}
 }
+
+// Standard OTel signals that identify the runner as the emitter (used instead of
+// a custom "source" attribute, so any backend distinguishes the same way).
+const (
+	runnerScopeName   = "github.actions.runner"
+	runnerServiceName = "github-actions-runner"
+)
 
 // BuildTreeFromSpans constructs a hierarchy of TreeNodes from OTel spans.
 // Spans are filtered and enriched using the provided enricher.

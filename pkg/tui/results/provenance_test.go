@@ -95,7 +95,7 @@ func TestSourceLabel(t *testing.T) {
 		want string
 	}{
 		{&analyzer.TreeNode{Hints: enrichment.SpanHints{ServiceName: "github-actions-runner"}}, "runner"},
-		{&analyzer.TreeNode{Attrs: map[string]string{"source": "runner"}}, "runner"},
+		{&analyzer.TreeNode{ScopeName: "github.actions.runner"}, "runner"},
 		{&analyzer.TreeNode{Hints: enrichment.SpanHints{ServiceName: "jest"}}, "jest"},
 		{&analyzer.TreeNode{ScopeName: "github.com/stefanpenner/otel-explorer/pkg/analyzer"}, "github-api"},
 		{&analyzer.TreeNode{}, "github-api"},
