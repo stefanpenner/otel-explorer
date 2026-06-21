@@ -539,6 +539,7 @@ func decodeJSON[T any](resp *http.Response, target *T) error {
 }
 
 func handleGithubError(response *http.Response, requestURL string) error {
+	defer response.Body.Close()
 	status := response.StatusCode
 	statusText := response.Status
 
@@ -763,6 +764,8 @@ func (c *Client) FetchRepository(ctx context.Context, baseURL string) (*RepoMeta
 	return &repo, nil
 }
 
+const maxPages = 500
+
 func (c *Client) FetchCommitAssociatedPRs(ctx context.Context, owner, repo, sha string) ([]PullAssociated, error) {
 	ctx, span := getTracer().Start(ctx, "FetchCommitAssociatedPRs", trace.WithAttributes(
 		attribute.String("github.owner", owner),
@@ -774,7 +777,10 @@ func (c *Client) FetchCommitAssociatedPRs(ctx context.Context, owner, repo, sha 
 	endpoint := fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/%s/pulls?per_page=100", owner, repo, sha)
 	var all []PullAssociated
 	nextURL := endpoint
-	for nextURL != "" {
+	for page := 0; nextURL != ""; page++ {
+		if page >= maxPages {
+			return nil, fmt.Errorf("pagination limit of %d exceeded for FetchCommitAssociatedPRs", maxPages)
+		}
 		resp, err := fetchWithAuth(ctx, c, nextURL, "application/vnd.github+json")
 		if err != nil {
 			return nil, err
@@ -860,7 +866,10 @@ func (c *Client) FetchJobsPaginated(ctx context.Context, urlValue string) ([]Job
 
 	var all []Job
 	nextURL := urlValue
-	for nextURL != "" {
+	for page := 0; nextURL != ""; page++ {
+		if page >= maxPages {
+			return nil, fmt.Errorf("pagination limit of %d exceeded for FetchJobsPaginated", maxPages)
+		}
 		resp, err := fetchWithAuth(ctx, c, nextURL, "")
 		if err != nil {
 			return nil, err
@@ -883,7 +892,10 @@ func fetchWorkflowRunsPaginated(ctx context.Context, c *Client, urlValue string,
 
 	var all []WorkflowRun
 	nextURL := urlValue
-	for nextURL != "" {
+	for page := 0; nextURL != ""; page++ {
+		if page >= maxPages {
+			return nil, fmt.Errorf("pagination limit of %d exceeded for fetchWorkflowRunsPaginated", maxPages)
+		}
 		resp, err := fetchWithAuth(ctx, c, nextURL, "")
 		if err != nil {
 			return nil, err
@@ -909,7 +921,10 @@ func fetchReviewsPaginated(ctx context.Context, c *Client, urlValue string) ([]R
 
 	var all []Review
 	nextURL := urlValue
-	for nextURL != "" {
+	for page := 0; nextURL != ""; page++ {
+		if page >= maxPages {
+			return nil, fmt.Errorf("pagination limit of %d exceeded for fetchReviewsPaginated", maxPages)
+		}
 		resp, err := fetchWithAuth(ctx, c, nextURL, "")
 		if err != nil {
 			return nil, err
@@ -932,7 +947,10 @@ func fetchCommentsPaginated(ctx context.Context, c *Client, urlValue string) ([]
 
 	var all []Review
 	nextURL := urlValue
-	for nextURL != "" {
+	for page := 0; nextURL != ""; page++ {
+		if page >= maxPages {
+			return nil, fmt.Errorf("pagination limit of %d exceeded for fetchCommentsPaginated", maxPages)
+		}
 		resp, err := fetchWithAuth(ctx, c, nextURL, "")
 		if err != nil {
 			return nil, err
@@ -1010,13 +1028,12 @@ func (c *Client) FetchBranchProtection(ctx context.Context, owner, repo, branch 
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Log warning but don't fail - fall back to treating all as required
-		return nil, nil
+		return nil, handleGithubError(resp, endpoint)
 	}
 
 	var protection RequiredStatusChecks
 	if err := json.NewDecoder(resp.Body).Decode(&protection); err != nil {
-		return nil, nil
+		return nil, err
 	}
 
 	return &BranchProtection{RequiredStatusChecks: &protection}, nil
@@ -1090,7 +1107,10 @@ func (c *Client) FetchCheckRunsForCommit(ctx context.Context, owner, repo, sha s
 	endpoint := fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/%s/check-runs?per_page=100", owner, repo, sha)
 	var all []CheckRun
 	nextURL := endpoint
-	for nextURL != "" {
+	for page := 0; nextURL != ""; page++ {
+		if page >= maxPages {
+			return nil, fmt.Errorf("pagination limit of %d exceeded for FetchCheckRunsForCommit", maxPages)
+		}
 		resp, err := fetchWithAuth(ctx, c, nextURL, "")
 		if err != nil {
 			return nil, err
@@ -1118,7 +1138,10 @@ func (c *Client) FetchAnnotations(ctx context.Context, owner, repo string, check
 	endpoint := fmt.Sprintf("https://api.github.com/repos/%s/%s/check-runs/%d/annotations?per_page=100", owner, repo, checkRunID)
 	var all []Annotation
 	nextURL := endpoint
-	for nextURL != "" {
+	for page := 0; nextURL != ""; page++ {
+		if page >= maxPages {
+			return nil, fmt.Errorf("pagination limit of %d exceeded for FetchAnnotations", maxPages)
+		}
 		resp, err := fetchWithAuth(ctx, c, nextURL, "")
 		if err != nil {
 			return nil, err
@@ -1144,7 +1167,10 @@ func (c *Client) ListArtifacts(ctx context.Context, owner, repo string, runID in
 	endpoint := fmt.Sprintf("https://api.github.com/repos/%s/%s/actions/runs/%d/artifacts?per_page=100", owner, repo, runID)
 	var all []Artifact
 	nextURL := endpoint
-	for nextURL != "" {
+	for page := 0; nextURL != ""; page++ {
+		if page >= maxPages {
+			return nil, fmt.Errorf("pagination limit of %d exceeded for ListArtifacts", maxPages)
+		}
 		resp, err := fetchWithAuth(ctx, c, nextURL, "")
 		if err != nil {
 			return nil, err

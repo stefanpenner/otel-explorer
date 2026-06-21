@@ -2,6 +2,7 @@ package logparse
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -385,6 +386,22 @@ func TestStripANSI(t *testing.T) {
 	assert.Equal(t, "Downloading crates", stripANSI("\x1b[32m   Downloading\x1b[0m crates"))
 	assert.Equal(t, "no escapes here", stripANSI("no escapes here"))
 	assert.Equal(t, "", stripANSI(""))
+}
+
+func TestParseLogLinesLargeLine(t *testing.T) {
+	t.Parallel()
+
+	shortLine := "2024-01-15T10:30:45.1234567Z hello\n"
+	longContent := strings.Repeat("x", 1<<16)
+	longLine := "2024-01-15T10:30:46.0000000Z " + longContent + "\n"
+	trailingLine := "2024-01-15T10:30:47.0000000Z after\n"
+
+	raw := []byte(shortLine + longLine + trailingLine)
+	lines := ParseLogLines(raw)
+	require.Len(t, lines, 3, "long line should not drop subsequent lines")
+	assert.Equal(t, "hello", lines[0].Content)
+	assert.Contains(t, lines[1].Content, "xxx")
+	assert.Equal(t, "after", lines[2].Content)
 }
 
 func TestParseLogLinesStripsANSI(t *testing.T) {

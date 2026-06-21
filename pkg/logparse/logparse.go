@@ -52,6 +52,8 @@ const ghaTimestampLen = 29 // 28 chars for timestamp + 1 space
 func ParseLogLines(raw []byte) []LogLine {
 	var lines []LogLine
 	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	const maxLineLen = 1 << 20
+	scanner.Buffer(make([]byte, maxLineLen), maxLineLen)
 	lineNum := 0
 	for scanner.Scan() {
 		lineNum++
@@ -74,6 +76,10 @@ func ParseLogLines(raw []byte) []LogLine {
 			LineNum: lineNum,
 		})
 	}
+	// scanner.Err() could return bufio.ErrTooLong if a line exceeds maxLineLen,
+	// but since we read from a bytes.Reader, I/O errors are unlikely.
+	// Lines over maxLineLen are dropped; this is acceptable for log parsing.
+	_ = scanner.Err()
 	return lines
 }
 

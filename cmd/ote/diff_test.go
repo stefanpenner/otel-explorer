@@ -120,11 +120,11 @@ func TestParseArgsDiffBackend(t *testing.T) {
 // treated as a trace id and fetched from the backend, NOT as a file or URL.
 func TestLoadDiffSideFromBackend(t *testing.T) {
 	srv := backendServer(t, map[string]string{
-		"trace-xyz": otlpTraceJSON("0af7651916cd43dd8448eb211c80319c", "HTTP GET", 1_000_000_000, 2_000_000_000),
+		"aabbccdd": otlpTraceJSON("0af7651916cd43dd8448eb211c80319c", "HTTP GET", 1_000_000_000, 2_000_000_000),
 	})
 	cfg := config{jaegerURL: srv.URL}
 
-	roots, label, err := loadDiffSide(context.Background(), "trace-xyz", "", enrichment.DefaultEnricher(), cfg)
+	roots, label, err := loadDiffSide(context.Background(), "aabbccdd", "", enrichment.DefaultEnricher(), cfg)
 	if err != nil {
 		t.Fatalf("loadDiffSide: %v", err)
 	}
@@ -134,8 +134,8 @@ func TestLoadDiffSideFromBackend(t *testing.T) {
 	if roots[0].Name != "HTTP GET" {
 		t.Errorf("root name = %q, want %q", roots[0].Name, "HTTP GET")
 	}
-	if label != "trace-xyz" {
-		t.Errorf("label = %q, want %q", label, "trace-xyz")
+	if label != "aabbccdd" {
+		t.Errorf("label = %q, want %q", label, "aabbccdd")
 	}
 }
 
@@ -145,7 +145,7 @@ func TestLoadDiffSideBackendError(t *testing.T) {
 	srv := backendServer(t, map[string]string{}) // every id → 404
 	cfg := config{tempoURL: srv.URL}
 
-	if _, _, err := loadDiffSide(context.Background(), "missing", "", enrichment.DefaultEnricher(), cfg); err == nil {
+	if _, _, err := loadDiffSide(context.Background(), "deadbeef", "", enrichment.DefaultEnricher(), cfg); err == nil {
 		t.Fatal("expected error for missing trace, got nil")
 	}
 }
@@ -154,13 +154,13 @@ func TestLoadDiffSideBackendError(t *testing.T) {
 // the backend and renders a diff (no GitHub token required).
 func TestRunDiffFromBackend(t *testing.T) {
 	srv := backendServer(t, map[string]string{
-		"before": otlpTraceJSON("0af7651916cd43dd8448eb211c80319c", "build", 0, 1_000_000_000),
-		"after":  otlpTraceJSON("0af7651916cd43dd8448eb211c80319d", "build", 0, 5_000_000_000),
+		"aabbccdd00000001": otlpTraceJSON("0af7651916cd43dd8448eb211c80319c", "build", 0, 1_000_000_000),
+		"aabbccdd00000002": otlpTraceJSON("0af7651916cd43dd8448eb211c80319d", "build", 0, 5_000_000_000),
 	})
 	cfg := config{
 		diffMode:   true,
 		jaegerURL:  srv.URL,
-		diffInputs: []string{"before", "after"},
+		diffInputs: []string{"aabbccdd00000001", "aabbccdd00000002"},
 		tuiMode:    false,
 	}
 
@@ -200,11 +200,11 @@ func TestIsTraceBackendURL(t *testing.T) {
 // (no --tempo/--jaeger flag), so each side can name its own backend.
 func TestLoadDiffSidePerSideURL(t *testing.T) {
 	srv := backendServer(t, map[string]string{
-		"trace-xyz": otlpTraceJSON("0af7651916cd43dd8448eb211c80319c", "HTTP GET", 0, 1_000_000_000),
+		"aabbccdd": otlpTraceJSON("0af7651916cd43dd8448eb211c80319c", "HTTP GET", 0, 1_000_000_000),
 	})
 	cfg := config{} // no backend flag set
 
-	url := srv.URL + "/api/traces/trace-xyz"
+	url := srv.URL + "/api/traces/aabbccdd"
 	roots, label, err := loadDiffSide(context.Background(), url, "", enrichment.DefaultEnricher(), cfg)
 	if err != nil {
 		t.Fatalf("loadDiffSide: %v", err)
@@ -212,8 +212,8 @@ func TestLoadDiffSidePerSideURL(t *testing.T) {
 	if len(roots) != 1 || roots[0].Name != "HTTP GET" {
 		t.Fatalf("roots = %+v, want one span named HTTP GET", roots)
 	}
-	if label != "trace-xyz" {
-		t.Errorf("label = %q, want %q", label, "trace-xyz")
+	if label != "aabbccdd" {
+		t.Errorf("label = %q, want %q", label, "aabbccdd")
 	}
 }
 
@@ -221,16 +221,16 @@ func TestLoadDiffSidePerSideURL(t *testing.T) {
 // (OTLP) server — different backends, different response formats, one diff.
 func TestRunDiffCrossBackend(t *testing.T) {
 	jaeger := backendServer(t, map[string]string{
-		"j1": jaegerTraceJSON("0af7651916cd43dd8448eb211c80319c", "build", 0, 1_000_000), // 1s
+		"1a2b3c4d": jaegerTraceJSON("0af7651916cd43dd8448eb211c80319c", "build", 0, 1_000_000), // 1s
 	})
 	tempo := backendServer(t, map[string]string{
-		"t1": otlpTraceJSON("0af7651916cd43dd8448eb211c80319d", "build", 0, 5_000_000_000), // 5s
+		"5e6f7a8b": otlpTraceJSON("0af7651916cd43dd8448eb211c80319d", "build", 0, 5_000_000_000), // 5s
 	})
 	cfg := config{
 		diffMode: true,
 		diffInputs: []string{
-			jaeger.URL + "/api/traces/j1",
-			tempo.URL + "/api/traces/t1",
+			jaeger.URL + "/api/traces/1a2b3c4d",
+			tempo.URL + "/api/traces/5e6f7a8b",
 		},
 		tuiMode: false,
 	}

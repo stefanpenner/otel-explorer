@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "polling",
@@ -9,5 +9,17 @@ go_library(
         "//pkg/analyzer",
         "//pkg/githubapi",
         "@io_opentelemetry_go_otel_sdk//trace",
+    ],
+)
+
+go_test(
+    name = "polling_test",
+    srcs = ["polling_test.go"],
+    embed = [":polling"],
+    deps = [
+        "//pkg/analyzer",
+        "//pkg/githubapi",
+        "@com_github_stretchr_testify//assert",
+        "@com_github_stretchr_testify//require",
     ],
 )

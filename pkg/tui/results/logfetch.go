@@ -37,7 +37,7 @@ func (m *Model) fetchLogsForCurrentItem() tea.Cmd {
 	}
 
 	// Skip if this job was already fetched
-	if m.logFetchedJobIDs[jobID] {
+	if m.logFetchedJobIDs != nil && m.logFetchedJobIDs[jobID] {
 		return nil
 	}
 

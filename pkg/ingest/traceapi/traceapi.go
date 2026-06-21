@@ -19,6 +19,15 @@ import (
 	"github.com/stefanpenner/otel-explorer/pkg/ingest/otlpfile"
 )
 
+func isHexString(s string) bool {
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return len(s) > 0
+}
+
 // Client fetches traces from a trace backend HTTP API.
 type Client struct {
 	baseURL    string
@@ -40,6 +49,9 @@ func New(baseURL string) *Client {
 // FetchTrace retrieves a trace by its ID and returns parsed ReadOnlySpans.
 // Auto-detects the response format (OTLP JSON or Jaeger JSON).
 func (c *Client) FetchTrace(traceID string) ([]sdktrace.ReadOnlySpan, error) {
+	if !isHexString(traceID) {
+		return nil, fmt.Errorf("invalid trace ID %q: must be non-empty hex string", traceID)
+	}
 	url := fmt.Sprintf("%s/api/traces/%s", c.baseURL, traceID)
 
 	req, err := http.NewRequest("GET", url, nil)

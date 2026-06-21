@@ -26,9 +26,9 @@ func NewPollingIngestor(client *githubapi.Client, urls []string, reporter analyz
 
 func (i *PollingIngestor) Ingest(ctx context.Context) ([]analyzer.URLResult, int64, int64, []sdktrace.ReadOnlySpan, error) {
 	results, _, globalEarliest, globalLatest, spans, errs := analyzer.AnalyzeURLs(ctx, i.urls, i.client, i.reporter, i.opts)
+	var err error
 	if len(errs) > 0 {
-		return nil, 0, 0, nil, errs[0]
+		err = errs[0]
 	}
-
-	return results, globalEarliest, globalLatest, spans, nil
+	return results, globalEarliest, globalLatest, spans, err
 }

@@ -432,6 +432,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.selectionStart = -1
 		m.logicalEndID = ""
 		m.logicalEndTime = time.Time{}
+		m.isFocused = false
+		m.focusedIDs = nil
+		m.preFocusHiddenState = nil
 		return m, nil
 
 	case spinner.TickMsg:
@@ -691,7 +694,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "r":
 				m.resetInspectorModal()
-				if m.reloadFunc != nil {
+				if m.reloadFunc != nil && !m.isLoading {
 					m.isLoading = true
 					return m, tea.Batch(m.spinner.Tick, m.doReload())
 				}
