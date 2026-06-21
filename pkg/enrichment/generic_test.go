@@ -1,6 +1,7 @@
 package enrichment
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -202,6 +203,60 @@ func TestGenericEnricher_FaaS(t *testing.T) {
 
 	if h.Category != "faas" {
 		t.Errorf("expected category 'faas', got %q", h.Category)
+	}
+}
+
+func TestGenericEnricher_CodeOrigin(t *testing.T) {
+	e := &GenericEnricher{}
+
+	// An internal span with no semconv category but code location should show
+	// where it originates.
+	attrs := map[string]string{
+		"code.function.name": "checkout.ProcessOrder",
+		"code.file.path":     "/app/internal/checkout/order.go",
+		"code.line.number":   "142",
+	}
+	h := e.Enrich("process-order", attrs, false)
+
+	if h.Category != "operation" {
+		t.Errorf("expected category 'operation', got %q", h.Category)
+	}
+	if h.Detail != "checkout.ProcessOrder (order.go:142)" {
+		t.Errorf("unexpected Detail: %q", h.Detail)
+	}
+}
+
+func TestGenericEnricher_CodeOriginLegacyNames(t *testing.T) {
+	e := &GenericEnricher{}
+
+	attrs := map[string]string{
+		"code.function": "handler.Serve",
+		"code.filepath": "handler.go",
+	}
+	h := e.Enrich("serve", attrs, false)
+
+	if h.Detail != "handler.Serve (handler.go)" {
+		t.Errorf("unexpected Detail: %q", h.Detail)
+	}
+}
+
+func TestGenericEnricher_CodeOriginDoesNotOverrideSemconv(t *testing.T) {
+	e := &GenericEnricher{}
+
+	// When a more specific convention already set Detail, code.* must not
+	// override it.
+	attrs := map[string]string{
+		"http.request.method": "GET",
+		"http.route":          "/x",
+		"code.function.name":  "handler.Serve",
+	}
+	h := e.Enrich("GET /x", attrs, false)
+
+	if h.Category != "http" {
+		t.Errorf("expected category 'http', got %q", h.Category)
+	}
+	if strings.Contains(h.Detail, "handler.Serve") {
+		t.Errorf("code origin should not override HTTP detail, got %q", h.Detail)
 	}
 }
 

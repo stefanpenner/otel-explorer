@@ -3,6 +3,7 @@ package enrichment
 import (
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // GenericEnricher handles any OTel span that wasn't recognized by a more
@@ -175,6 +176,27 @@ func (e *GenericEnricher) Enrich(name string, attrs map[string]string, isZeroDur
 			h.Detail = attrs["faas.trigger"]
 			if fname := attrs["faas.name"]; fname != "" {
 				h.Detail = fname + " (" + h.Detail + ")"
+			}
+		}
+
+		// Fall back to source-code origin for otherwise-undetailed spans, so
+		// custom internal spans show where they come from. Accepts the stable
+		// code.function.name / code.file.path / code.line.number and the legacy
+		// code.function / code.filepath / code.lineno (and code.namespace).
+		if h.Detail == "" {
+			if fn := firstNonEmpty(attrs, "code.function.name", "code.function", "code.namespace"); fn != "" {
+				h.Detail = fn
+				if file := firstNonEmpty(attrs, "code.file.path", "code.filepath"); file != "" {
+					base := file
+					if idx := strings.LastIndexByte(base, '/'); idx >= 0 {
+						base = base[idx+1:]
+					}
+					if line := firstNonEmpty(attrs, "code.line.number", "code.lineno"); line != "" {
+						h.Detail += fmt.Sprintf(" (%s:%s)", base, line)
+					} else {
+						h.Detail += fmt.Sprintf(" (%s)", base)
+					}
+				}
 			}
 		}
 	}

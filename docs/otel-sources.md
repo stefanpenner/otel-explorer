@@ -219,7 +219,12 @@ human-readable detail string for each — visible inline in the hero trace above
 - **FaaS** (`faas.trigger`): `my-function (http)`.
 
 Spans with none of these still render, using `otel.span_kind` to vary the icon
-(`⇣` server, `⇢` client, `⇡` producer, `⇠` consumer).
+(`⇣` server, `⇢` client, `⇡` producer, `⇠` consumer). A custom internal span
+with no semantic category falls back to its **source-code origin** when present
+— `code.function.name (file:line)`, e.g. `checkout.ProcessOrder (order.go:142)`
+— so it isn't an anonymous bar. Both stable (`code.function.name`,
+`code.file.path`, `code.line.number`) and legacy (`code.function`,
+`code.filepath`, `code.lineno`) names are accepted.
 
 ---
 
