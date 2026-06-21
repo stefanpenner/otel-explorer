@@ -14,6 +14,13 @@ reproduce the screenshot:
 ote docs/samples/rag-api.jsonl --no-tui
 ```
 
+The screenshots here are kept honest by `scripts/verify-sources.sh`, which
+renders every sample and asserts its documented markers are present:
+
+```bash
+go build -o /tmp/ote ./cmd/ote && OTE=/tmp/ote ./scripts/verify-sources.sh
+```
+
 The enrichment chain tries the most specific convention first and falls back to
 a generic OTel reader, so an unknown span still renders with whatever
 semantic-convention detail it carries:
