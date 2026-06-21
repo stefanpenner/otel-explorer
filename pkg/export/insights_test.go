@@ -98,3 +98,11 @@ func TestHighlights_Run_AllPassed(t *testing.T) {
 	assert.Equal(t, SeverityGood, ins[0].Severity)
 	assert.Contains(t, ins[0].Title, "All jobs passed")
 }
+
+func TestMostFlaky_EmptyNoPanic(t *testing.T) {
+	t.Parallel()
+	assert.NotPanics(t, func() {
+		_ = mostFlaky(nil)
+		_ = mostFlaky([]FlakyJob{})
+	})
+}

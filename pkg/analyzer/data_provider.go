@@ -236,7 +236,7 @@ func (p *DataProvider) Fetch(ctx context.Context, githubURL string, urlIndex int
 			}
 		}
 		if targetBranch == "" {
-			if repoMeta, err := p.client.FetchRepository(ctx, baseURL); err == nil && repoMeta.DefaultBranch != "" {
+			if repoMeta, err := p.client.FetchRepository(ctx, baseURL); err == nil && repoMeta != nil && repoMeta.DefaultBranch != "" {
 				targetBranch = repoMeta.DefaultBranch
 			}
 		}

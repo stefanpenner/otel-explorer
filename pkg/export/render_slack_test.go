@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -94,4 +95,28 @@ func TestRenderSlack_HeaderTruncatedTo150(t *testing.T) {
 	require.Equal(t, "header", header.Type)
 	// Slack hard-limits header plain_text to 150 chars.
 	assert.LessOrEqual(t, len([]rune(header.Text.Text)), 150)
+}
+
+func TestTruncate_MultiByte(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		input string
+		n     int
+		want  string
+	}{
+		{name: "short passthrough", input: "abc", n: 80, want: "abc"},
+		{name: "ascii truncate with ellipsis", input: "hello world", n: 8, want: "hello w…"},
+		{name: "multibyte no split", input: "ビルドテストビルドテスト", n: 5, want: "ビルドテ…"},
+		{name: "single rune", input: "ビルド", n: 1, want: "ビ"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncate(tc.input, tc.n)
+			assert.Equal(t, tc.want, got)
+			assert.True(t, utf8.ValidString(got), "result must be valid UTF-8")
+		})
+	}
 }

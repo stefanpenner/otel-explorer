@@ -52,6 +52,7 @@ type recorder struct {
 	ptmx  *os.File
 	start time.Time
 	out   *os.File
+	wg    sync.WaitGroup
 
 	mu  sync.Mutex
 	buf []byte
@@ -59,12 +60,14 @@ type recorder struct {
 
 func newRecorder(ptmx, out *os.File) *recorder {
 	r := &recorder{ptmx: ptmx, start: time.Now(), out: out}
+	r.wg.Add(1)
 	go r.readLoop()
 	return r
 }
 
 // readLoop runs in a goroutine, continuously reading pty output.
 func (r *recorder) readLoop() {
+	defer r.wg.Done()
 	buf := make([]byte, 65536)
 	for {
 		n, err := r.ptmx.Read(buf)
@@ -148,7 +151,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "pty start: %v\n", err)
 		os.Exit(1)
 	}
-	defer ptmx.Close()
 
 	rec := newRecorder(ptmx, f)
 
@@ -229,6 +231,9 @@ func main() {
 
 	// Wait for process to exit
 	_ = cmd.Wait()
+	ptmx.Close()
+	rec.wg.Wait()
+	rec.drain()
 	f.Close()
 
 	// Trim dead time at the start — collapse everything before the TUI

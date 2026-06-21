@@ -100,8 +100,8 @@ func (r *Receiver) handleTraces(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	defer req.Body.Close()
 	req.Body = http.MaxBytesReader(w, req.Body, maxRequestBodyBytes)
+	defer req.Body.Close()
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
 		var maxErr *http.MaxBytesError

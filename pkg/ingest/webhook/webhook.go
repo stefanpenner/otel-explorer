@@ -25,12 +25,19 @@ type repository struct {
 	FullName string `json:"full_name"`
 }
 
+// maxWebhookBytes caps incoming webhook payloads to bound memory use.
+const maxWebhookBytes = 10 * 1024 * 1024 // 10MB
+
 // ParseWebhook reads a GitHub Actions webhook JSON payload and returns
 // GitHub URLs to analyze. It supports workflow_run and workflow_job events.
 func ParseWebhook(r io.Reader) ([]string, error) {
-	data, err := io.ReadAll(r)
+	data, err := io.ReadAll(io.LimitReader(r, maxWebhookBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read webhook payload: %w", err)
+	}
+
+	if len(data) > maxWebhookBytes {
+		return nil, fmt.Errorf("webhook payload too large (max %d bytes)", maxWebhookBytes)
 	}
 
 	if len(data) == 0 {

@@ -19,8 +19,8 @@ type HourBucket struct {
 // runners"); duration changes that don't track volume mean the code changed.
 type HourlyPatterns struct {
 	Hours          [24]HourBucket
-	PeakQueueHour  int // hour with the highest queue p50 (among hours with data)
-	PeakVolumeHour int // hour with the most runs
+	PeakQueueHour  int  // hour with the highest queue p50; -1 when no queue data
+	PeakVolumeHour int  // hour with the most runs
 }
 
 // computeHourlyPatterns buckets runs by the UTC hour they were created.
@@ -32,7 +32,7 @@ func computeHourlyPatterns(runs []RunData) *HourlyPatterns {
 
 	var durations [24][]float64
 	var queues [24][]float64
-	hp := &HourlyPatterns{}
+	hp := &HourlyPatterns{PeakQueueHour: -1}
 
 	for _, run := range runs {
 		if run.CreatedAt.IsZero() {
@@ -62,8 +62,10 @@ func computeHourlyPatterns(runs []RunData) *HourlyPatterns {
 		if hp.Hours[h].RunCount > hp.Hours[hp.PeakVolumeHour].RunCount {
 			hp.PeakVolumeHour = h
 		}
-		if hp.Hours[h].QueueP50 > hp.Hours[hp.PeakQueueHour].QueueP50 {
-			hp.PeakQueueHour = h
+		if hp.Hours[h].QueueP50 > 0 {
+			if hp.PeakQueueHour < 0 || hp.Hours[h].QueueP50 > hp.Hours[hp.PeakQueueHour].QueueP50 {
+				hp.PeakQueueHour = h
+			}
 		}
 	}
 	return hp

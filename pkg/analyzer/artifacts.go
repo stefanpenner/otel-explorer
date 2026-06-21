@@ -51,34 +51,40 @@ func IngestTraceArtifacts(ctx context.Context, client githubapi.GitHubProvider, 
 
 		// Convert ReadOnlySpans to SpanStubs with url_index and artifact tagging
 		for _, s := range spans {
-			parent := s.Parent()
-			// Re-parent orphaned roots under the workflow span
-			if !parent.SpanID().IsValid() || !spanIDs[parent.SpanID()] {
-				parent = parentSC
-			}
-
-			attrs := append(s.Attributes(),
-				attribute.Int("github.url_index", urlIndex),
-				attribute.String("github.artifact_name", artifact.Name),
-				attribute.String("github.artifact.download_url", artifact.ArchiveDownloadURL),
-			)
-
-			builder.Add(tracetest.SpanStub{
-				Name:        s.Name(),
-				SpanContext: s.SpanContext(),
-				Parent:      parent,
-				SpanKind:    s.SpanKind(),
-				StartTime:   s.StartTime(),
-				EndTime:     s.EndTime(),
-				Attributes:  attrs,
-				Events:      s.Events(),
-				Links:       s.Links(),
-				Status:      s.Status(),
-			})
+			builder.Add(convertArtifactSpan(s, parentSC, spanIDs, urlIndex, artifact))
 		}
 	}
 
 	return artifacts, nil
+}
+
+func convertArtifactSpan(s sdktrace.ReadOnlySpan, parentSC oteltrace.SpanContext, spanIDs map[oteltrace.SpanID]bool, urlIndex int, artifact githubapi.Artifact) tracetest.SpanStub {
+	parent := s.Parent()
+	if !parent.SpanID().IsValid() || !spanIDs[parent.SpanID()] {
+		parent = parentSC
+	}
+
+	original := s.Attributes()
+	attrs := make([]attribute.KeyValue, len(original), len(original)+3)
+	copy(attrs, original)
+	attrs = append(attrs,
+		attribute.Int("github.url_index", urlIndex),
+		attribute.String("github.artifact_name", artifact.Name),
+		attribute.String("github.artifact.download_url", artifact.ArchiveDownloadURL),
+	)
+
+	return tracetest.SpanStub{
+		Name:        s.Name(),
+		SpanContext: s.SpanContext(),
+		Parent:      parent,
+		SpanKind:    s.SpanKind(),
+		StartTime:   s.StartTime(),
+		EndTime:     s.EndTime(),
+		Attributes:  attrs,
+		Events:      s.Events(),
+		Links:       s.Links(),
+		Status:      s.Status(),
+	}
 }
 
 // extractSpansFromZip unzips artifact data and parses any JSON files as OTLP or Chrome traces.

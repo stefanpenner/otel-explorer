@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1657,4 +1658,19 @@ func TestParseProtobufRequest(t *testing.T) {
 	if spans[0].Name() != "bare-proto" {
 		t.Errorf("name = %q, want %q", spans[0].Name(), "bare-proto")
 	}
+}
+
+func TestFlatAttrLargeFloatNoOverflow(t *testing.T) {
+	a := assert.New(t)
+	kv := flatAttr("big", 1e20)
+	a.Equal(1e20, kv.Value.AsFloat64(),
+		"large float should be stored as float64, not overflow to int64")
+}
+
+func TestProfileStartTsMsJSONNumber(t *testing.T) {
+	a := assert.New(t)
+	n := json.Number("1000000")
+	f, ok := profileStartTsMs(map[string]any{"profile_start_ts": n})
+	a.True(ok)
+	a.Equal(1000000.0, f)
 }

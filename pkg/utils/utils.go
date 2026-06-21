@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -139,16 +140,20 @@ func GetJobGroup(jobName string) string {
 // colorEnabled gates ANSI color and OSC 8 hyperlink emission. It defaults to
 // true and is initialized by the CLI entry point based on whether the output
 // destination is a terminal (and NO_COLOR).
-var colorEnabled = true
+var colorEnabled atomic.Bool
+
+func init() {
+	colorEnabled.Store(true)
+}
 
 // SetColorEnabled enables or disables ANSI/OSC escape sequence emission.
 func SetColorEnabled(enabled bool) {
-	colorEnabled = enabled
+	colorEnabled.Store(enabled)
 }
 
 // ColorEnabled reports whether ANSI/OSC escape sequences are emitted.
 func ColorEnabled() bool {
-	return colorEnabled
+	return colorEnabled.Load()
 }
 
 func MakeClickableLink(urlValue, text string) string {
@@ -156,14 +161,14 @@ func MakeClickableLink(urlValue, text string) string {
 	if displayText == "" {
 		displayText = urlValue
 	}
-	if !colorEnabled || !isGitHubURL(urlValue) {
+	if !colorEnabled.Load() || !isGitHubURL(urlValue) {
 		return displayText
 	}
 	return fmt.Sprintf("\u001b]8;;%s\u0007%s\u001b]8;;\u0007", urlValue, displayText)
 }
 
 func colorText(code, text string) string {
-	if !colorEnabled {
+	if !colorEnabled.Load() {
 		return text
 	}
 	return fmt.Sprintf("\u001b[%sm%s\u001b[0m", code, text)

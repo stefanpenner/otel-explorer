@@ -38,4 +38,5 @@ go_test(
         "rules_test.go",
     ],
     embed = [":enrichment"],
+    deps = ["@com_github_stretchr_testify//assert"],
 )

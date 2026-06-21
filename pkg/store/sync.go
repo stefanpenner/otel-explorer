@@ -33,6 +33,7 @@ const watermarkOverlap = 24 * time.Hour
 // only for completed runs missing it.
 func Sync(ctx context.Context, client githubapi.GitHubProvider, st *Store, owner, repo string, days int, progress func(string)) (SyncStats, error) {
 	var stats SyncStats
+	now := time.Now()
 	report := func(format string, args ...any) {
 		if progress != nil {
 			progress(fmt.Sprintf(format, args...))
@@ -51,9 +52,9 @@ func Sync(ctx context.Context, client githubapi.GitHubProvider, st *Store, owner
 	if err != nil {
 		return stats, err
 	}
-	requestStart := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	requestStart := now.Add(-time.Duration(days) * 24 * time.Hour)
 	if !wm.IsZero() && !oldest.IsZero() && oldest.Before(requestStart.Add(24*time.Hour)) {
-		gap := time.Since(wm.Add(-watermarkOverlap))
+		gap := now.Sub(wm.Add(-watermarkOverlap))
 		gapDays := int(gap/(24*time.Hour)) + 1
 		if gapDays < fetchDays {
 			fetchDays = gapDays
@@ -76,8 +77,8 @@ func Sync(ctx context.Context, client githubapi.GitHubProvider, st *Store, owner
 
 	// Fetch job detail for completed runs in the requested window that the
 	// store doesn't hold yet — including gaps left by older partial syncs.
-	since := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
-	needJobs, err := st.RunsNeedingJobs(owner, repo, since, time.Now().Add(time.Hour))
+	since := now.Add(-time.Duration(days) * 24 * time.Hour)
+	needJobs, err := st.RunsNeedingJobs(owner, repo, since, now.Add(time.Hour))
 	if err != nil {
 		return stats, err
 	}
@@ -113,7 +114,12 @@ func Sync(ctx context.Context, client githubapi.GitHubProvider, st *Store, owner
 				owner, repo, runID)
 			jobs, err := client.FetchJobsPaginated(ctx, jobsURL)
 			if err != nil {
-				return // transient: the run stays jobs_fetched=0 for the next sync
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+				return
 			}
 			converted := analyzer.ConvertJobs(jobs, attempt)
 			if err := st.UpsertJobs(owner, repo, runID, converted); err != nil {

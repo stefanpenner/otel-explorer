@@ -32,6 +32,7 @@ go_test(
     srcs = [
         "markdown_test.go",
         "render_fuzz_test.go",
+        "styled_test.go",
         "timeline_test.go",
         "trends_render_fuzz_test.go",
         "trends_test.go",

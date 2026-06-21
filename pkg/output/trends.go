@@ -450,6 +450,9 @@ func generateASCIIChart(points []analyzer.DataPoint, width, height int, valueTyp
 	if len(points) == 0 {
 		return ""
 	}
+	if height < 2 {
+		height = 2
+	}
 
 	// Find min/max values
 	minVal := points[0].Value

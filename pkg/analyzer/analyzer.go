@@ -1198,10 +1198,11 @@ func shipItMatch(text string) bool {
 }
 
 func truncateString(value string, max int) string {
-	if len(value) <= max {
+	runes := []rune(value)
+	if len(runes) <= max {
 		return value
 	}
-	return value[:max]
+	return string(runes[:max])
 }
 
 // previousAttemptSpanID returns a deterministic span ID for a previous retry attempt's
@@ -1277,8 +1278,13 @@ func isJobRequired(jobName, workflowName string, requiredContexts []string) bool
 		if ctx == fullName || ctx == jobName || ctx == workflowName {
 			return true
 		}
-		// Handle matrix jobs: "test (ubuntu, 18)" matches "test"
-		if strings.HasPrefix(fullName, ctx) || strings.HasPrefix(jobName, ctx) {
+		// Handle matrix jobs: "test (ubuntu, 18)" matches context "test"
+		// or "workflow / test (...)". Match only at word boundaries to
+		// avoid false positives like "test" matching "testing platform".
+		if strings.HasPrefix(fullName, ctx+" ") || strings.HasPrefix(fullName, ctx+"(") {
+			return true
+		}
+		if strings.HasPrefix(jobName, ctx+" ") || strings.HasPrefix(jobName, ctx+"(") {
 			return true
 		}
 	}

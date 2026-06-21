@@ -208,6 +208,9 @@ func runInsights(r *RunReport) []Insight {
 }
 
 func mostFlaky(fs []FlakyJob) FlakyJob {
+	if len(fs) == 0 {
+		return FlakyJob{}
+	}
 	best := fs[0]
 	for _, f := range fs[1:] {
 		if f.SameSHAFlakes > best.SameSHAFlakes || (f.SameSHAFlakes == best.SameSHAFlakes && f.FlakeRatePct > best.FlakeRatePct) {

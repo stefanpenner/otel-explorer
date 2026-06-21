@@ -744,6 +744,10 @@ func main() {
 			select {
 			case <-stdinCh:
 			case <-sigCh:
+			case err := <-errCh:
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Receiver error: %v\n", err)
+				}
 			}
 			signal.Stop(sigCh)
 		}
@@ -835,6 +839,7 @@ func main() {
 		if err == nil {
 			perfettoFile = tmpFile.Name()
 			tmpFile.Close()
+			defer os.Remove(perfettoFile)
 		}
 	}
 
@@ -889,21 +894,27 @@ func main() {
 
 	if cfg.otelStdout {
 		stdoutExporter, err := otelexport.NewStdoutExporter(os.Stdout)
-		if err == nil {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to create stdout exporter: %v\n", err)
+		} else {
 			exporters = append(exporters, stdoutExporter)
 		}
 	}
 
 	if cfg.otelEndpoint != "" {
 		otelExporter, err := otelexport.NewExporter(ctx, cfg.otelEndpoint)
-		if err == nil {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to create OTel exporter: %v\n", err)
+		} else {
 			exporters = append(exporters, otelExporter)
 		}
 	}
 
 	if cfg.otelGRPCEndpoint != "" {
 		grpcExporter, err := otelexport.NewGRPCExporter(ctx, cfg.otelGRPCEndpoint)
-		if err == nil {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to create OTel gRPC exporter: %v\n", err)
+		} else {
 			exporters = append(exporters, grpcExporter)
 		}
 	}
@@ -1128,7 +1139,9 @@ func main() {
 				}
 				allTraceEvents = filtered
 			}
-			_ = perfetto.WriteTrace(io.Discard, results, combined, allTraceEvents, globalEarliest, tmpFile.Name(), true, visibleSpans)
+			if err := perfetto.WriteTrace(io.Discard, results, combined, allTraceEvents, globalEarliest, tmpFile.Name(), true, visibleSpans); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to write perfetto trace: %v\n", err)
+			}
 		}
 
 		// Build input sources: GitHub URLs + trace file basenames
@@ -1673,10 +1686,11 @@ func renderRunVsTypicalFromStore(w io.Writer, urlResults []analyzer.URLResult) {
 	if err != nil || len(runs) == 0 {
 		return
 	}
-	baseline := analyzer.AnalyzeTrendsFromRuns(owner, repo, 30, runs).Typical
-	if baseline == nil {
+	trendAnalysis := analyzer.AnalyzeTrendsFromRuns(owner, repo, 30, runs)
+	if trendAnalysis == nil || trendAnalysis.Typical == nil {
 		return
 	}
+	baseline := trendAnalysis.Typical
 
 	var observations []analyzer.JobObservation
 	for _, res := range urlResults {

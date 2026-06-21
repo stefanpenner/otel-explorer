@@ -47,6 +47,7 @@ go_test(
     srcs = [
         "args_fuzz_test.go",
         "args_test.go",
+        "exportout_test.go",
         "persist_test.go",
         "slack_test.go",
     ],

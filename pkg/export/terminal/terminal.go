@@ -21,7 +21,7 @@ type Exporter struct {
 
 func NewExporter(w io.Writer, enricher enrichment.Enricher) *Exporter {
 	return &Exporter{
-		writer:   io.Discard, // Suppress standard OTel summary, we use the rich report instead
+		writer:   w,
 		enricher: enricher,
 	}
 }
@@ -49,7 +49,11 @@ func (e *Exporter) Finish(ctx context.Context) error {
 
 	fmt.Fprintf(e.writer, "\nSummary\n-------\n")
 	fmt.Fprintf(e.writer, "Total Runs:      %d\n", summary.TotalRuns)
-	fmt.Fprintf(e.writer, "Success Rate:    %.1f%%\n", float64(summary.SuccessfulRuns)/float64(summary.TotalRuns)*100)
+	var successPct float64
+	if summary.TotalRuns > 0 {
+		successPct = float64(summary.SuccessfulRuns) / float64(summary.TotalRuns) * 100
+	}
+	fmt.Fprintf(e.writer, "Success Rate:    %.1f%%\n", successPct)
 	fmt.Fprintf(e.writer, "Total Jobs:      %d\n", summary.TotalJobs)
 	fmt.Fprintf(e.writer, "Failed Jobs:     %d\n", summary.FailedJobs)
 	fmt.Fprintf(e.writer, "Max Concurrency: %d\n", summary.MaxConcurrency)

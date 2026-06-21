@@ -39,15 +39,17 @@ func OutputStyledResults(w io.Writer, urlResults []analyzer.URLResult, combined 
 	// Line 1: Title
 	line1 := buildLeftLine(titleStyle.Render("Trace Analyzer"))
 
-	// Compute success rates
 	successRate := float64(0)
 	jobSuccessRate := float64(0)
+	wfRateParsed := true
+	jobRateParsed := true
 	if combined.TotalRuns > 0 {
-		// Parse from the string representation
-		fmt.Sscanf(combined.SuccessRate, "%f", &successRate)
+		_, err := fmt.Sscanf(combined.SuccessRate, "%f", &successRate)
+		wfRateParsed = err == nil
 	}
 	if combined.TotalJobs > 0 {
-		fmt.Sscanf(combined.JobSuccessRate, "%f", &jobSuccessRate)
+		_, err := fmt.Sscanf(combined.JobSuccessRate, "%f", &jobSuccessRate)
+		jobRateParsed = err == nil
 	}
 
 	// Line 2: Success rates (left) + Counts (right). Empty rate strings mean
@@ -55,11 +57,11 @@ func OutputStyledResults(w io.Writer, urlResults []analyzer.URLResult, combined 
 	wfRate, jobRate := combined.SuccessRate+"%", combined.JobSuccessRate+"%"
 	wfRateStyled := colorForSuccessRate(successRate).Render(wfRate)
 	jobRateStyled := colorForSuccessRate(jobSuccessRate).Render(jobRate)
-	if combined.SuccessRate == "" {
+	if combined.SuccessRate == "" || !wfRateParsed {
 		wfRate = "–"
 		wfRateStyled = dimStyle.Render(wfRate)
 	}
-	if combined.JobSuccessRate == "" {
+	if combined.JobSuccessRate == "" || !jobRateParsed {
 		jobRate = "–"
 		jobRateStyled = dimStyle.Render(jobRate)
 	}
@@ -241,7 +243,11 @@ func OutputStyledResults(w io.Writer, urlResults []analyzer.URLResult, combined 
 		urlText := result.DisplayURL
 		maxW := contentWidth
 		if lipgloss.Width(urlText) > maxW {
-			urlText = urlText[:maxW-3] + "..."
+			runes := []rune(urlText)
+			for len(runes) > 3 && lipgloss.Width(string(runes))+3 > maxW {
+				runes = runes[:len(runes)-1]
+			}
+			urlText = string(runes) + "..."
 		}
 		linked := utils.MakeClickableLink(utils.ExpandGitHubURL(result.DisplayURL), urlText)
 		fmt.Fprintln(w, buildLeftLine(linked))
@@ -284,8 +290,8 @@ func OutputStyledResults(w io.Writer, urlResults []analyzer.URLResult, combined 
 			approvals := countReviewEvents(result.ReviewEvents, "shippit") + countReviewEvents(result.ReviewEvents, "merged")
 			merged := countReviewEvents(result.ReviewEvents, "merged") > 0
 			name := result.DisplayName
-			if len(name) > 38 {
-				name = name[:35] + "..."
+			if runes := []rune(name); len(runes) > 38 {
+				name = string(runes[:35]) + "..."
 			}
 			nameLinked := utils.MakeClickableLink(result.DisplayURL, name)
 			mergedText := dimStyle.Render("no")

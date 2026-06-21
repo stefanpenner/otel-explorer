@@ -90,11 +90,12 @@ func stripANSI(s string) string {
 // TruncateName truncates a span name to maxLen, appending "..." if truncated.
 func TruncateName(name string, maxLen int) string {
 	name = strings.TrimSpace(name)
-	if len(name) <= maxLen {
+	runes := []rune(name)
+	if len(runes) <= maxLen {
 		return name
 	}
 	if maxLen <= 3 {
-		return name[:maxLen]
+		return string(runes[:maxLen])
 	}
-	return name[:maxLen-3] + "..."
+	return string(runes[:maxLen-3]) + "..."
 }

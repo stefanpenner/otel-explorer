@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"time"
 
@@ -576,8 +577,7 @@ func flatAttr(k string, v interface{}) attribute.KeyValue {
 	case string:
 		return key.String(val)
 	case float64:
-		// JSON numbers are float64; use int if it's a whole number.
-		if val == float64(int64(val)) {
+		if val >= math.MinInt64 && val <= math.MaxInt64 && val == float64(int64(val)) {
 			return key.Int64(int64(val))
 		}
 		return key.Float64(val)

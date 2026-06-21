@@ -122,6 +122,17 @@ func TestParseWebhook(t *testing.T) {
 	}
 }
 
+func TestParseWebhook_OversizedPayload(t *testing.T) {
+	bigPayload := strings.Repeat("a", maxWebhookBytes+1)
+	_, err := ParseWebhook(strings.NewReader(bigPayload))
+	if err == nil {
+		t.Fatal("expected error for oversized payload")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Errorf("expected 'too large' error, got: %v", err)
+	}
+}
+
 func FuzzParseWebhook(f *testing.F) {
 	f.Add([]byte(`{"workflow_run":{"head_sha":"abc"},"repository":{"full_name":"o/r"}}`))
 	f.Add([]byte(`{"workflow_job":{"head_sha":"abc"},"repository":{"full_name":"o/r"}}`))

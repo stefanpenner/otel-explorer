@@ -20,6 +20,7 @@ type fakeProvider struct {
 	runs      []githubapi.WorkflowRun
 	listCalls atomic.Int64
 	jobCalls  atomic.Int64
+	jobErr    error
 }
 
 func (f *fakeProvider) FetchRecentWorkflowRuns(ctx context.Context, owner, repo string, days int, branch, workflow string, onPage func(fetched, total int)) ([]githubapi.WorkflowRun, error) {
@@ -38,6 +39,9 @@ func (f *fakeProvider) FetchRecentWorkflowRuns(ctx context.Context, owner, repo 
 
 func (f *fakeProvider) FetchJobsPaginated(ctx context.Context, urlValue string) ([]githubapi.Job, error) {
 	f.jobCalls.Add(1)
+	if f.jobErr != nil {
+		return nil, f.jobErr
+	}
 	var runID int64
 	idx := strings.LastIndex(urlValue, "/runs/")
 	if _, err := fmt.Sscanf(urlValue[idx:], "/runs/%d/jobs", &runID); err != nil {
@@ -62,9 +66,9 @@ func TestSyncIncremental(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		provider.runs = append(provider.runs, githubapi.WorkflowRun{
 			ID: int64(i + 1), RunAttempt: 1, Name: "CI", Status: "completed", Conclusion: "success",
-			HeadSHA:   fmt.Sprintf("sha%d", i),
-			CreatedAt: now.Add(-time.Duration(i+1) * time.Hour).Format(time.RFC3339),
-			UpdatedAt: now.Add(-time.Duration(i) * time.Hour).Format(time.RFC3339),
+			HeadSHA:    fmt.Sprintf("sha%d", i),
+			CreatedAt:  now.Add(-time.Duration(i+1) * time.Hour).Format(time.RFC3339),
+			UpdatedAt:  now.Add(-time.Duration(i) * time.Hour).Format(time.RFC3339),
 			Repository: githubapi.RepoRef{Owner: githubapi.RepoOwner{Login: "o"}, Name: "r"},
 		})
 	}
@@ -101,9 +105,9 @@ func TestSyncBackfillsDeeperHistory(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		provider.runs = append(provider.runs, githubapi.WorkflowRun{
 			ID: int64(i + 1), RunAttempt: 1, Name: "CI", Status: "completed", Conclusion: "success",
-			HeadSHA:   fmt.Sprintf("sha%d", i),
-			CreatedAt: now.Add(-time.Duration(i)*24*time.Hour - time.Hour).Format(time.RFC3339),
-			UpdatedAt: now.Add(-time.Duration(i) * 24 * time.Hour).Format(time.RFC3339),
+			HeadSHA:    fmt.Sprintf("sha%d", i),
+			CreatedAt:  now.Add(-time.Duration(i)*24*time.Hour - time.Hour).Format(time.RFC3339),
+			UpdatedAt:  now.Add(-time.Duration(i) * 24 * time.Hour).Format(time.RFC3339),
 			Repository: githubapi.RepoRef{Owner: githubapi.RepoOwner{Login: "o"}, Name: "r"},
 		})
 	}
@@ -124,4 +128,24 @@ func TestSyncBackfillsDeeperHistory(t *testing.T) {
 	for _, run := range runs {
 		assert.NotEmpty(t, run.Jobs, "backfilled run %d has job detail", run.ID)
 	}
+}
+
+func TestSyncPropagatesFetchJobsError(t *testing.T) {
+	t.Parallel()
+	st := openTestStore(t)
+
+	now := time.Now()
+	provider := &fakeProvider{jobErr: fmt.Errorf("api down")}
+	provider.runs = append(provider.runs, githubapi.WorkflowRun{
+		ID: int64(1), RunAttempt: 1, Name: "CI", Status: "completed", Conclusion: "success",
+		HeadSHA:    "sha1",
+		CreatedAt:  now.Add(-time.Hour).Format(time.RFC3339),
+		UpdatedAt:  now.Format(time.RFC3339),
+		Repository: githubapi.RepoRef{Owner: githubapi.RepoOwner{Login: "o"}, Name: "r"},
+	})
+
+	_, err := Sync(context.Background(), provider, st, "o", "r", 7, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "api down")
+	assert.Equal(t, int64(1), provider.jobCalls.Load(), "the failing run must still have been attempted")
 }

@@ -126,6 +126,7 @@ func emitReport(rep *export.Report, format, outFile string) error {
 	}
 	if err := render(f, rep); err != nil {
 		f.Close()
+		os.Remove(outFile)
 		return err
 	}
 	if err := f.Close(); err != nil {

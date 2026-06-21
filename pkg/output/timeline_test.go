@@ -405,3 +405,26 @@ func TestRenderOTelTimelineMarkerAlignment(t *testing.T) {
 		assert.Equal(t, 62, lipgloss.Width(interior), "interior display width mismatch: %q", line)
 	}
 }
+
+func TestBuildSpanTreeDuplicateSpanIDKeepsFirst(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	sid := trace.SpanID{1, 1, 1, 1, 1, 1, 1, 1}
+
+	span1 := &mockReadOnlySpan{
+		name:      "first-span",
+		startTime: now,
+		endTime:   now.Add(time.Second),
+		spanID:    sid,
+	}
+	span2 := &mockReadOnlySpan{
+		name:      "second-span",
+		startTime: now.Add(time.Second),
+		endTime:   now.Add(2 * time.Second),
+		spanID:    sid,
+	}
+
+	roots := BuildSpanTree([]sdktrace.ReadOnlySpan{span1, span2})
+
+	assert.NotEmpty(t, roots, "expected at least one root")
+	assert.Equal(t, "first-span", roots[0].Span.Name(), "should keep the first span for duplicate SpanIDs")
+}

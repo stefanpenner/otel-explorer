@@ -181,9 +181,26 @@ func TestRegistryFallsBackToTimestamp(t *testing.T) {
 }
 
 func TestTruncateName(t *testing.T) {
-	assert.Equal(t, "short", TruncateName("short", 80))
-	assert.Equal(t, "abcdefg...", TruncateName("abcdefghijklm", 10))
-	assert.Equal(t, "", TruncateName("  ", 80))
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		input   string
+		maxLen  int
+		want    string
+	}{
+		{name: "short", input: "short", maxLen: 80, want: "short"},
+		{name: "ascii truncate", input: "abcdefghijklm", maxLen: 10, want: "abcdefg..."},
+		{name: "whitespace only", input: "  ", maxLen: 80, want: ""},
+		{name: "multibyte no split", input: "ビルドとテストの実行", maxLen: 5, want: "ビル..."},
+		{name: "multibyte short passthrough", input: "ビルド", maxLen: 80, want: "ビルド"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, TruncateName(tc.input, tc.maxLen))
+		})
+	}
 }
 
 func TestCollapseSpansRepeatingNames(t *testing.T) {
@@ -400,4 +417,23 @@ func TestLeadingWord(t *testing.T) {
 	assert.Equal(t, "", leadingWord(""))
 	assert.Equal(t, "", leadingWord("[5 / 10] stuff"))  // starts with non-letter
 	assert.Equal(t, "", leadingWord("singleword"))       // no space = no prefix
+}
+
+func TestRegistryParseFiltersInsignificantSpans(t *testing.T) {
+	reg := NewRegistry()
+
+	base := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
+	lines := []LogLine{
+		{Time: base, Content: "Starting build", LineNum: 1},
+		{Time: base.Add(100 * time.Millisecond), Content: "Compiling", LineNum: 2},
+		{Time: base.Add(50 * time.Second), Content: "Linking", LineNum: 3},
+		{Time: base.Add(51*time.Second + 500*time.Millisecond), Content: "Packaging", LineNum: 4},
+	}
+
+	stepEnd := base.Add(200 * time.Second)
+	_, spans := reg.Parse(lines, base, stepEnd)
+
+	require.Len(t, spans, 2)
+	assert.Equal(t, "Starting build", spans[0].Name)
+	assert.Equal(t, "Packaging", spans[1].Name)
 }

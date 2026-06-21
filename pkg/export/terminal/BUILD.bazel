@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "terminal",
@@ -9,5 +9,17 @@ go_library(
         "//pkg/analyzer",
         "//pkg/enrichment",
         "@io_opentelemetry_go_otel_sdk//trace",
+    ],
+)
+
+go_test(
+    name = "terminal_test",
+    srcs = ["terminal_test.go"],
+    embed = [":terminal"],
+    deps = [
+        "//pkg/enrichment",
+        "@com_github_stretchr_testify//assert",
+        "@com_github_stretchr_testify//require",
+        "@io_opentelemetry_go_otel_sdk//trace/tracetest",
     ],
 )

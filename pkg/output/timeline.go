@@ -29,7 +29,11 @@ func BuildSpanTree(spans []trace.ReadOnlySpan) []*SpanNode {
 
 	// Create nodes for all spans
 	for _, s := range spans {
-		nodes[s.SpanContext().SpanID().String()] = &SpanNode{Span: s}
+		id := s.SpanContext().SpanID().String()
+		if _, exists := nodes[id]; exists {
+			continue
+		}
+		nodes[id] = &SpanNode{Span: s}
 	}
 
 	// Link children to parents

@@ -331,6 +331,11 @@ func profileStartTsMs(otherData map[string]any) (float64, bool) {
 	if !ok {
 		return 0, false
 	}
+	if n, ok := v.(json.Number); ok {
+		if f, err := n.Float64(); err == nil {
+			return f, true
+		}
+	}
 	if n, ok := v.(float64); ok {
 		return n, true
 	}

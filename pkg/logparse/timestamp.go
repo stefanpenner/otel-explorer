@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 // TimestampParser is a generic fallback parser that creates spans based on
@@ -90,11 +91,11 @@ func (p *TimestampParser) Parse(lines []LogLine, stepStart, stepEnd time.Time) [
 
 	// If there are groups, build a span tree with groups as parents
 	if len(groups) > 0 {
-		return filterBySignificance(p.parseWithGroups(topLevel, groups, stepStart, stepEnd), stepStart, stepEnd)
+		return p.parseWithGroups(topLevel, groups, stepStart, stepEnd)
 	}
 
 	// No groups — use the original gap-based parsing on all lines
-	return filterBySignificance(p.parseGapBased(lines, stepStart, stepEnd), stepStart, stepEnd)
+	return p.parseGapBased(lines, stepStart, stepEnd)
 }
 
 // parseWithGroups builds spans from a mix of top-level lines and group blocks.
@@ -369,7 +370,8 @@ func isNonSubstantiveName(name string) bool {
 		}
 	}
 	// If less than 20% of characters are alphanumeric, it's noise
-	if len(name) > 3 && float64(alphaCount)/float64(len(name)) < 0.2 {
+	rc := utf8.RuneCountInString(name)
+	if rc > 3 && float64(alphaCount)/float64(rc) < 0.2 {
 		return true
 	}
 	return false

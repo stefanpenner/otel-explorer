@@ -3,6 +3,9 @@ package enrichment
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestGenericEnricher_HTTP(t *testing.T) {
@@ -381,4 +384,18 @@ func TestGenericEnricher_Marker(t *testing.T) {
 	if h.Category != "marker" {
 		t.Errorf("expected category 'marker', got %q", h.Category)
 	}
+}
+
+func TestGenericEnricher_DBStatement_MultiByte(t *testing.T) {
+	t.Parallel()
+	e := &GenericEnricher{}
+	attrs := map[string]string{
+		"db.system":    "postgresql",
+		"db.statement": strings.Repeat("配", 40), // 40 runes, 120 bytes
+	}
+	hints := e.Enrich("SELECT * FROM users", attrs, false)
+	assert.True(t, utf8.ValidString(hints.Detail), "Detail must be valid UTF-8: %q", hints.Detail)
+	runes := []rune(hints.Detail)
+	// "postgresql: " (12 runes) + max 80 statement runes
+	assert.LessOrEqual(t, len(runes), 92, "Detail should be truncated to at most 92 runes")
 }

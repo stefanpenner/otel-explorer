@@ -74,3 +74,31 @@ func TestComputeHourlyPatternsInsufficientData(t *testing.T) {
 		t.Errorf("4 runs should yield nil, got %+v", hp)
 	}
 }
+
+func TestComputeHourlyPatterns_NoQueueData(t *testing.T) {
+	t.Parallel()
+	// 48 runs with durations but no queue times — PeakQueueHour
+	// must not falsely report hour 0 as the peak.
+	base := time.Date(2026, 6, 1, 9, 0, 0, 0, time.UTC)
+	var runs []RunData
+	for i := 0; i < 48; i++ {
+		runs = append(runs, RunData{
+			ID: int64(i + 1), WorkflowName: "CI", HeadSHA: fmt.Sprintf("s%d", i),
+			Status: "completed", Conclusion: "success",
+			CreatedAt: base.Add(time.Duration(i/2) * 24 * time.Hour),
+			Duration:  300_000,
+		})
+	}
+	hp := computeHourlyPatterns(runs)
+	if hp == nil {
+		t.Fatal("expected non-nil hourly patterns")
+	}
+	for _, h := range hp.Hours {
+		if h.QueueP50 > 0 {
+			t.Fatalf("expected no queue data, found QueueP50=%v at some hour", h.QueueP50)
+		}
+	}
+	if hp.PeakQueueHour == 0 {
+		t.Error("PeakQueueHour should not be 0 when no queue data exists — it falsely suggests midnight is the peak")
+	}
+}

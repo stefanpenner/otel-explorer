@@ -38,6 +38,20 @@ func TestLinkNameShortNameUnchanged(t *testing.T) {
 	}
 }
 
+func TestGenerateASCIIChartHeightOneNoPanic(t *testing.T) {
+	day := func(d int) time.Time {
+		return time.Date(2026, 1, 1+d, 0, 0, 0, 0, time.UTC)
+	}
+	points := []analyzer.DataPoint{
+		{Timestamp: day(0), Value: 10},
+		{Timestamp: day(1), Value: 20},
+	}
+	chart := generateASCIIChart(points, 10, 1, "seconds")
+	if chart == "" {
+		t.Fatal("expected non-empty chart for height=1")
+	}
+}
+
 func TestGenerateASCIIChartTimeAxis(t *testing.T) {
 	day := func(d int) time.Time {
 		return time.Date(2026, 1, 1+d, 0, 0, 0, 0, time.UTC)
