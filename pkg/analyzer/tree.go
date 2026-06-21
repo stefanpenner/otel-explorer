@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/stefanpenner/otel-explorer/pkg/enrichment"
@@ -47,6 +48,31 @@ type TreeNode struct {
 // Duration returns the duration of this node
 func (n *TreeNode) Duration() time.Duration {
 	return n.EndTime.Sub(n.StartTime)
+}
+
+// SourceLabel returns a short, human-readable provenance for this span: which
+// emitter produced it. Derived from resource service.name, the source attribute,
+// and the instrumentation scope.
+//   - a tool/app the runner propagated into (e.g. "jest") -> that service name
+//   - the GitHub Actions runner                          -> "runner"
+//   - the otel-explorer GitHub-API reconstruction         -> "github-api"
+func (n *TreeNode) SourceLabel() string {
+	svc := n.Hints.ServiceName
+	if svc == "" {
+		svc = n.ResourceAttrs["service.name"]
+	}
+	switch {
+	case svc != "" && svc != "github-actions-runner":
+		return svc
+	case svc == "github-actions-runner" || n.Attrs["source"] == "runner" || n.ScopeName == "github.actions.runner":
+		return "runner"
+	case strings.Contains(n.ScopeName, "otel-explorer"):
+		return "github-api"
+	case n.ScopeName != "":
+		return n.ScopeName
+	default:
+		return "github-api"
+	}
 }
 
 // BuildTreeFromSpans constructs a hierarchy of TreeNodes from OTel spans.

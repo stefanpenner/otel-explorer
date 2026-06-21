@@ -4,14 +4,14 @@ import "github.com/charmbracelet/lipgloss"
 
 // Tokyo Night inspired color palette
 var (
-	ColorPurple   = lipgloss.Color("#bb9af7")
-	ColorGreen    = lipgloss.Color("#9ece6a")
-	ColorBlue     = lipgloss.Color("#7aa2f7")
-	ColorRed      = lipgloss.Color("#f7768e")
-	ColorYellow   = lipgloss.Color("#e0af68")
-	ColorGray     = lipgloss.Color("#565f89")
-	ColorGrayDim  = lipgloss.Color("#3b4261")
-	ColorWhite    = lipgloss.Color("#c0caf5")
+	ColorPurple      = lipgloss.Color("#bb9af7")
+	ColorGreen       = lipgloss.Color("#9ece6a")
+	ColorBlue        = lipgloss.Color("#7aa2f7")
+	ColorRed         = lipgloss.Color("#f7768e")
+	ColorYellow      = lipgloss.Color("#e0af68")
+	ColorGray        = lipgloss.Color("#565f89")
+	ColorGrayDim     = lipgloss.Color("#3b4261")
+	ColorWhite       = lipgloss.Color("#c0caf5")
 	ColorOffWhite    = lipgloss.Color("#a9b1d6")
 	ColorMagenta     = lipgloss.Color("#bb9af7")
 	ColorSelectionBg = lipgloss.Color("#283457")
@@ -62,6 +62,23 @@ var (
 	SeparatorStyle = lipgloss.NewStyle().
 			Foreground(ColorGrayDim)
 )
+
+// SourceHintColor returns the accent color for a provenance label shown in the
+// tree (the " ← <source>" hint at a source boundary). Each emitter class gets a
+// distinct color so boundaries are scannable at a glance:
+//   - runner     -> blue   (native runner spans)
+//   - github-api -> gray   (reconstructed from the REST API; de-emphasized)
+//   - everything else (a propagated tool's service.name) -> purple
+func SourceHintColor(label string) lipgloss.Color {
+	switch label {
+	case "runner":
+		return ColorBlue
+	case "github-api":
+		return ColorGray
+	default:
+		return ColorMagenta
+	}
+}
 
 // Tree item styles
 var (
@@ -117,13 +134,13 @@ var (
 // Logical end badge style
 var (
 	LogicalEndBadgeStyle = lipgloss.NewStyle().
-				Foreground(ColorYellow)
+		Foreground(ColorYellow)
 )
 
 // Hidden badge style (shows when item is excluded from chart via x key)
 var (
 	HiddenBadgeStyle = lipgloss.NewStyle().
-				Foreground(ColorGrayDim)
+		Foreground(ColorGrayDim)
 )
 
 // Timeline bar colors

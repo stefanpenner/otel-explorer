@@ -125,6 +125,12 @@ func BuildInspectorTree(item *TreeItem) []*InspectorNode {
 	// Trace Identity
 	if item.TraceID != "" || item.SpanID != "" {
 		s := &InspectorNode{Label: "Trace Identity", IsSection: true, Expanded: true}
+		// Provenance: which emitter produced this span (runner / github-api / a tool).
+		if item.sourceNode != nil {
+			if src := item.sourceNode.SourceLabel(); src != "" {
+				s.Children = append(s.Children, &InspectorNode{Label: "Source", Value: src})
+			}
+		}
 		if item.TraceID != "" {
 			s.Children = append(s.Children, &InspectorNode{Label: "Trace ID", Value: item.TraceID})
 		}
@@ -295,7 +301,7 @@ func BuildInspectorTree(item *TreeItem) []*InspectorNode {
 // trieNode is used internally to build a prefix trie for dotted attribute grouping.
 type trieNode struct {
 	segment  string
-	value    string   // non-empty only for leaf nodes
+	value    string // non-empty only for leaf nodes
 	hasValue bool
 	children []*trieNode
 }

@@ -606,6 +606,17 @@ func (m Model) renderItem(item TreeItem, isSelected bool, itemIdx int) string {
 		name = fmt.Sprintf("%s %s %s", name, m.spinner.View(), phase)
 	}
 
+	// Provenance hint at a source boundary (e.g. "build ← runner", "unit tests ← jest").
+	// Kept as a separate segment (not baked into name) so the label can be color-coded
+	// on active rows and inherit dim styling on inactive ones. Width is reserved below
+	// and the segment is appended per render-branch.
+	hintPlain := ""
+	hintWidth := 0
+	if item.SourceHint != "" {
+		hintPlain = " ← " + item.SourceHint
+		hintWidth = lipgloss.Width(hintPlain)
+	}
+
 	// Build duration string separately (styled in gray)
 	durationStr := ""
 	durationWidth := 0
@@ -620,7 +631,7 @@ func (m Model) renderItem(item TreeItem, isSelected bool, itemIdx int) string {
 
 	// Calculate available space for name
 	// Format: indent + expand + space + icon + space + name + duration + badges + endBadge + hiddenBadge + space + status
-	usedWidth := indentWidth + expandWidth + 1 + iconWidth + 1 + durationWidth + badgesWidth + endBadgeWidth + hiddenBadgeWidth + 1 + statusWidth
+	usedWidth := indentWidth + expandWidth + 1 + iconWidth + 1 + hintWidth + durationWidth + badgesWidth + endBadgeWidth + hiddenBadgeWidth + 1 + statusWidth
 	maxNameWidth := treeW - usedWidth
 	if maxNameWidth < 5 {
 		maxNameWidth = 5
@@ -646,7 +657,7 @@ func (m Model) renderItem(item TreeItem, isSelected bool, itemIdx int) string {
 
 	// Calculate tree part width from known component widths (avoids issues with escape sequences)
 	// Format: indent + expand + space + icon + space + name + duration + badges + endBadge + hiddenBadge + space + status
-	treePartWidth := indentWidth + expandWidth + 1 + iconWidth + 1 + nameWidth + durationWidth + badgesWidth + endBadgeWidth + hiddenBadgeWidth + 1 + statusWidth
+	treePartWidth := indentWidth + expandWidth + 1 + iconWidth + 1 + nameWidth + hintWidth + durationWidth + badgesWidth + endBadgeWidth + hiddenBadgeWidth + 1 + statusWidth
 
 	// Pad tree part to fixed width
 	treePadding := treeW - treePartWidth
@@ -693,6 +704,9 @@ func (m Model) renderItem(item TreeItem, isSelected bool, itemIdx int) string {
 		selDur := FooterStyle.Background(ColorSelectionBg)
 		prefix := fmt.Sprintf("%s%s %s %s", indent, expandIndicator, icon, displayName)
 		treePart = sel.Render(prefix)
+		if hintPlain != "" {
+			treePart += lipgloss.NewStyle().Foreground(SourceHintColor(item.SourceHint)).Background(ColorSelectionBg).Render(hintPlain)
+		}
 		if durationStr != "" {
 			treePart += selDur.Render(durationStr)
 		}
@@ -710,6 +724,9 @@ func (m Model) renderItem(item TreeItem, isSelected bool, itemIdx int) string {
 		rowDur := FooterStyle.Background(ColorSearchRowBg)
 		prefix := fmt.Sprintf("%s%s %s %s", indent, expandIndicator, icon, displayName)
 		treePart = row.Render(prefix)
+		if hintPlain != "" {
+			treePart += lipgloss.NewStyle().Foreground(SourceHintColor(item.SourceHint)).Background(ColorSearchRowBg).Render(hintPlain)
+		}
 		if durationStr != "" {
 			treePart += rowDur.Render(durationStr)
 		}
@@ -728,25 +745,29 @@ func (m Model) renderItem(item TreeItem, isSelected bool, itemIdx int) string {
 		if isHidden {
 			hiddenBadge = " ⊘"
 		}
-		treePart = FocusDimStyle.Render(fmt.Sprintf("%s%s %s %s%s%s %s%s",
-			indentPlain, expandIndicator, icon, name, durationStr, badges, getStatusIcon(item), hiddenBadge))
+		treePart = FocusDimStyle.Render(fmt.Sprintf("%s%s %s %s%s%s%s %s%s",
+			indentPlain, expandIndicator, icon, name, hintPlain, durationStr, badges, getStatusIcon(item), hiddenBadge))
 	} else if isHidden {
 		// Hidden from chart: render in gray with ⊘ badge
-		treePart = HiddenStyle.Render(fmt.Sprintf("%s%s %s %s%s%s %s",
-			indentPlain, expandIndicator, icon, name, durationStr, badges, getStatusIcon(item))) +
+		treePart = HiddenStyle.Render(fmt.Sprintf("%s%s %s %s%s%s%s %s",
+			indentPlain, expandIndicator, icon, name, hintPlain, durationStr, badges, getStatusIcon(item))) +
 			HiddenBadgeStyle.Render(" ⊘")
 	} else if isAfterEnd {
 		// After logical end: render in gray (dimmed) using plain text to avoid inner ANSI overrides
-		treePart = HiddenStyle.Render(fmt.Sprintf("%s%s %s %s%s%s %s",
-			indentPlain, expandIndicator, icon, name, durationStr, badges, getStatusIcon(item)))
+		treePart = HiddenStyle.Render(fmt.Sprintf("%s%s %s %s%s%s%s %s",
+			indentPlain, expandIndicator, icon, name, hintPlain, durationStr, badges, getStatusIcon(item)))
 	} else {
 		styledDuration := ""
 		if durationStr != "" {
 			styledDuration = FooterStyle.Render(durationStr)
 		}
 		styledStatusIcon := getStyledStatusIcon(item)
-		treePart = fmt.Sprintf("%s%s %s %s%s%s", indent, expandIndicator, icon, displayName, styledDuration, badges) +
-			styledEndBadge + fmt.Sprintf(" %s", styledStatusIcon)
+		styledHint := ""
+		if hintPlain != "" {
+			styledHint = lipgloss.NewStyle().Foreground(SourceHintColor(item.SourceHint)).Render(hintPlain)
+		}
+		treePart = fmt.Sprintf("%s%s %s %s", indent, expandIndicator, icon, displayName) + styledHint +
+			fmt.Sprintf("%s%s", styledDuration, badges) + styledEndBadge + fmt.Sprintf(" %s", styledStatusIcon)
 	}
 
 	// Render timeline bar (empty if hidden, dimmed colors if selected, full colors otherwise)

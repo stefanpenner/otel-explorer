@@ -87,6 +87,7 @@ type TreeItem struct {
 	ParentID     string
 	Children     []*TreeItem
 	Hints        enrichment.SpanHints // enrichment hints from source node
+	SourceHint   string               // provenance label shown when source differs from parent (e.g. "runner", "jest")
 	sourceNode   *analyzer.TreeNode
 	// OTel metadata surfaced for display
 	Events        []analyzer.SpanEvent
@@ -276,7 +277,7 @@ func partitionAndGroup(roots []*analyzer.TreeNode, parentID string, depth int, e
 		var earliest, latest time.Time
 		var children []*TreeItem
 		for i, m := range markers {
-			child := convertNode(m, groupID, i, depth+1, expandedState)
+			child := convertNode(m, groupID, i, depth+1, expandedState, "")
 			children = append(children, child)
 			if !m.StartTime.IsZero() && (earliest.IsZero() || m.StartTime.Before(earliest)) {
 				earliest = m.StartTime
@@ -303,13 +304,13 @@ func partitionAndGroup(roots []*analyzer.TreeNode, parentID string, depth int, e
 	}
 
 	for i, wf := range workflows {
-		items = append(items, convertNode(wf, parentID, i, depth, expandedState))
+		items = append(items, convertNode(wf, parentID, i, depth, expandedState, ""))
 	}
 
 	return items
 }
 
-func convertNode(node *analyzer.TreeNode, parentID string, index, depth int, expandedState map[string]bool) *TreeItem {
+func convertNode(node *analyzer.TreeNode, parentID string, index, depth int, expandedState map[string]bool, parentSource string) *TreeItem {
 	id := makeNodeID(parentID, node.Name, index)
 
 	itemType := itemTypeFromNode(node)
@@ -322,10 +323,21 @@ func convertNode(node *analyzer.TreeNode, parentID string, index, depth int, exp
 		}
 	}
 
+	// Provenance hint: when a sub-tree's source differs from its parent's, tag the
+	// boundary node (e.g. "build ← runner", "unit tests ← jest", "Queued ← github-api").
+	// Kept in a separate field (not baked into the name) so name-based lookups,
+	// focus, and search stay clean; the renderer appends it dimly.
+	source := node.SourceLabel()
+	sourceHint := ""
+	if source != "" && source != parentSource {
+		sourceHint = source
+	}
+
 	item := &TreeItem{
 		ID:            id,
 		Name:          displayName,
 		DisplayName:   displayName,
+		SourceHint:    sourceHint,
 		StartTime:     node.StartTime,
 		EndTime:       node.EndTime,
 		Depth:         depth,
@@ -361,7 +373,7 @@ func convertNode(node *analyzer.TreeNode, parentID string, index, depth int, exp
 
 	// Convert regular children
 	for i, child := range regularChildren {
-		childItem := convertNode(child, id, i, depth+1, expandedState)
+		childItem := convertNode(child, id, i, depth+1, expandedState, source)
 		item.Children = append(item.Children, childItem)
 	}
 
@@ -471,7 +483,6 @@ func BuildSpanIndex(items []*TreeItem) *SpanIndex {
 	return idx
 }
 
-
 // buildArtifactFolder creates a collapsible folder of artifacts, with trace spans
 // nested under their source artifact.
 func buildArtifactFolder(node *analyzer.TreeNode, parentID string, depth int, artifactChildren []*analyzer.TreeNode, expandedState map[string]bool) *TreeItem {
@@ -544,7 +555,7 @@ func buildArtifactFolder(node *analyzer.TreeNode, parentID string, depth int, ar
 			artifactItem.ItemType = ItemTypeIntermediate
 			artifactItem.Hints.Icon = "◈ "
 			for i, ac := range traceSpans {
-				child := convertNode(ac, artifactID, i, depth+2, expandedState)
+				child := convertNode(ac, artifactID, i, depth+2, expandedState, "")
 				artifactItem.Children = append(artifactItem.Children, child)
 				if !ac.StartTime.IsZero() && (earliest.IsZero() || ac.StartTime.Before(earliest)) {
 					earliest = ac.StartTime
@@ -581,7 +592,7 @@ func buildArtifactFolder(node *analyzer.TreeNode, parentID string, depth int, ar
 			},
 		}
 		for i, ac := range spans {
-			child := convertNode(ac, artifactID, i, depth+2, expandedState)
+			child := convertNode(ac, artifactID, i, depth+2, expandedState, "")
 			artifactItem.Children = append(artifactItem.Children, child)
 			if !ac.StartTime.IsZero() && (earliest.IsZero() || ac.StartTime.Before(earliest)) {
 				earliest = ac.StartTime
