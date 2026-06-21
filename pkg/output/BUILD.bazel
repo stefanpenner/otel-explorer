@@ -33,6 +33,7 @@ go_test(
     name = "output_test",
     srcs = [
         "markdown_test.go",
+        "nest_test.go",
         "render_fuzz_test.go",
         "styled_test.go",
         "timeline_test.go",

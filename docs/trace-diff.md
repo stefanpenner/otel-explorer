@@ -46,9 +46,13 @@ a live Tempo trace on the other.
 
 - **Wall clock** — end-to-end time before → after, with the signed delta.
 - **Structural changes** — jobs/steps present on only one side (added/removed),
-  matched by their position in the workflow→job→step hierarchy (so a matrix
-  dimension that moves, e.g. `test (ruby 3.2)` → `test (ruby 3.4)`, shows as one
-  removed and one added).
+  matched by their position in the workflow→job→step hierarchy.
+- **Renames** — when an unmatched pair is similar enough (shared child structure
+  and/or near-identical name), it collapses into one `R old → new` entry instead
+  of a separate add + remove — the way `git diff -M` detects a moved file. A
+  matrix dimension bump (`test (ruby 3.2)` → `test (ruby 3.4)`) becomes a single
+  rename whose children are still diffed, so an inner regression still surfaces
+  and a pure relabel stays out of the top movers.
 - **Status flips** — every span that changed `success`/`failure`/`skipped`.
 - **Top movers** — the wall-clock change *attributed* to the smallest set of
   responsible spans. A job that merely passes a slow step's regression upward is
@@ -122,3 +126,11 @@ between runs). This is the analogue of git matching files by path. Two steps
 named identically in one job match positionally; a third copy on one side is an
 add/remove. Matched spans recurse into their children; a matched node is
 reported `Changed` if its own duration/status moved or anything beneath it did.
+
+After exact matching, a **rename pass** (git's `-M`) runs over whatever is left:
+each leftover removal is scored against each leftover addition of the same
+category by similarity — child-set overlap (Jaccard, the "content") weighted 70%
+plus a name bigram Dice score weighted 30%, or name alone for leaf nodes. Pairs
+scoring ≥ 0.5 are collapsed greedily, highest score first, each node used once.
+Below the threshold they stay a separate add + remove, so spurious renames are
+never invented.
