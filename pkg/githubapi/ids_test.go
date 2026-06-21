@@ -65,10 +65,10 @@ func TestCrossLanguageGoldenIDs(t *testing.T) {
 		got  string
 		want string
 	}{
-		{"trace", NewTraceID(99999, 1).String(), "37912fcf8909bcb43fd643580e6b5ee1"},
+		{"trace", NewTraceID(99999, 1).String(), "acad1e2a107636235fd56bb742499bd0"},
 		{"workflow", NewSpanID(99999).String(), "000000000001869f"},
-		{"job", NewJobSpanID(99999, 1, "build").String(), "224bc2674c838206"},
-		{"step", NewStepSpanID(99999, 1, "build", 3, "Run tests").String(), "ac6971a4ea7639e5"},
+		{"job", NewJobSpanID(99999, 1, "build").String(), "81606d47848a59c0"},
+		{"step", NewStepSpanID(99999, 1, "build", 3, "Run tests").String(), "7a4c67339b7bb8a7"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {

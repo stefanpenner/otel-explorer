@@ -1,12 +1,17 @@
 package githubapi
 
 import (
-	"crypto/md5"
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 
 	"go.opentelemetry.io/otel/trace"
 )
+
+// Deterministic IDs use SHA-256 truncated to the ID length (16 bytes for a trace
+// ID, 8 for a span ID) — NOT MD5, which is disallowed under FIPS on the runner
+// side. Both implementations must hash identical strings and take the same
+// leading bytes so runner-emitted and API-reconstructed spans still merge.
 
 // NewTraceID returns a deterministic TraceID based on GitHub Workflow Run ID and Attempt.
 func NewTraceID(runID int64, runAttempt int64) trace.TraceID {
@@ -14,7 +19,10 @@ func NewTraceID(runID int64, runAttempt int64) trace.TraceID {
 		runAttempt = 1
 	}
 	id := fmt.Sprintf("%d-%d", runID, runAttempt)
-	return trace.TraceID(md5.Sum([]byte(id)))
+	sum := sha256.Sum256([]byte(id))
+	var tid trace.TraceID
+	copy(tid[:], sum[:16])
+	return tid
 }
 
 // NewSpanID returns a deterministic SpanID based on a GitHub ID (e.g., Job ID).
@@ -26,7 +34,7 @@ func NewSpanID(id int64) trace.SpanID {
 
 // NewSpanIDFromString returns a deterministic SpanID based on a string (e.g., Step Name).
 func NewSpanIDFromString(s string) trace.SpanID {
-	sum := md5.Sum([]byte(s))
+	sum := sha256.Sum256([]byte(s))
 	var sid trace.SpanID
 	copy(sid[:], sum[:8])
 	return sid
@@ -38,7 +46,7 @@ func NewSpanIDFromString(s string) trace.SpanID {
 //
 // Shared contract (mirrored in the runner's OTelTraceExporter.cs):
 //
-//	md5("job-{runID}-{runAttempt}-{jobName}")[:8]
+//	sha256("job-{runID}-{runAttempt}-{jobName}")[:8]
 func NewJobSpanID(runID int64, runAttempt int64, jobName string) trace.SpanID {
 	if runAttempt == 0 {
 		runAttempt = 1
@@ -48,7 +56,7 @@ func NewJobSpanID(runID int64, runAttempt int64, jobName string) trace.SpanID {
 
 // NewStepSpanID returns a deterministic step SpanID matching the runner contract:
 //
-//	md5("step-{runID}-{runAttempt}-{jobName}-{stepNumber}-{stepName}")[:8]
+//	sha256("step-{runID}-{runAttempt}-{jobName}-{stepNumber}-{stepName}")[:8]
 //
 // The 1-based step number disambiguates two steps that share a display name.
 func NewStepSpanID(runID int64, runAttempt int64, jobName string, stepNumber int, stepName string) trace.SpanID {
