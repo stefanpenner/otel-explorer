@@ -321,6 +321,29 @@ The conventions above are recognized regardless of how the spans arrive:
   with `--trace-id=`.
 - **GitHub Actions** — a PR/commit URL is fetched and modeled as spans.
 
+## Output formats
+
+The same enrichment drives every output. The interactive TUI is the default;
+`--no-tui` prints the styled terminal view shown throughout this page; and
+`--output=markdown` produces a shareable report that includes the **Resources**
+and **LLM Usage** summaries followed by the timeline in a fenced block:
+
+```markdown
+## Resources
+
+- api-gateway · production · v2.3.1 · aws/us-east-1 · k8s frontend/api-gateway-7d9f8 · host ip-10-0-1-42
+- rag-worker · production · v0.9.4 · aws/us-east-1 · k8s backend/rag-worker-5c4b2 · python
+
+## LLM Usage
+
+**1 call · 5.1k → 430 tokens**
+
+- claude-opus-4 ×1
+```
+
+Structured exports (`--output=json|html|xlsx|doc|slack`) and Perfetto
+(`--perfetto`) are also available.
+
 ---
 
 ## Checking your own instrumentation
