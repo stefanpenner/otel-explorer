@@ -1,0 +1,52 @@
+# Helm values to deploy the native-OTel runner (actions/runner#4366) into the
+# local kind ARC install, replacing the stock runner image.
+#
+#   docker build -f otel-runner.Dockerfile -t otel-runner:dev .   # in the runner repo
+#   kind load docker-image otel-runner:dev --name gha-runner
+#   helm upgrade arc-runner-set \
+#     oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set \
+#     -n arc-runners --version 0.14.1 -f otel-runner-upgrade-values.yaml
+#
+# Preserves the live release's repo/secret/labels/listener; adds the runner
+# pod template pointing at the locally-built image + native OTel export.
+
+githubConfigUrl: https://github.com/stefanpenner/-ci-test
+githubConfigSecret: arc-github-secret
+
+minRunners: 0
+maxRunners: 3
+scaleSetLabels:
+  - kind
+
+# keep the instrumented listener (PR#4465) exporting its metrics
+listenerTemplate:
+  spec:
+    containers:
+      - name: listener
+        env:
+          - name: OTEL_EXPORTER_OTLP_ENDPOINT
+            value: otel-collector.observability.svc:4318
+          - name: OTEL_EXPORTER_OTLP_INSECURE
+            value: "true"
+
+# the runner pod: locally-built native-OTel image + endpoint opt-in
+template:
+  spec:
+    containers:
+      - name: runner
+        image: otel-runner:dev
+        imagePullPolicy: Never          # kind-loaded local image; never pull
+        command: ["/home/runner/run.sh"]
+        env:
+          - name: ACTIONS_RUNNER_OTLP_ENDPOINT
+            value: "http://otel-collector.observability.svc:4318"
+          - name: ACTIONS_RUNNER_OTLP_PROPAGATE
+            value: "true"
+          - name: K8S_POD_NAME
+            valueFrom: { fieldRef: { fieldPath: metadata.name } }
+          - name: K8S_NAMESPACE_NAME
+            valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+          - name: K8S_NODE_NAME
+            valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+          - name: OTEL_RESOURCE_ATTRIBUTES
+            value: "service.name=github-actions-runner,k8s.pod.name=$(K8S_POD_NAME),k8s.namespace.name=$(K8S_NAMESPACE_NAME),k8s.node.name=$(K8S_NODE_NAME)"
