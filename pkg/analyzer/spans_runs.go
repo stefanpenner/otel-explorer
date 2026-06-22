@@ -39,6 +39,108 @@ type SpanStep struct {
 	URL        string
 }
 
+// spanClass is the run/job/step classification of a single span.
+type spanClass struct {
+	span  sdktrace.ReadOnlySpan
+	hints enrichment.SpanHints
+	attrs map[string]string
+	kind  string // "run", "job", "step", ""
+	// runIsJob marks the collapsed job-as-root emitted by the native GitHub
+	// Actions runner: a trace-root span that carries run-level attributes
+	// (cicd.pipeline.run.id) AND task-level attributes (cicd.pipeline.task.*).
+	// The runner emits no separate workflow-run span above the job, so this
+	// single span represents BOTH the run and the job for counting.
+	runIsJob bool
+}
+
+// presentSpanIDs returns the set of span IDs present in the batch, so root
+// detection can treat a span whose parent is absent (a "dangling" parent ref)
+// as a trace root. The native runner emits the job as the trace root with its
+// parent pointing at a workflow-run span it never exports, so that ref dangles.
+func presentSpanIDs(spans []sdktrace.ReadOnlySpan) map[trace.SpanID]bool {
+	ids := make(map[trace.SpanID]bool, len(spans))
+	for _, s := range spans {
+		ids[s.SpanContext().SpanID()] = true
+	}
+	return ids
+}
+
+// isTraceRoot reports whether a span is a root of the ingested batch: it has no
+// parent, or its parent is not present among the spans (dangling ref).
+func isTraceRoot(span sdktrace.ReadOnlySpan, present map[trace.SpanID]bool) bool {
+	parent := span.Parent().SpanID()
+	if !parent.IsValid() {
+		return true
+	}
+	return !present[parent]
+}
+
+// classifySpans assigns each span a run/job/step kind using enricher hints plus
+// trace topology. It recognizes two CI shapes:
+//
+//   - ote's GitHub-API model: a workflow-run root (run) → jobs → steps, keyed
+//     off the enricher's IsRoot/IsLeaf hints.
+//   - the native GitHub Actions runner contract: a job span as the trace root
+//     carrying cicd.pipeline.run.id (the run) with cicd.pipeline.task.* step
+//     children. There is no separate workflow-run span, so the job-root counts
+//     as both the run and the job, and its cicd task children count as steps.
+func classifySpans(spans []sdktrace.ReadOnlySpan, enricher enrichment.Enricher) []spanClass {
+	present := presentSpanIDs(spans)
+	items := make([]spanClass, 0, len(spans))
+
+	// Pass A: enrich and identify run-roots (incl. the native runner's
+	// job-as-root). runnerRunRoots holds the span IDs of native runner roots so
+	// their cicd task children can be classified as steps in pass B.
+	runnerRunRoots := make(map[trace.SpanID]bool)
+	for _, s := range spans {
+		attrs := spanAttrs(s)
+		hints := enricher.Enrich(s.Name(), attrs, isZeroDur(s))
+		root := isTraceRoot(s, present)
+		kind := ""
+		runIsJob := false
+		switch {
+		case hints.Category == "" || hints.IsMarker:
+			kind = ""
+		case root && attrs["cicd.pipeline.run.id"] != "":
+			// Native runner job-as-root: the run. If it also carries task
+			// attributes it is the collapsed job too.
+			kind = "run"
+			runIsJob = attrs["cicd.pipeline.task.name"] != ""
+			if runIsJob {
+				runnerRunRoots[s.SpanContext().SpanID()] = true
+			}
+		case hints.IsRoot || !s.Parent().SpanID().IsValid():
+			// Enricher-declared roots, or truly parentless spans (untyped /
+			// Chrome-converted traces). A merely dangling parent does NOT
+			// promote a span to a run — that is handled above, only for the
+			// native runner contract (cicd.pipeline.run.id present).
+			kind = "run"
+		case hints.IsLeaf:
+			kind = "step"
+		default:
+			kind = "job"
+		}
+		items = append(items, spanClass{span: s, hints: hints, attrs: attrs, kind: kind, runIsJob: runIsJob})
+	}
+
+	// Pass B: native runner task spans are a flat run→task tree. A cicd task
+	// span whose parent is the job-as-root is a step, not a job. (ote's own
+	// GitHub-API model and multi-level pipelines are untouched: their job spans
+	// don't parent directly to a runner run-root.)
+	if len(runnerRunRoots) > 0 {
+		for i := range items {
+			it := &items[i]
+			if it.kind != "job" || it.attrs["cicd.pipeline.task.name"] == "" {
+				continue
+			}
+			if runnerRunRoots[it.span.Parent().SpanID()] {
+				it.kind = "step"
+			}
+		}
+	}
+	return items
+}
+
 // RunsFromSpans reconstructs runs/jobs/steps from spans using the same
 // enricher-aware classification as the summary and timeline (root → run,
 // leaf → step, else → job). Spans the enricher can't categorize (untyped
@@ -46,31 +148,14 @@ type SpanStep struct {
 // are grouped under a single fallback run so nothing is dropped. Input order
 // is preserved for deterministic output.
 func RunsFromSpans(spans []sdktrace.ReadOnlySpan, enricher enrichment.Enricher) []SpanRun {
-	type classified struct {
-		span  sdktrace.ReadOnlySpan
-		hints enrichment.SpanHints
-		attrs map[string]string
-		kind  string // "run", "job", "step", ""
-	}
+	type classified = spanClass
 
+	classes := classifySpans(spans, enricher)
 	items := make([]classified, 0, len(spans))
 	byID := make(map[trace.SpanID]int, len(spans)) // spanID → index in items
-	for _, s := range spans {
-		attrs := spanAttrs(s)
-		hints := enricher.Enrich(s.Name(), attrs, isZeroDur(s))
-		kind := ""
-		switch {
-		case hints.Category == "" || hints.IsMarker:
-			kind = ""
-		case isRootSpan(s, hints):
-			kind = "run"
-		case hints.IsLeaf:
-			kind = "step"
-		default:
-			kind = "job"
-		}
-		byID[s.SpanContext().SpanID()] = len(items)
-		items = append(items, classified{span: s, hints: hints, attrs: attrs, kind: kind})
+	for _, it := range classes {
+		byID[it.span.SpanContext().SpanID()] = len(items)
+		items = append(items, it)
 	}
 
 	var runs []SpanRun
@@ -111,13 +196,33 @@ func RunsFromSpans(spans []sdktrace.ReadOnlySpan, enricher enrichment.Enricher) 
 			continue
 		}
 		runs = append(runs, SpanRun{
-			Identifier: firstNonEmpty(it.hints.RunID, it.attrs["github.run_id"]),
+			// Prefer the run-level id; cicd.pipeline.run.id is authoritative on
+			// the native runner's job-as-root, where hints.RunID would hold the
+			// task run id instead.
+			Identifier: firstNonEmpty(it.attrs["cicd.pipeline.run.id"], it.hints.RunID, it.attrs["github.run_id"]),
 			Name:       firstNonEmpty(it.attrs["cicd.pipeline.name"], it.span.Name()),
 			URL:        firstNonEmpty(it.hints.URL, it.attrs["github.url"]),
 			Branch:     it.hints.VCSBranch,
 			Conclusion: it.hints.Outcome,
 		})
-		runIndex[it.span.SpanContext().SpanID()] = len(runs) - 1
+		ri := len(runs) - 1
+		runIndex[it.span.SpanContext().SpanID()] = ri
+
+		// Native runner job-as-root: the run span is also the job. Materialize
+		// the implicit job so step children (whose parent is this span) nest
+		// under it, and so job counts are non-zero.
+		if it.runIsJob {
+			runs[ri].Jobs = append(runs[ri].Jobs, SpanJob{
+				Name:       firstNonEmpty(it.attrs["cicd.pipeline.task.name"], it.span.Name()),
+				Status:     it.attrs["github.status"],
+				Conclusion: it.hints.Outcome,
+				StartMs:    it.span.StartTime().UnixMilli(),
+				EndMs:      it.span.EndTime().UnixMilli(),
+				Required:   it.hints.IsRequired,
+				URL:        firstNonEmpty(it.hints.URL, it.attrs["cicd.pipeline.task.run.url.full"], it.attrs["github.url"]),
+			})
+			jobLoc[it.span.SpanContext().SpanID()] = [2]int{ri, len(runs[ri].Jobs) - 1}
+		}
 	}
 
 	// Pass 2: jobs.

@@ -13,30 +13,36 @@ import (
 // header even though the timeline below is fully populated.
 func CombinedMetricsFromSpans(spans []trace.ReadOnlySpan, enricher enrichment.Enricher) CombinedMetrics {
 	var runs, knownRuns, successRuns, jobs, knownJobs, failedJobs, steps int
-	for _, span := range spans {
-		hints := enrichSpan(span, enricher)
-		if hints.Category == "" || hints.IsMarker {
-			continue
+	countJob := func(outcome string) {
+		jobs++
+		if outcome != "" {
+			knownJobs++
 		}
-		switch {
-		case isRootSpan(span, hints):
+		if outcome == "failure" {
+			failedJobs++
+		}
+	}
+	for _, it := range classifySpans(spans, enricher) {
+		switch it.kind {
+		case "":
+			continue
+		case "run":
 			runs++
-			if hints.Outcome != "" {
+			if it.hints.Outcome != "" {
 				knownRuns++
 			}
-			if hints.Outcome == "success" {
+			if it.hints.Outcome == "success" {
 				successRuns++
 			}
-		case hints.IsLeaf:
+			// Native runner collapses the job into the run-root: count it as a
+			// job too so the job total isn't zero for runner-emitted traces.
+			if it.runIsJob {
+				countJob(it.hints.Outcome)
+			}
+		case "step":
 			steps++
 		default:
-			jobs++
-			if hints.Outcome != "" {
-				knownJobs++
-			}
-			if hints.Outcome == "failure" {
-				failedJobs++
-			}
+			countJob(it.hints.Outcome)
 		}
 	}
 

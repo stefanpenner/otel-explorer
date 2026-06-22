@@ -52,6 +52,15 @@ func CalculateSummary(spans []trace.ReadOnlySpan, enricher enrichment.Enricher) 
 	}
 	runsByID := make(map[int64]*runInfo)
 
+	// classifySpans aligns run/job/step detection with the markdown summary and
+	// timeline, so the native GitHub Actions runner's job-as-root (no separate
+	// workflow-run span) is recognized as a run here too.
+	classes := classifySpans(spans, enricher)
+	classByID := make(map[string]spanClass, len(classes))
+	for _, c := range classes {
+		classByID[c.span.SpanContext().SpanID().String()] = c
+	}
+
 	for _, span := range spans {
 		attrs := make(map[string]string)
 		var attrInts map[string]int64
@@ -78,7 +87,18 @@ func CalculateSummary(spans []trace.ReadOnlySpan, enricher enrichment.Enricher) 
 			continue
 		}
 
-		if hints.IsRoot {
+		cls := classByID[span.SpanContext().SpanID().String()]
+
+		// Native runner job-as-root is a run AND a job: count the job here, then
+		// fall through to the run-counting branch below.
+		if cls.runIsJob {
+			s.TotalJobs++
+			if hints.Outcome == "failure" {
+				s.FailedJobs++
+			}
+		}
+
+		if cls.kind == "run" {
 			attempt := attrInts["github.run_attempt"]
 			if attempt == 0 {
 				attempt = 1
@@ -114,8 +134,9 @@ func CalculateSummary(spans []trace.ReadOnlySpan, enricher enrichment.Enricher) 
 					s.BillableMs[osName] += ms
 				}
 			}
-		} else if !hints.IsMarker && !hints.IsLeaf {
-			// Non-root, non-marker, non-leaf = "job"-level span
+		} else if cls.kind == "job" {
+			// "job"-level span (excludes native runner step spans, which are
+			// classified as "step" even though they carry cicd.pipeline.task.*).
 			s.TotalJobs++
 			if hints.Outcome == "failure" {
 				s.FailedJobs++

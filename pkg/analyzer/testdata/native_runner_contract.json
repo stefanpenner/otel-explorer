@@ -1,0 +1,108 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          { "key": "service.name", "value": { "stringValue": "github-actions-runner" } },
+          { "key": "cicd.worker.name", "value": { "stringValue": "local-otel-runner" } }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": { "name": "github.actions.runner", "version": "2.335.1" },
+          "spans": [
+            {
+              "traceId": "0860d5bb4081f5578bd28481a102a318",
+              "spanId": "6d2d1cbce697d3f0",
+              "parentSpanId": "0000000683b19f30",
+              "name": "build-and-test",
+              "kind": "SPAN_KIND_SERVER",
+              "startTimeUnixNano": "1782157419000000000",
+              "endTimeUnixNano": "1782157439000000000",
+              "attributes": [
+                { "key": "cicd.pipeline.name", "value": { "stringValue": "OTel Local Runner Demo" } },
+                { "key": "cicd.pipeline.run.id", "value": { "stringValue": "27979259696" } },
+                { "key": "cicd.pipeline.run.url.full", "value": { "stringValue": "https://github.com/stefanpenner/-ci-test/actions/runs/27979259696/attempts/1" } },
+                { "key": "vcs.repository.url.full", "value": { "stringValue": "https://github.com/stefanpenner/-ci-test" } },
+                { "key": "vcs.provider.name", "value": { "stringValue": "github" } },
+                { "key": "vcs.ref.head.revision", "value": { "stringValue": "ca70630607ad8a65dce3e203a4d5906ea3ef4e15" } },
+                { "key": "vcs.owner.name", "value": { "stringValue": "stefanpenner" } },
+                { "key": "vcs.repository.name", "value": { "stringValue": "-ci-test" } },
+                { "key": "cicd.pipeline.task.name", "value": { "stringValue": "build-and-test" } },
+                { "key": "cicd.pipeline.task.run.id", "value": { "stringValue": "6d2d1cbce697d3f0" } },
+                { "key": "cicd.pipeline.task.run.result", "value": { "stringValue": "success" } },
+                { "key": "cicd.pipeline.task.run.url.full", "value": { "stringValue": "https://github.com/stefanpenner/-ci-test/actions/runs/27979259696/attempts/1" } }
+              ]
+            },
+            {
+              "traceId": "0860d5bb4081f5578bd28481a102a318",
+              "spanId": "be1cbe195f80b7ff",
+              "parentSpanId": "6d2d1cbce697d3f0",
+              "name": "Set up job",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1782157419000000000",
+              "endTimeUnixNano": "1782157421000000000",
+              "attributes": [
+                { "key": "cicd.pipeline.name", "value": { "stringValue": "OTel Local Runner Demo" } },
+                { "key": "cicd.pipeline.run.id", "value": { "stringValue": "27979259696" } },
+                { "key": "cicd.pipeline.task.name", "value": { "stringValue": "Set up job" } },
+                { "key": "cicd.pipeline.task.run.id", "value": { "stringValue": "be1cbe195f80b7ff" } },
+                { "key": "cicd.pipeline.task.run.result", "value": { "stringValue": "success" } }
+              ]
+            },
+            {
+              "traceId": "0860d5bb4081f5578bd28481a102a318",
+              "spanId": "21a16e901c8fd841",
+              "parentSpanId": "6d2d1cbce697d3f0",
+              "name": "Checkout",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1782157421000000000",
+              "endTimeUnixNano": "1782157423000000000",
+              "attributes": [
+                { "key": "cicd.pipeline.name", "value": { "stringValue": "OTel Local Runner Demo" } },
+                { "key": "cicd.pipeline.run.id", "value": { "stringValue": "27979259696" } },
+                { "key": "cicd.pipeline.task.name", "value": { "stringValue": "Checkout" } },
+                { "key": "cicd.pipeline.task.run.id", "value": { "stringValue": "21a16e901c8fd841" } },
+                { "key": "cicd.pipeline.task.run.result", "value": { "stringValue": "success" } }
+              ]
+            },
+            {
+              "traceId": "0860d5bb4081f5578bd28481a102a318",
+              "spanId": "629e5a0fa0b3629d",
+              "parentSpanId": "6d2d1cbce697d3f0",
+              "name": "Build",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1782157423000000000",
+              "endTimeUnixNano": "1782157430000000000",
+              "attributes": [
+                { "key": "cicd.pipeline.name", "value": { "stringValue": "OTel Local Runner Demo" } },
+                { "key": "cicd.pipeline.run.id", "value": { "stringValue": "27979259696" } },
+                { "key": "cicd.pipeline.task.name", "value": { "stringValue": "Build" } },
+                { "key": "cicd.pipeline.task.run.id", "value": { "stringValue": "629e5a0fa0b3629d" } },
+                { "key": "cicd.pipeline.task.run.result", "value": { "stringValue": "success" } },
+                { "key": "cicd.pipeline.task.type", "value": { "stringValue": "build" } }
+              ]
+            },
+            {
+              "traceId": "0860d5bb4081f5578bd28481a102a318",
+              "spanId": "79b7a87fed858e30",
+              "parentSpanId": "6d2d1cbce697d3f0",
+              "name": "Unit tests",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1782157430000000000",
+              "endTimeUnixNano": "1782157439000000000",
+              "attributes": [
+                { "key": "cicd.pipeline.name", "value": { "stringValue": "OTel Local Runner Demo" } },
+                { "key": "cicd.pipeline.run.id", "value": { "stringValue": "27979259696" } },
+                { "key": "cicd.pipeline.task.name", "value": { "stringValue": "Unit tests" } },
+                { "key": "cicd.pipeline.task.run.id", "value": { "stringValue": "79b7a87fed858e30" } },
+                { "key": "cicd.pipeline.task.run.result", "value": { "stringValue": "failure" } },
+                { "key": "cicd.pipeline.task.type", "value": { "stringValue": "test" } }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
