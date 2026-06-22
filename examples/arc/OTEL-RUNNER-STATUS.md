@@ -1,59 +1,69 @@
-# Native-OTel runner on ARC (kind) — status & findings
+# Native-OTel runner on ARC (kind) — WORKING ✅
 
-Goal: run the PR [actions/runner#4366](https://github.com/actions/runner/pull/4366)
-runner (native OpenTelemetry export) as the ARC runner image in the local `kind`
-cluster, so k8s job/step spans flow to the in-cluster Collector → Tempo.
+The PR [actions/runner#4366](https://github.com/actions/runner/pull/4366) runner
+(native OpenTelemetry export) runs as the ARC runner image in the local `kind`
+cluster, and k8s job/step spans flow to the in-cluster Collector → Tempo.
 
-## What works ✅
+## Verified end-to-end
 
-- **Image build** — `otel-runner.Dockerfile` (in the runner repo) builds a
-  linux-arm64 runner *from source* (PR#4366, v2.333.0, commit `60ab864`) and
-  overlays it onto the official `ghcr.io/actions/actions-runner` image, keeping
-  the official k8s hooks / entrypoint. `CMD [/home/runner/run.sh]` is baked in.
-- **Runner binary verified** — standalone the image runs, reports the right
-  version/commit, and correctly consumes the ARC JIT handoff
-  (`Removing env var: ACTIONS_RUNNER_INPUT_JITCONFIG` → `Adding Command: run`).
-- **Deploy mechanics** — `kind load docker-image otel-runner:dev` +
-  `helm ... -f otel-runner-upgrade-values.yaml` swaps the runner image and sets
-  `ACTIONS_RUNNER_OTLP_ENDPOINT=http://otel-collector.observability.svc:4318`.
-- The **local (non-k8s) path is fully proven**: the same PR#4366 runner exports
-  job+step spans end-to-end into Tempo + Jaeger (see otel-e2e-example Part 3).
+A `[self-hosted, kind]` job runs on the ARC ephemeral runner (image
+`otel-runner:dev`) and emits one trace to `otel-collector.observability.svc`:
 
-## Blocker ❌ — ARC chart hash-reconcile loop on a custom runner template
+```
+github-actions-runner            (service.name)
+  test-runner                    ← job span
+    Set up job / Resolve actions/checkout@v4 / Checkout code /
+    Display runner information / Test basic commands / Test git /
+    Success message / Post Checkout code / Complete job   ← step spans
+```
 
-On `gha-runner-scale-set` **0.14.1**, supplying a custom runner `template:`
-(custom image/env) drives the AutoscalingRunnerSet into a permanent
-`phase: Outdated` delete→recreate loop **as soon as a runner is instantiated**
-(min`Runners>=1`, or when a job arrives). Symptoms:
-- runner pods spin up then are torn down in seconds (controller deems the
-  EphemeralRunnerSet "outdated" every reconcile),
-- ARC runners never reach `online`, jobs stay `queued`,
-- no spans reach the Collector.
+Spans carry CICD semconv (`cicd.pipeline.run.id`, `cicd.pipeline.task.*`,
+`...result`, run URLs) **and** k8s context via the Downward API
+(`k8s.pod.name`, `k8s.namespace.name`, `k8s.node.name`). Confirmed in the
+in-cluster Tempo.
 
-Isolation done:
-- `minRunners: 0` + custom template → phase stays `Running` (dormant; no runner
-  created) but jobs still never run (loop fires when a job triggers a runner).
-- adding `command: [/home/runner/run.sh]` in values → loop (hence baking CMD
-  into the image instead).
-- every `helm upgrade` re-triggers the loop; even a fresh `helm install` with the
-  custom template goes `Outdated`.
+## The one real blocker (and the fix)
 
-This is an ARC/chart hash-stability issue with custom pod templates, **not** an
-OTel or runner-binary problem (the binary + JIT both verified working).
+**Symptom:** runner pods spun up then were torn down in seconds; ARC went into a
+permanent `phase: Outdated` delete→recreate loop; jobs stayed `queued`; no spans.
 
-## Next steps to try
+**Root cause:** the runner pod exited with **code 7** = `RunnerVersionDeprecated`.
+The GitHub Actions service denies an ephemeral/JIT runner whose reported version
+is below the current minimum (`AccessDeniedException` → exit 7 when ARC sets
+`ACTIONS_RUNNER_RETURN_VERSION_DEPRECATED_EXIT_CODE`). ARC reads exit-7 as
+"outdated" (`ephemeralrunner_controller.go`) and loops.
 
-1. Pin the runner build to the chart's expected runner version (2.335.x) — build
-   from a PR#4366 rebase on that tag — in case a version skew aggravates the hash.
-2. Try a newer `gha-runner-scale-set` chart (>0.14.1); the custom-template hash
-   bug may be fixed upstream.
-3. Or set the image via the chart's supported field/path rather than a full
-   `template.spec.containers[0]` override, to avoid the hash flap.
-4. Compare the rendered EphemeralRunner spec (desired vs stored) to find the exact
-   field the API-server defaults differently.
+PR#4366 branches off runner **2.333.0**, which the service now treats as
+deprecated in the JIT path. (A *persistent* PAT-registered runner at 2.333.0 still
+works — only the ephemeral/JIT path enforces this.)
+
+**Fix:** report a current version. `otel-runner.Dockerfile` sets
+`ARG RUNNER_VERSION_OVERRIDE=2.335.1` (matches the official ARC image) before the
+layout build. With that, the runner registers, runs jobs, and exports — phase
+stays `Running`, no loop.
+
+> Note: this corrects an earlier guess that a custom runner `template:` / the
+> `command:` field caused the loop. It did not — every spawned runner was exiting
+> 7 regardless of template shape. Once the version is current, the full template
+> (custom image + Downward-API k8s attrs, no `command` override needed since the
+> image bakes `CMD [run.sh]`) is stable.
+
+## Deploy
+
+```bash
+# in the runner repo (PR#4366 checkout):
+docker build -f otel-runner.Dockerfile -t otel-runner:dev .
+kind load docker-image otel-runner:dev --name gha-runner
+
+# here:
+helm upgrade arc-runner-set \
+  oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set \
+  --version 0.14.1 -n arc-runners -f otel-runner-upgrade-values.yaml
+```
+
+Then dispatch a `[self-hosted, kind]` workflow; the trace lands in the in-cluster
+Tempo as `service.name=github-actions-runner`.
 
 ## Files
-
 - `otel-runner.Dockerfile`, `.dockerignore` — in the runner repo (build recipe).
-- `otel-runner-upgrade-values.yaml` — full Helm values (image + k8s OTel attrs).
-- Restore the cluster to stock with the original values (stock image, minRunners 0).
+- `otel-runner-upgrade-values.yaml` — working Helm values (image + OTel + k8s attrs).
