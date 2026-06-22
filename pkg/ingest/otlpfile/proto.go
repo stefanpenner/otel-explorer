@@ -153,6 +153,8 @@ func ParseProto(r io.Reader) ([]sdktrace.ReadOnlySpan, error) {
 	}
 
 	var stubs tracetest.SpanStubs
+	var totalSpans, skipped int
+	var firstErr error
 	for _, rs := range req.ResourceSpans {
 		var res *resource.Resource
 		if rs.Resource != nil {
@@ -167,13 +169,28 @@ func ParseProto(r io.Reader) ([]sdktrace.ReadOnlySpan, error) {
 				}
 			}
 			for _, span := range ss.Spans {
+				totalSpans++
 				stub, err := convertProtoSpan(span, res, scope)
 				if err != nil {
+					// Don't silently swallow per-span decode failures: this is
+					// what hid the Tempo "0 spans" bug. Skip the bad span but
+					// remember the first error so we can surface it if nothing
+					// decodes at all.
+					skipped++
+					if firstErr == nil {
+						firstErr = err
+					}
 					continue
 				}
 				stubs = append(stubs, stub)
 			}
 		}
+	}
+
+	// If the input had spans but every one failed to convert, the caller would
+	// otherwise see "0 spans" with no error. Surface the underlying cause.
+	if len(stubs) == 0 && skipped > 0 {
+		return nil, fmt.Errorf("decoded 0 of %d spans (all failed); first error: %w", totalSpans, firstErr)
 	}
 
 	return stubs.Snapshots(), nil
