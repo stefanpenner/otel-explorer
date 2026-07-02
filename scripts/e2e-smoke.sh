@@ -18,8 +18,12 @@ check() {
 
 check "trace file (chrome)"       "$OTE trace.json --no-tui 2>&1 | grep -q 'runs'"
 check "convert round-trip"        "$OTE convert trace.json | head -c 100 | grep -q TraceID"
-check "trends sampled (API)"      "$OTE trends nodejs/node --days=2 2>/dev/null | grep -q 'obs targets'"
-check "trends from store"         "$OTE trends rails/rails --days=7 2>/dev/null | grep -q 'local store'"
+# --branch forces the API path (a synced store would otherwise serve it);
+# 'runs sampled' asserts the sampling annotations rather than the 'obs
+# targets' header, which only renders when job-detail sampling engages.
+check "trends sampled (API)"      "$OTE trends nodejs/node --days=2 --branch=main 2>&1 | grep -q 'runs sampled'"
+# 'Using local store' prints to stderr (stdout stays pipe-clean).
+check "trends from store"         "$OTE trends rails/rails --days=7 2>&1 | grep -q 'Using local store'"
 check "hourly patterns"           "$OTE trends rails/rails --days=7 2>/dev/null | grep -q 'Hourly Patterns'"
 check "trends json parses"        "$OTE trends rails/rails --days=7 --format=json 2>/dev/null | python3 -c 'import json,sys; json.load(sys.stdin)'"
 check "sync incremental"          "$OTE sync rails/rails --days=7 2>/dev/null | grep -q 'job detail fetched for 0'"
