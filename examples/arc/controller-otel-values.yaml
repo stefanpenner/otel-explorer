@@ -1,0 +1,14 @@
+# Controller (gha-runner-scale-set-controller) values for the local
+# otel-trace-recorder branch chart. First-class listener trace export:
+# the controller wires otel.listenerEndpoint into every listener's
+# config secret (otel_endpoint), enabling queue/startup/execution spans.
+#
+#   helm upgrade arc /Users/stef/src/actions-runner-controller/charts/gha-runner-scale-set-controller \
+#     -n arc-systems -f controller-otel-values.yaml
+image:
+  repository: arc-controller
+  tag: otel-dev
+  pullPolicy: Never
+
+otel:
+  listenerEndpoint: "http://otel-collector.observability.svc:4318"

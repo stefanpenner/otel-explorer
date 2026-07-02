@@ -4,6 +4,11 @@ minRunners: 0
 maxRunners: 3
 scaleSetLabels:
   - kind
+
+# Listener trace export is configured on the CONTROLLER chart
+# (otel.listenerEndpoint in controller-otel-values.yaml) — first-class
+# surface, no listenerTemplate env needed here.
+
 template:
   spec:
     containers:
