@@ -1197,11 +1197,6 @@ func addReviewMarkersToTrace(urlResults []URLResult, events *[]TraceEvent) {
 	}
 }
 
-func shipItMatch(text string) bool {
-	lower := strings.ToLower(text)
-	return strings.Contains(lower, "ship it") || strings.Contains(lower, "shipit")
-}
-
 func truncateString(value string, max int) string {
 	runes := []rune(value)
 	if len(runes) <= max {
@@ -1245,23 +1240,6 @@ func repoFromURL(urlValue string) string {
 		return ""
 	}
 	return strings.Join(parts[len(parts)-4:len(parts)-2], "/")
-}
-
-func maxJobEnd(events []JobEvent) int64 {
-	max := int64(0)
-	for _, event := range events {
-		if event.Type == "end" && event.Ts > max {
-			max = event.Ts
-		}
-	}
-	return max
-}
-
-func minInt64(a, b int64) int64 {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func maxInt64(a, b int64) int64 {

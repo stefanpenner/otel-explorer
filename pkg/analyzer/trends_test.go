@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -1599,7 +1598,6 @@ type barrierProvider struct {
 	githubapi.GitHubProvider
 	arrived chan struct{}
 	release chan struct{}
-	once    sync.Once
 	need    int
 }
 

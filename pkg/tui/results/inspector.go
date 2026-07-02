@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
-	"github.com/stefanpenner/otel-explorer/pkg/analyzer"
 	"github.com/stefanpenner/otel-explorer/pkg/utils"
 )
 
@@ -480,33 +479,4 @@ func FindParentIndex(flat []FlatInspectorEntry, index int) int {
 		}
 	}
 	return -1
-}
-
-// buildInspectorEvent is a helper for creating event nodes (used by both
-// BuildInspectorTree and tests).
-func buildEventNodes(events []analyzer.SpanEvent) []*InspectorNode {
-	var nodes []*InspectorNode
-	for _, ev := range events {
-		timeStr := ""
-		if !ev.Time.IsZero() {
-			timeStr = " @ " + ev.Time.Format("15:04:05")
-		}
-		evNode := &InspectorNode{
-			Label:    ev.Name + timeStr,
-			Expanded: false,
-		}
-		if exType := ev.Attrs["exception.type"]; exType != "" {
-			evNode.Children = append(evNode.Children, &InspectorNode{Label: "Type", Value: exType})
-		}
-		if exMsg := ev.Attrs["exception.message"]; exMsg != "" {
-			evNode.Children = append(evNode.Children, &InspectorNode{Label: "Message", Value: exMsg})
-		}
-		for k, v := range ev.Attrs {
-			if k != "exception.type" && k != "exception.message" && k != "exception.stacktrace" && v != "" {
-				evNode.Children = append(evNode.Children, &InspectorNode{Label: k, Value: v})
-			}
-		}
-		nodes = append(nodes, evNode)
-	}
-	return nodes
 }

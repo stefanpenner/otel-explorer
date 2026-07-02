@@ -35,10 +35,6 @@ type protoWriter struct {
 	buf []byte
 }
 
-func (w *protoWriter) reset() {
-	w.buf = w.buf[:0]
-}
-
 func (w *protoWriter) bytes() []byte {
 	return w.buf
 }

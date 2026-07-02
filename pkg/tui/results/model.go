@@ -2018,21 +2018,6 @@ func (m *Model) toggleFocus() {
 	m.recalculateChartBounds()
 }
 
-// collectAncestorIDs adds all ancestor IDs to the set
-func (m *Model) collectAncestorIDs(parentID string, ids map[string]bool) {
-	if parentID == "" {
-		return
-	}
-	ids[parentID] = true
-	// Find the parent item to get its parent
-	for _, item := range m.visibleItems {
-		if item.ID == parentID {
-			m.collectAncestorIDs(item.ParentID, ids)
-			return
-		}
-	}
-}
-
 // collectDescendantIDs adds all descendant IDs to the set
 func (m *Model) collectDescendantIDs(parentID string, ids map[string]bool) {
 	var collect func(items []*TreeItem)

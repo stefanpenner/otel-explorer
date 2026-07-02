@@ -775,10 +775,6 @@ func overlayLogicalEndLine(timeline string, col, width int, selected bool) strin
 	// Walk the string tracking visible position. We split into three parts:
 	// [before col] [char at col] [after col]
 	// We rebuild: before + styled "│" + after
-	type segment struct {
-		start, end int // byte offsets in timeline
-	}
-
 	bytes := []byte(timeline)
 	visPos := 0
 	i := 0
