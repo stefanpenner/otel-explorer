@@ -723,29 +723,20 @@ func main() {
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 
-	// Setup enricher chain (needed by both receiver and normal modes)
-	var enricher enrichment.Enricher
-	var enrichers []enrichment.Enricher
-	// GHAEnricher is attribute-gated (only spans carrying GHA-shaped attrs
-	// match), so it belongs in every chain: traces ote itself exported and
-	// re-ingested via files or the receiver carry those attrs too.
-	enrichers = append(enrichers, &enrichment.GHAEnricher{})
-	enrichers = append(enrichers, &enrichment.CICDEnricher{})
-	// GenAIEnricher is attribute-gated on gen_ai.* — it claims LLM spans
-	// (Anthropic/OpenAI SDKs, OpenLLMetry, LangChain, …) before the generic
-	// catch-all so models and token usage surface.
-	enrichers = append(enrichers, &enrichment.GenAIEnricher{})
+	// Setup enricher chain (needed by both receiver and normal modes). The
+	// production chain is DefaultEnricher — the same one the tests exercise;
+	// user rule files slot in as extras ahead of the generic catch-all.
+	var extras []enrichment.Enricher
 	if cfg.enrichmentFile != "" {
 		ruleEnricher, err := enrichment.LoadRules(cfg.enrichmentFile)
 		if err != nil {
 			printError(err, "failed to load enrichment rules")
 			os.Exit(1)
 		}
-		enrichers = append(enrichers, ruleEnricher)
+		extras = append(extras, ruleEnricher)
 		fmt.Fprintf(os.Stderr, "Loaded %d enrichment rules from %s\n", len(ruleEnricher.Rules), cfg.enrichmentFile)
 	}
-	enrichers = append(enrichers, &enrichment.GenericEnricher{})
-	enricher = enrichment.NewChainEnricher(enrichers...)
+	var enricher enrichment.Enricher = enrichment.DefaultEnricher(extras...)
 
 	// Trace diff mode: semantically compare two traces (e.g. two back-to-back
 	// commits' CI runs) the way `git diff` compares two trees.

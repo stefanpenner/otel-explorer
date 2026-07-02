@@ -252,3 +252,29 @@ func TestGenericEnricher_EmptyArtifactName(t *testing.T) {
 		t.Errorf("expected empty GroupKey for empty artifact name, got %q", h.GroupKey)
 	}
 }
+
+func TestDefaultEnricherExtrasRunBeforeGeneric(t *testing.T) {
+	// Extras (e.g. user rule enrichers) must be consulted after the built-in
+	// semantic enrichers but before the generic catch-all, which claims
+	// every span.
+	custom := &RuleEnricher{Rules: []Rule{{
+		Match: RuleMatch{Attributes: map[string]string{"team": "payments"}},
+		Hints: RuleHints{Category: "custom", Icon: "💰 "},
+	}}}
+	chain := DefaultEnricher(custom)
+
+	h := chain.Enrich("charge", map[string]string{"team": "payments"}, false)
+	if h.Icon != "💰 " {
+		t.Errorf("custom rule not applied before generic: icon = %q", h.Icon)
+	}
+	// Built-ins still win over extras.
+	gha := chain.Enrich("build", map[string]string{"type": "job", "github.conclusion": "success"}, false)
+	if gha.Category != "job" {
+		t.Errorf("GHA enricher no longer claims jobs: %q", gha.Category)
+	}
+	// No extras: unchanged default chain.
+	plain := DefaultEnricher().Enrich("GET /x", map[string]string{"http.request.method": "GET"}, false)
+	if plain.Category == "" {
+		t.Error("default chain must still classify HTTP spans")
+	}
+}
