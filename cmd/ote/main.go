@@ -352,18 +352,6 @@ func parseArgs(args []string, terminal bool) (config, error) {
 			}
 			continue
 		}
-		if strings.HasPrefix(arg, "--out=") {
-			cfg.outFile = strings.TrimPrefix(arg, "--out=")
-			continue
-		}
-		if strings.HasPrefix(arg, "--slack-webhook=") {
-			cfg.slackWebhook = strings.TrimPrefix(arg, "--slack-webhook=")
-			continue
-		}
-		if strings.HasPrefix(arg, "--perfetto-ui=") {
-			cfg.perfettoUI = strings.TrimPrefix(arg, "--perfetto-ui=")
-			continue
-		}
 		if strings.HasPrefix(arg, "--branch=") {
 			cfg.trendsBranch = strings.TrimPrefix(arg, "--branch=")
 			continue
@@ -434,6 +422,16 @@ func parseArgs(args []string, terminal bool) (config, error) {
 	// of silently ignoring the flag.
 	if cfg.listenAddr != "" && cfg.outputFormat != "" {
 		return cfg, fmt.Errorf("--output is not supported with --listen (receiver mode); use --no-tui to disable the TUI")
+	}
+
+	// Trends renders via --format, the analysis path via --output. Accepting
+	// the wrong one used to silently produce terminal output (garbage for a
+	// `| jq` consumer); reject the mismatch instead.
+	if cfg.trendsMode && cfg.outputFormat != "" {
+		return cfg, fmt.Errorf("--output is not supported in trends mode; use --format=%s", cfg.outputFormat)
+	}
+	if !cfg.trendsMode && cfg.trendsFormat != "terminal" {
+		return cfg, fmt.Errorf("--format is only supported in trends mode; use --output=%s", cfg.trendsFormat)
 	}
 
 	// Receiver mode runs alone: with other inputs present the receiver used to
@@ -694,7 +692,12 @@ func main() {
 
 	hasTraceBackend := cfg.tempoURL != "" || cfg.jaegerURL != ""
 
-	ctx := context.Background()
+	// Signal-aware context so ctrl+c (and SIGTERM) cancels in-flight fetches
+	// on the URL-analysis, diff, and receiver paths — matching the trends
+	// path. The progress spinner runs the terminal in raw mode, so keyboard
+	// ctrl+c arrives as a keystroke, relayed via SetInterruptHandler below.
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
 
 	// Setup enricher chain (needed by both receiver and normal modes)
 	var enricher enrichment.Enricher
@@ -724,6 +727,10 @@ func main() {
 	// commits' CI runs) the way `git diff` compares two trees.
 	if cfg.diffMode {
 		if err := runDiff(ctx, cfg, enricher); err != nil {
+			if ctx.Err() != nil { // cancelled via ctrl+c / SIGTERM
+				fmt.Fprintln(os.Stderr, "Interrupted.")
+				os.Exit(130)
+			}
 			printError(err, "diff failed")
 			os.Exit(1)
 		}
@@ -885,11 +892,14 @@ func main() {
 	// Auto-generate perfetto file if --open-in-perfetto is used without --perfetto
 	if cfg.openInPerfetto && perfettoFile == "" {
 		tmpFile, err := os.CreateTemp("", "gha-trace-*.pftrace")
-		if err == nil {
-			perfettoFile = tmpFile.Name()
-			tmpFile.Close()
-			defer os.Remove(perfettoFile)
+		if err != nil {
+			// Don't silently disable a feature the user asked for.
+			printError(err, "--open-in-perfetto: creating temp trace file")
+			os.Exit(1)
 		}
+		perfettoFile = tmpFile.Name()
+		tmpFile.Close()
+		defer os.Remove(perfettoFile)
 	}
 
 	// Setup GitHub Token (only required when GHA URLs are provided)
@@ -926,8 +936,9 @@ func main() {
 		}
 
 		if len(args) > 0 && token == "" {
-			printErrorMsg("GITHUB_TOKEN environment variable or token argument is required.\n  Tip: install the GitHub CLI (gh) and run `gh auth login` to authenticate automatically.")
-			printUsage()
+			// No usage dump here: it would pollute redirected stdout on an
+			// error exit; the message already carries the actionable tip.
+			printErrorMsg("GITHUB_TOKEN environment variable or token argument is required.\n  Tip: install the GitHub CLI (gh) and run `gh auth login` to authenticate automatically.\n  Run 'ote --help' for more information.")
 			os.Exit(1)
 		}
 	}
@@ -1020,6 +1031,7 @@ func main() {
 		ghClient = client
 		progress := tui.NewProgress(len(args), os.Stderr)
 		progress.Start()
+		progress.SetInterruptHandler(stopSignals)
 		wireAPIMeter(progress, client)
 
 		ingestor := polling.NewPollingIngestor(client, args, progress, analyzer.AnalyzeOptions{
@@ -1035,6 +1047,10 @@ func main() {
 		printAPIMeter(client)
 
 		if err != nil {
+			if ctx.Err() != nil { // cancelled via ctrl+c / SIGTERM
+				fmt.Fprintln(os.Stderr, "Interrupted.")
+				os.Exit(130)
+			}
 			printError(err, "ingestion failed")
 			os.Exit(1)
 		}
@@ -1141,7 +1157,9 @@ func main() {
 
 				reloadClient := githubapi.NewClient(githubapi.NewContext(token))
 				reloadIngestor := polling.NewPollingIngestor(reloadClient, args, progressReporter, analyzer.AnalyzeOptions{
-					Window: cfg.window,
+					Window:      cfg.window,
+					NoArtifacts: cfg.noArtifacts,
+					FetchLogs:   cfg.fetchLogs,
 				})
 				_, ghaEarliest, ghaLatest, reloadGHASpans, err := reloadIngestor.Ingest(ctx)
 				if err != nil {
@@ -1302,7 +1320,7 @@ func main() {
 	}
 
 	if cfg.openInOTel {
-		fmt.Println("Opening OTel Desktop Viewer...")
+		fmt.Fprintln(os.Stderr, "Opening OTel Desktop Viewer...")
 		_ = utils.OpenBrowser("http://localhost:8000")
 	}
 
@@ -1573,8 +1591,13 @@ func loadDiffSide(ctx context.Context, input, token string, enricher enrichment.
 	}
 
 	client := githubapi.NewClient(githubapi.NewContext(token))
+	// The spinner puts the terminal in raw mode, so keyboard ctrl+c arrives
+	// as a keystroke; relay it to this fetch's context so it cancels.
+	ctx, cancelFetch := context.WithCancel(ctx)
+	defer cancelFetch()
 	progress := tui.NewProgress(1, os.Stderr)
 	progress.Start()
+	progress.SetInterruptHandler(cancelFetch)
 	wireAPIMeter(progress, client)
 	ingestor := polling.NewPollingIngestor(client, []string{input}, progress, analyzer.AnalyzeOptions{
 		Window:      cfg.window,

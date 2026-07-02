@@ -523,3 +523,18 @@ func TestListenRejectsOtherInputs(t *testing.T) {
 		t.Errorf("plain --listen should parse: %v", err)
 	}
 }
+
+func TestOutputFormatModeMismatch(t *testing.T) {
+	if _, err := parseArgs([]string{"trends", "o/r", "--output=json"}, false); err == nil {
+		t.Error("trends + --output should error (trends uses --format)")
+	}
+	if _, err := parseArgs([]string{"trace.json", "--format=json"}, false); err == nil {
+		t.Error("--format outside trends mode should error (analysis uses --output)")
+	}
+	if _, err := parseArgs([]string{"trends", "o/r", "--format=json"}, false); err != nil {
+		t.Errorf("trends + --format should parse: %v", err)
+	}
+	if _, err := parseArgs([]string{"trace.json", "--output=json"}, false); err != nil {
+		t.Errorf("analysis + --output should parse: %v", err)
+	}
+}
