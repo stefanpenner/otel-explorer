@@ -489,6 +489,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Inspector search input mode
 			if m.inspectorSearching {
 				switch msg.Type {
+				case tea.KeyCtrlC:
+					// Quit must work even while typing a query.
+					return m, tea.Quit
 				case tea.KeyEsc:
 					m.inspectorSearching = false
 					m.inspectorSearchQuery = ""
@@ -730,6 +733,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle search input mode
 		if m.isSearching {
 			switch msg.Type {
+			case tea.KeyCtrlC:
+				// Quit must work even while typing a query.
+				return m, tea.Quit
 			case tea.KeyEsc:
 				m.isSearching = false
 				m.searchQuery = ""

@@ -363,6 +363,11 @@ func (r *rateLimiter) waitIfNeeded(ctx context.Context) error {
 	if d <= 0 {
 		return nil
 	}
+	// An exhausted primary limit can mean sleeping until the hourly reset —
+	// say so instead of appearing frozen.
+	if d > 5*time.Second {
+		fmt.Fprintf(os.Stderr, "GitHub rate limit exhausted; waiting %s for reset (ctrl+c to abort)\n", d.Round(time.Second))
+	}
 	return sleepContext(ctx, d)
 }
 
