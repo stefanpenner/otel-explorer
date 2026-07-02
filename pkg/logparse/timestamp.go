@@ -123,7 +123,7 @@ func (p *TimestampParser) parseWithGroups(topLevel []LogLine, groups []groupBloc
 			EndTime:   endTime,
 			Attributes: map[string]string{
 				"log.line_number": groupLineNum,
-				"log.group":      g.name,
+				"log.group":       g.name,
 			},
 		}
 

@@ -57,9 +57,15 @@ func (c *ChainEnricher) Enrich(name string, attrs map[string]string, isZeroDurat
 	return SpanHints{}
 }
 
-// DefaultEnricher returns the default enricher chain. Specific conventions are
-// tried before the generic catch-all: GHA, then OTel CI/CD, then GenAI (LLM),
-// then Generic.
-func DefaultEnricher() *ChainEnricher {
-	return NewChainEnricher(&GHAEnricher{}, &CICDEnricher{}, &GenAIEnricher{}, &GenericEnricher{})
+// DefaultEnricher returns the production enricher chain. Specific conventions
+// are tried before the generic catch-all: GHA, then OTel CI/CD, then GenAI
+// (LLM), then any extras (e.g. user-supplied rule enrichers), then Generic —
+// which claims every span, so it must stay last. cmd/ote must build its chain
+// through this function: a hand-maintained copy drifts (adding GenAI required
+// patching two places, commit c2c5e46).
+func DefaultEnricher(extra ...Enricher) *ChainEnricher {
+	chain := []Enricher{&GHAEnricher{}, &CICDEnricher{}, &GenAIEnricher{}}
+	chain = append(chain, extra...)
+	chain = append(chain, &GenericEnricher{})
+	return NewChainEnricher(chain...)
 }

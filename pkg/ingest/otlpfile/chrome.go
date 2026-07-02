@@ -33,21 +33,21 @@ import (
 
 // chromeTrace is the top-level Chrome Tracing JSON structure.
 type chromeTrace struct {
-	TraceEvents []chromeEvent     `json:"traceEvents"`
-	OtherData   map[string]any    `json:"otherData,omitempty"`
+	TraceEvents []chromeEvent  `json:"traceEvents"`
+	OtherData   map[string]any `json:"otherData,omitempty"`
 }
 
 // chromeEvent represents a single event in Chrome Tracing format.
 type chromeEvent struct {
-	Name string      `json:"name"`
-	Ph   string      `json:"ph"`
-	Ts   float64     `json:"ts"`  // microseconds
-	Dur  float64     `json:"dur"` // microseconds (for "X" events)
-	Pid  json.Number `json:"pid"`
-	Tid  json.Number `json:"tid"`
-	Cat  string      `json:"cat,omitempty"`
+	Name string         `json:"name"`
+	Ph   string         `json:"ph"`
+	Ts   float64        `json:"ts"`  // microseconds
+	Dur  float64        `json:"dur"` // microseconds (for "X" events)
+	Pid  json.Number    `json:"pid"`
+	Tid  json.Number    `json:"tid"`
+	Cat  string         `json:"cat,omitempty"`
 	Args map[string]any `json:"args,omitempty"`
-	ID   string      `json:"id,omitempty"`
+	ID   string         `json:"id,omitempty"`
 }
 
 // minDurationMicros is the minimum event duration to include (1ms).
@@ -107,7 +107,7 @@ func chromeEventsToSpans(events []chromeEvent, otherData map[string]any) ([]sdkt
 	})
 
 	// Extract metadata: thread names and process names.
-	threadNames := make(map[string]string) // "pid:tid" → name
+	threadNames := make(map[string]string)  // "pid:tid" → name
 	processNames := make(map[string]string) // "pid" → name
 	for _, ev := range events {
 		if ev.Ph != "M" {

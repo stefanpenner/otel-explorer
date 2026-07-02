@@ -13,11 +13,11 @@ import (
 type mockReporter struct{}
 
 func (m *mockReporter) StartURL(int, string) {}
-func (m *mockReporter) SetURLRuns(int)        {}
-func (m *mockReporter) SetPhase(string)       {}
-func (m *mockReporter) SetDetail(string)       {}
-func (m *mockReporter) ProcessRun()            {}
-func (m *mockReporter) Finish()                {}
+func (m *mockReporter) SetURLRuns(int)       {}
+func (m *mockReporter) SetPhase(string)      {}
+func (m *mockReporter) SetDetail(string)     {}
+func (m *mockReporter) ProcessRun()          {}
+func (m *mockReporter) Finish()              {}
 
 func TestIngestEmptyURLs(t *testing.T) {
 	client := githubapi.NewClient(githubapi.NewContext(""))

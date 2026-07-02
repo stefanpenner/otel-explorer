@@ -18,9 +18,9 @@ import (
 
 // Wire types
 const (
-	wireVarint = 0
+	wireVarint  = 0
 	wireFixed64 = 1
-	wireBytes  = 2
+	wireBytes   = 2
 )
 
 // TrackEvent.Type enum values
@@ -33,10 +33,6 @@ const (
 // protoWriter builds protobuf messages using raw wire encoding.
 type protoWriter struct {
 	buf []byte
-}
-
-func (w *protoWriter) reset() {
-	w.buf = w.buf[:0]
 }
 
 func (w *protoWriter) bytes() []byte {

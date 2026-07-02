@@ -129,9 +129,28 @@ type protoAttrJSON struct {
 
 type protoValueJSON struct {
 	StringValue *string  `json:"stringValue,omitempty"`
-	IntValue    *string  `json:"intValue,omitempty"`
+	IntValue    *intText `json:"intValue,omitempty"`
 	DoubleValue *float64 `json:"doubleValue,omitempty"`
 	BoolValue   *bool    `json:"boolValue,omitempty"`
+}
+
+// intText accepts proto-JSON int64 in both its spec form ("42", a string)
+// and the bare-number form (42) common in hand-rolled emitters — rejecting
+// the number form hard-failed the entire document.
+type intText string
+
+func (i *intText) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*i = intText(s)
+		return nil
+	}
+	var n json.Number
+	if err := json.Unmarshal(data, &n); err != nil {
+		return fmt.Errorf("invalid intValue: %s", string(data))
+	}
+	*i = intText(n.String())
+	return nil
 }
 
 type protoEventJSON struct {
@@ -192,28 +211,33 @@ func normalizeID(s string) string {
 }
 
 func convertProtoSpan(raw protoSpanJSON, res *resource.Resource, scope instrumentation.Scope) (tracetest.SpanStub, error) {
-	traceID, err := trace.TraceIDFromHex(normalizeID(raw.TraceID))
-	if err != nil {
-		return tracetest.SpanStub{}, fmt.Errorf("invalid trace ID %q: %w", raw.TraceID, err)
-	}
+	// Zero/empty IDs denote "no ID": keep the span with a zero SpanContext
+	// (matching the stdout path) instead of silently dropping it.
+	var sc trace.SpanContext
+	if !isZeroOrEmptyID(raw.TraceID) || !isZeroOrEmptyID(raw.SpanID) {
+		traceID, err := trace.TraceIDFromHex(normalizeID(raw.TraceID))
+		if err != nil {
+			return tracetest.SpanStub{}, fmt.Errorf("invalid trace ID %q: %w", raw.TraceID, err)
+		}
 
-	spanID, err := trace.SpanIDFromHex(normalizeID(raw.SpanID))
-	if err != nil {
-		return tracetest.SpanStub{}, fmt.Errorf("invalid span ID %q: %w", raw.SpanID, err)
-	}
+		spanID, err := trace.SpanIDFromHex(normalizeID(raw.SpanID))
+		if err != nil {
+			return tracetest.SpanStub{}, fmt.Errorf("invalid span ID %q: %w", raw.SpanID, err)
+		}
 
-	sc := trace.NewSpanContext(trace.SpanContextConfig{
-		TraceID:    traceID,
-		SpanID:     spanID,
-		TraceFlags: trace.FlagsSampled,
-	})
+		sc = trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID:    traceID,
+			SpanID:     spanID,
+			TraceFlags: trace.FlagsSampled,
+		})
+	}
 
 	var parent trace.SpanContext
 	if raw.ParentSpanID != "" {
 		parentSpanID, err := trace.SpanIDFromHex(normalizeID(raw.ParentSpanID))
 		if err == nil {
 			parent = trace.NewSpanContext(trace.SpanContextConfig{
-				TraceID:    traceID, // same trace
+				TraceID:    sc.TraceID(), // same trace
 				SpanID:     parentSpanID,
 				TraceFlags: trace.FlagsSampled,
 			})
@@ -260,7 +284,7 @@ func convertProtoAttrs(raw []protoAttrJSON) []attribute.KeyValue {
 		case v.StringValue != nil:
 			result = append(result, key.String(*v.StringValue))
 		case v.IntValue != nil:
-			if n, err := strconv.ParseInt(*v.IntValue, 10, 64); err == nil {
+			if n, err := strconv.ParseInt(string(*v.IntValue), 10, 64); err == nil {
 				result = append(result, key.Int64(n))
 			}
 		case v.DoubleValue != nil:

@@ -28,18 +28,18 @@ import (
 
 // stdoutSpan is the JSON structure emitted by stdouttrace exporter.
 type stdoutSpan struct {
-	Name                   string                       `json:"Name"`
-	SpanContext            spanContextJSON               `json:"SpanContext"`
-	Parent                 spanContextJSON               `json:"Parent"`
-	SpanKind               int                           `json:"SpanKind"`
-	StartTime              time.Time                     `json:"StartTime"`
-	EndTime                time.Time                     `json:"EndTime"`
-	Attributes             []attrJSON                    `json:"Attributes"`
-	Events                 []eventJSON                   `json:"Events"`
-	Links                  []linkJSON                    `json:"Links"`
-	Status                 statusJSON                    `json:"Status"`
-	Resource               []attrJSON                    `json:"Resource"`
-	InstrumentationScope   *stdoutInstrumentationScope   `json:"InstrumentationScope,omitempty"`
+	Name                 string                      `json:"Name"`
+	SpanContext          spanContextJSON             `json:"SpanContext"`
+	Parent               spanContextJSON             `json:"Parent"`
+	SpanKind             int                         `json:"SpanKind"`
+	StartTime            time.Time                   `json:"StartTime"`
+	EndTime              time.Time                   `json:"EndTime"`
+	Attributes           []attrJSON                  `json:"Attributes"`
+	Events               []eventJSON                 `json:"Events"`
+	Links                []linkJSON                  `json:"Links"`
+	Status               statusJSON                  `json:"Status"`
+	Resource             []attrJSON                  `json:"Resource"`
+	InstrumentationScope *stdoutInstrumentationScope `json:"InstrumentationScope,omitempty"`
 }
 
 // stdoutInstrumentationScope mirrors the InstrumentationScope object
@@ -74,7 +74,7 @@ type eventJSON struct {
 
 type linkJSON struct {
 	SpanContext spanContextJSON `json:"SpanContext"`
-	Attributes  []attrJSON     `json:"Attributes"`
+	Attributes  []attrJSON      `json:"Attributes"`
 }
 
 type statusJSON struct {
@@ -175,11 +175,81 @@ func parseProtoJSONL(data []byte) ([]sdktrace.ReadOnlySpan, error) {
 	return allSpans, nil
 }
 
-// parseStdout reads OTel stdouttrace JSON (newline-delimited or array).
+// parseStdout reads OTel stdouttrace JSON: a JSON array (compact or
+// pretty-printed), a stream of concatenated objects (stdouttrace's native
+// output, single- or multi-line), or span objects interleaved with app log
+// lines. Non-empty input that decodes to zero spans is an error — silently
+// returning nothing made garbage and mislabeled formats indistinguishable
+// from an empty trace.
 func parseStdout(r io.Reader) ([]sdktrace.ReadOnlySpan, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("reading trace file: %w", err)
+	}
+	trimmed := trimSpace(data)
+	if len(trimmed) == 0 {
+		return nil, nil
+	}
+
+	// Well-formed JSON first: an array of spans or a concatenated stream of
+	// span objects, either of which may span multiple lines.
+	if trimmed[0] == '[' || trimmed[0] == '{' {
+		if stubs, ok := decodeSpanJSON(trimmed); ok {
+			return stubs.Snapshots(), nil
+		}
+	}
+
+	// Fallback: line-oriented scan tolerant of interleaved non-JSON lines
+	// (spans exported into an application's stdout log).
+	stubs := scanSpanLines(data)
+	if len(stubs) == 0 {
+		return nil, fmt.Errorf("unrecognized trace format: no spans decoded from %d bytes of input (expected OTLP JSON/protobuf, Jaeger, Zipkin, Chrome, or stdouttrace JSON)", len(data))
+	}
+	return stubs.Snapshots(), nil
+}
+
+// decodeSpanJSON decodes a full JSON document: either one array of span
+// objects or a concatenated stream of span objects. Returns ok=false when
+// the input is not well-formed JSON of either shape, so the caller can fall
+// back to the tolerant line scanner.
+func decodeSpanJSON(data []byte) (tracetest.SpanStubs, bool) {
+	var stubs tracetest.SpanStubs
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if data[0] == '[' {
+		if _, err := dec.Token(); err != nil {
+			return nil, false
+		}
+		for dec.More() {
+			var raw stdoutSpan
+			if err := dec.Decode(&raw); err != nil {
+				return nil, false
+			}
+			if stub, err := convertToStub(raw); err == nil {
+				stubs = append(stubs, stub)
+			}
+		}
+		return stubs, true
+	}
+	for {
+		var raw stdoutSpan
+		if err := dec.Decode(&raw); err != nil {
+			if err == io.EOF {
+				return stubs, true
+			}
+			return nil, false
+		}
+		if stub, err := convertToStub(raw); err == nil {
+			stubs = append(stubs, stub)
+		}
+	}
+}
+
+// scanSpanLines extracts one span per line, skipping anything that isn't a
+// decodable span object (array brackets, trailing commas, log lines).
+func scanSpanLines(data []byte) tracetest.SpanStubs {
 	var stubs tracetest.SpanStubs
 
-	scanner := bufio.NewScanner(r)
+	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024) // 10MB max line
 
 	for scanner.Scan() {
@@ -210,11 +280,7 @@ func parseStdout(r io.Reader) ([]sdktrace.ReadOnlySpan, error) {
 		stubs = append(stubs, stub)
 	}
 
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("reading trace file: %w", err)
-	}
-
-	return stubs.Snapshots(), nil
+	return stubs
 }
 
 func convertToStub(raw stdoutSpan) (tracetest.SpanStub, error) {
@@ -351,24 +417,22 @@ func convertAttr(a attrJSON) attribute.KeyValue {
 	return key.String(fmt.Sprintf("%v", a.Value.Value))
 }
 
-// looksLikeChromeTrace checks for bare-array Chrome Tracing format
-// by looking for the "ph" key (event phase) which is unique to Chrome Tracing.
+// looksLikeChromeTrace checks for bare-array Chrome Tracing format: a JSON
+// array whose first element carries a top-level "ph" key (event phase). A
+// structural check, not a byte scan — "ph" appearing inside nested maps
+// (e.g. Zipkin tags or span attributes) must not claim the file for Chrome.
 func looksLikeChromeTrace(data []byte) bool {
-	// Check for "ph": pattern — the "ph" JSON key followed by a colon.
-	for i := 0; i < len(data)-4; i++ {
-		if data[i] == '"' && data[i+1] == 'p' && data[i+2] == 'h' && data[i+3] == '"' {
-			// Look for colon after optional whitespace
-			for j := i + 4; j < len(data); j++ {
-				if data[j] == ':' {
-					return true
-				}
-				if data[j] != ' ' && data[j] != '\t' {
-					break
-				}
-			}
-		}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.Token()
+	if err != nil || tok != json.Delim('[') {
+		return false
 	}
-	return false
+	var first map[string]json.RawMessage
+	if err := dec.Decode(&first); err != nil {
+		return false
+	}
+	_, ok := first["ph"]
+	return ok
 }
 
 // maxDecompressedBytes caps decompressed trace data to guard against

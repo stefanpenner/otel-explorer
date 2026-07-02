@@ -19,7 +19,6 @@ import (
 	"github.com/stefanpenner/otel-explorer/pkg/export"
 	otelexport "github.com/stefanpenner/otel-explorer/pkg/export/otel"
 	perfettoexport "github.com/stefanpenner/otel-explorer/pkg/export/perfetto"
-	"github.com/stefanpenner/otel-explorer/pkg/export/terminal"
 	"github.com/stefanpenner/otel-explorer/pkg/githubapi"
 	"github.com/stefanpenner/otel-explorer/pkg/ingest/filter"
 	"github.com/stefanpenner/otel-explorer/pkg/ingest/otlpfile"
@@ -352,18 +351,6 @@ func parseArgs(args []string, terminal bool) (config, error) {
 			}
 			continue
 		}
-		if strings.HasPrefix(arg, "--out=") {
-			cfg.outFile = strings.TrimPrefix(arg, "--out=")
-			continue
-		}
-		if strings.HasPrefix(arg, "--slack-webhook=") {
-			cfg.slackWebhook = strings.TrimPrefix(arg, "--slack-webhook=")
-			continue
-		}
-		if strings.HasPrefix(arg, "--perfetto-ui=") {
-			cfg.perfettoUI = strings.TrimPrefix(arg, "--perfetto-ui=")
-			continue
-		}
 		if strings.HasPrefix(arg, "--branch=") {
 			cfg.trendsBranch = strings.TrimPrefix(arg, "--branch=")
 			continue
@@ -413,11 +400,19 @@ func parseArgs(args []string, terminal bool) (config, error) {
 		}
 
 		// If the arg looks like a local file (not a URL, not a flag), check if
-		// it exists on disk — if so, treat it as a trace file input.
+		// it exists on disk — if so, treat it as a trace file input. A
+		// path-shaped arg that does NOT exist gets a file error here instead
+		// of falling through to a misleading "Invalid GitHub URL".
 		if !strings.HasPrefix(arg, "http") && !strings.HasPrefix(arg, "-") {
-			if _, err := os.Stat(arg); err == nil {
+			info, err := os.Stat(arg)
+			switch {
+			case err == nil && !info.IsDir():
 				cfg.traceFiles = append(cfg.traceFiles, arg)
 				continue
+			case err == nil: // exists but is a directory
+				return cfg, fmt.Errorf("%s is a directory, not a trace file", arg)
+			case looksLikeTracePath(arg):
+				return cfg, fmt.Errorf("file not found: %s", arg)
 			}
 		}
 
@@ -436,6 +431,22 @@ func parseArgs(args []string, terminal bool) (config, error) {
 		return cfg, fmt.Errorf("--output is not supported with --listen (receiver mode); use --no-tui to disable the TUI")
 	}
 
+	// Trends renders via --format, the analysis path via --output. Accepting
+	// the wrong one used to silently produce terminal output (garbage for a
+	// `| jq` consumer); reject the mismatch instead.
+	if cfg.trendsMode && cfg.outputFormat != "" {
+		return cfg, fmt.Errorf("--output is not supported in trends mode; use --format=%s", cfg.outputFormat)
+	}
+	if !cfg.trendsMode && cfg.trendsFormat != "terminal" {
+		return cfg, fmt.Errorf("--format is only supported in trends mode; use --output=%s", cfg.trendsFormat)
+	}
+
+	// Receiver mode runs alone: with other inputs present the receiver used to
+	// shut down immediately and the inputs were never analyzed.
+	if cfg.listenAddr != "" && (len(cfg.urls) > 0 || len(cfg.traceFiles) > 0 || cfg.tempoURL != "" || cfg.jaegerURL != "") {
+		return cfg, fmt.Errorf("--listen cannot be combined with URL, trace-file, or backend inputs; run the receiver on its own")
+	}
+
 	if cfg.tempoURL != "" && cfg.jaegerURL != "" {
 		return cfg, fmt.Errorf("--tempo and --jaeger cannot be used together; specify a single trace backend")
 	}
@@ -444,6 +455,32 @@ func parseArgs(args []string, terminal bool) (config, error) {
 	}
 
 	return cfg, nil
+}
+
+// looksLikeTracePath reports whether a nonexistent positional arg was almost
+// certainly meant as a file path (explicit path prefix or a trace-file
+// extension) rather than a GitHub URL or owner/repo shorthand, so the error
+// can say "file not found" instead of "Invalid GitHub URL".
+func looksLikeTracePath(arg string) bool {
+	for _, prefix := range []string{"./", "../", "/", "~"} {
+		if strings.HasPrefix(arg, prefix) {
+			return true
+		}
+	}
+	switch strings.ToLower(filepath.Ext(strings.TrimSuffix(strings.TrimSuffix(arg, ".gz"), ".zst"))) {
+	case ".json", ".jsonl", ".ndjson", ".pftrace", ".pb", ".txt", ".trace":
+		return true
+	}
+	return false
+}
+
+// hasOtherWork reports whether the invocation requests any work beyond
+// housekeeping flags like --clear-cache: URLs or trace files to analyze,
+// a mode (trends/diff/sync/receiver), or a trace backend to fetch from.
+func hasOtherWork(cfg config) bool {
+	return len(cfg.urls) > 0 || len(cfg.traceFiles) > 0 ||
+		cfg.trendsMode || cfg.diffMode || cfg.syncMode ||
+		cfg.listenAddr != "" || cfg.tempoURL != "" || cfg.jaegerURL != ""
 }
 
 func main() {
@@ -484,7 +521,7 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Fprintf(os.Stderr, "Cache cleared: %s\n", cacheDir)
-		if len(args) == 0 && !cfg.trendsMode && !cfg.diffMode {
+		if !hasOtherWork(cfg) {
 			os.Exit(0)
 		}
 	}
@@ -679,36 +716,36 @@ func main() {
 
 	hasTraceBackend := cfg.tempoURL != "" || cfg.jaegerURL != ""
 
-	ctx := context.Background()
+	// Signal-aware context so ctrl+c (and SIGTERM) cancels in-flight fetches
+	// on the URL-analysis, diff, and receiver paths — matching the trends
+	// path. The progress spinner runs the terminal in raw mode, so keyboard
+	// ctrl+c arrives as a keystroke, relayed via SetInterruptHandler below.
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
 
-	// Setup enricher chain (needed by both receiver and normal modes)
-	var enricher enrichment.Enricher
-	var enrichers []enrichment.Enricher
-	// GHAEnricher is attribute-gated (only spans carrying GHA-shaped attrs
-	// match), so it belongs in every chain: traces ote itself exported and
-	// re-ingested via files or the receiver carry those attrs too.
-	enrichers = append(enrichers, &enrichment.GHAEnricher{})
-	enrichers = append(enrichers, &enrichment.CICDEnricher{})
-	// GenAIEnricher is attribute-gated on gen_ai.* — it claims LLM spans
-	// (Anthropic/OpenAI SDKs, OpenLLMetry, LangChain, …) before the generic
-	// catch-all so models and token usage surface.
-	enrichers = append(enrichers, &enrichment.GenAIEnricher{})
+	// Setup enricher chain (needed by both receiver and normal modes). The
+	// production chain is DefaultEnricher — the same one the tests exercise;
+	// user rule files slot in as extras ahead of the generic catch-all.
+	var extras []enrichment.Enricher
 	if cfg.enrichmentFile != "" {
 		ruleEnricher, err := enrichment.LoadRules(cfg.enrichmentFile)
 		if err != nil {
 			printError(err, "failed to load enrichment rules")
 			os.Exit(1)
 		}
-		enrichers = append(enrichers, ruleEnricher)
+		extras = append(extras, ruleEnricher)
 		fmt.Fprintf(os.Stderr, "Loaded %d enrichment rules from %s\n", len(ruleEnricher.Rules), cfg.enrichmentFile)
 	}
-	enrichers = append(enrichers, &enrichment.GenericEnricher{})
-	enricher = enrichment.NewChainEnricher(enrichers...)
+	var enricher enrichment.Enricher = enrichment.DefaultEnricher(extras...)
 
 	// Trace diff mode: semantically compare two traces (e.g. two back-to-back
 	// commits' CI runs) the way `git diff` compares two trees.
 	if cfg.diffMode {
 		if err := runDiff(ctx, cfg, enricher); err != nil {
+			if ctx.Err() != nil { // cancelled via ctrl+c / SIGTERM
+				fmt.Fprintln(os.Stderr, "Interrupted.")
+				os.Exit(130)
+			}
 			printError(err, "diff failed")
 			os.Exit(1)
 		}
@@ -730,54 +767,64 @@ func main() {
 
 	// Handle OTLP receiver mode
 	if cfg.listenAddr != "" {
+		displayAddr := cfg.listenAddr
+		if strings.HasPrefix(displayAddr, ":") {
+			displayAddr = "localhost" + displayAddr
+		}
 		fmt.Fprintf(os.Stderr, "Starting OTLP/HTTP receiver on %s...\n", cfg.listenAddr)
-		fmt.Fprintf(os.Stderr, "  POST traces to http://localhost%s/v1/traces\n", cfg.listenAddr)
-		fmt.Fprintf(os.Stderr, "  Set OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost%s in your app\n", cfg.listenAddr)
+		fmt.Fprintf(os.Stderr, "  POST traces to http://%s/v1/traces\n", displayAddr)
+		fmt.Fprintf(os.Stderr, "  Set OTEL_EXPORTER_OTLP_ENDPOINT=http://%s in your app\n", displayAddr)
 		fmt.Fprintf(os.Stderr, "  Press Ctrl+C to stop and analyze collected spans\n")
 
 		recv := receiver.New(cfg.listenAddr)
 		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
 
 		errCh := make(chan error, 1)
 		go func() {
 			errCh <- recv.Start(ctx)
 		}()
 
-		// Pure receiver mode: wait for user input or a signal to stop.
-		if len(args) == 0 && len(cfg.traceFiles) == 0 && !hasTraceBackend {
-			fmt.Fprintf(os.Stderr, "  Waiting for traces... (press Enter or Ctrl+C to stop)\n")
-			sigCh := make(chan os.Signal, 1)
-			signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-			stdinCh := make(chan struct{})
-			go func() {
-				buf := make([]byte, 1)
-				for {
-					n, err := os.Stdin.Read(buf)
-					if n > 0 {
-						close(stdinCh)
-						return
-					}
-					if err != nil {
-						// Stdin is closed or redirected (e.g. </dev/null,
-						// nohup, CI): an immediate EOF must not shut the
-						// receiver down — rely on SIGINT/SIGTERM instead.
-						return
-					}
+		// Wait for user input, a signal, or a receiver failure to stop.
+		fmt.Fprintf(os.Stderr, "  Waiting for traces... (press Enter or Ctrl+C to stop)\n")
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+		stdinCh := make(chan struct{})
+		go func() {
+			buf := make([]byte, 1)
+			for {
+				n, err := os.Stdin.Read(buf)
+				if n > 0 {
+					close(stdinCh)
+					return
 				}
-			}()
-			select {
-			case <-stdinCh:
-			case <-sigCh:
-			case err := <-errCh:
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Receiver error: %v\n", err)
+					// Stdin is closed or redirected (e.g. </dev/null,
+					// nohup, CI): an immediate EOF must not shut the
+					// receiver down — rely on SIGINT/SIGTERM instead.
+					return
 				}
 			}
-			signal.Stop(sigCh)
+		}()
+		var recvErr error
+		select {
+		case <-stdinCh:
+		case <-sigCh:
+		case recvErr = <-errCh:
+			errCh = nil // already drained; don't read it again below
 		}
+		signal.Stop(sigCh)
 
 		cancel()
-		<-errCh
+		if errCh != nil {
+			recvErr = <-errCh
+		}
+		// A receiver that failed to start (e.g. port already bound) must exit
+		// non-zero instead of reporting "Received 0 spans".
+		if recvErr != nil {
+			fmt.Fprintf(os.Stderr, "Receiver error: %v\n", recvErr)
+			os.Exit(1)
+		}
 
 		receivedSpans := recv.Spans()
 		fmt.Fprintf(os.Stderr, "Received %d spans\n", len(receivedSpans))
@@ -860,11 +907,14 @@ func main() {
 	// Auto-generate perfetto file if --open-in-perfetto is used without --perfetto
 	if cfg.openInPerfetto && perfettoFile == "" {
 		tmpFile, err := os.CreateTemp("", "gha-trace-*.pftrace")
-		if err == nil {
-			perfettoFile = tmpFile.Name()
-			tmpFile.Close()
-			defer os.Remove(perfettoFile)
+		if err != nil {
+			// Don't silently disable a feature the user asked for.
+			printError(err, "--open-in-perfetto: creating temp trace file")
+			os.Exit(1)
 		}
+		perfettoFile = tmpFile.Name()
+		tmpFile.Close()
+		defer os.Remove(perfettoFile)
 	}
 
 	// Setup GitHub Token (only required when GHA URLs are provided)
@@ -901,16 +951,15 @@ func main() {
 		}
 
 		if len(args) > 0 && token == "" {
-			printErrorMsg("GITHUB_TOKEN environment variable or token argument is required.\n  Tip: install the GitHub CLI (gh) and run `gh auth login` to authenticate automatically.")
-			printUsage()
+			// No usage dump here: it would pollute redirected stdout on an
+			// error exit; the message already carries the actionable tip.
+			printErrorMsg("GITHUB_TOKEN environment variable or token argument is required.\n  Tip: install the GitHub CLI (gh) and run `gh auth login` to authenticate automatically.\n  Run 'ote --help' for more information.")
 			os.Exit(1)
 		}
 	}
 
 	// 3. Setup Exporters
-	exporters := []core.Exporter{
-		terminal.NewExporter(os.Stderr, enricher),
-	}
+	var exporters []core.Exporter
 
 	if perfettoFile != "" {
 		exporters = append(exporters, perfettoexport.NewExporter(os.Stderr, perfettoFile, cfg.openInPerfetto))
@@ -995,6 +1044,7 @@ func main() {
 		ghClient = client
 		progress := tui.NewProgress(len(args), os.Stderr)
 		progress.Start()
+		progress.SetInterruptHandler(stopSignals)
 		wireAPIMeter(progress, client)
 
 		ingestor := polling.NewPollingIngestor(client, args, progress, analyzer.AnalyzeOptions{
@@ -1010,6 +1060,10 @@ func main() {
 		printAPIMeter(client)
 
 		if err != nil {
+			if ctx.Err() != nil { // cancelled via ctrl+c / SIGTERM
+				fmt.Fprintln(os.Stderr, "Interrupted.")
+				os.Exit(130)
+			}
 			printError(err, "ingestion failed")
 			os.Exit(1)
 		}
@@ -1116,7 +1170,9 @@ func main() {
 
 				reloadClient := githubapi.NewClient(githubapi.NewContext(token))
 				reloadIngestor := polling.NewPollingIngestor(reloadClient, args, progressReporter, analyzer.AnalyzeOptions{
-					Window: cfg.window,
+					Window:      cfg.window,
+					NoArtifacts: cfg.noArtifacts,
+					FetchLogs:   cfg.fetchLogs,
 				})
 				_, ghaEarliest, ghaLatest, reloadGHASpans, err := reloadIngestor.Ingest(ctx)
 				if err != nil {
@@ -1277,7 +1333,7 @@ func main() {
 	}
 
 	if cfg.openInOTel {
-		fmt.Println("Opening OTel Desktop Viewer...")
+		fmt.Fprintln(os.Stderr, "Opening OTel Desktop Viewer...")
 		_ = utils.OpenBrowser("http://localhost:8000")
 	}
 
@@ -1548,8 +1604,13 @@ func loadDiffSide(ctx context.Context, input, token string, enricher enrichment.
 	}
 
 	client := githubapi.NewClient(githubapi.NewContext(token))
+	// The spinner puts the terminal in raw mode, so keyboard ctrl+c arrives
+	// as a keystroke; relay it to this fetch's context so it cancels.
+	ctx, cancelFetch := context.WithCancel(ctx)
+	defer cancelFetch()
 	progress := tui.NewProgress(1, os.Stderr)
 	progress.Start()
+	progress.SetInterruptHandler(cancelFetch)
 	wireAPIMeter(progress, client)
 	ingestor := polling.NewPollingIngestor(client, []string{input}, progress, analyzer.AnalyzeOptions{
 		Window:      cfg.window,
@@ -1805,12 +1866,16 @@ func buildLintData(spans []sdktrace.ReadOnlySpan) []enrichment.SpanData {
 	for _, s := range spans {
 		attrs := make(map[string]string)
 		for _, a := range s.Attributes() {
-			attrs[string(a.Key)] = a.Value.AsString()
+			// Emit(), not AsString(): int-typed attrs (http.status_code,
+			// net.peer.port) must reach the deprecation checks.
+			attrs[string(a.Key)] = a.Value.Emit()
 		}
 		data = append(data, enrichment.SpanData{
-			Name:      s.Name(),
-			Attrs:     attrs,
-			SpanKind:  s.SpanKind().String(),
+			Name:  s.Name(),
+			Attrs: attrs,
+			// The SDK renders kinds lowercase ("client"); lint's kind-gated
+			// checks compare the OTel-convention uppercase form.
+			SpanKind:  strings.ToUpper(s.SpanKind().String()),
 			ScopeName: s.InstrumentationScope().Name,
 			HasEvents: len(s.Events()) > 0,
 		})
@@ -1885,7 +1950,9 @@ func persistRunsToStore(ctx context.Context, client githubapi.GitHubProvider, re
 		if len(runData) == 0 {
 			continue
 		}
-		if err := st.UpsertRuns(res.Owner, res.Repo, runData); err != nil {
+		// SeedRuns, not UpsertRuns: passive seeding must not advance the
+		// sync watermark or fake backfill depth (silent listing gaps).
+		if err := st.SeedRuns(res.Owner, res.Repo, runData); err != nil {
 			return // best-effort: a write failure shouldn't fail the analysis
 		}
 	}

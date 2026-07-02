@@ -105,19 +105,18 @@ func enrichCICDOutcome(h *SpanHints, attrs map[string]string) {
 	if result == "" {
 		result = attrs["cicd.pipeline.run.result"]
 	}
+	// Semconv well-known values: success, failure, error, timeout,
+	// cancellation, skip. "cancelled" kept for pre-stable emitters.
 	switch result {
 	case "success":
 		h.Outcome = "success"
 		h.Color = "green"
-	case "failure":
+	case "failure", "error", "timeout":
 		h.Outcome = "failure"
 		h.Color = "red"
-	case "cancelled":
+	case "cancellation", "cancelled", "skip":
 		h.Outcome = "skipped"
 		h.Color = "gray"
-	case "error":
-		h.Outcome = "failure"
-		h.Color = "red"
 	}
 
 	// Also check OTel status code as fallback

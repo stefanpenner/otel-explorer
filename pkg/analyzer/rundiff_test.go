@@ -28,8 +28,8 @@ func baselineTypical() *TypicalRun {
 func TestCompareJobsToTypical(t *testing.T) {
 	t.Parallel()
 	observed := []JobObservation{
-		{Name: "build", DurationSec: 450}, // +50% over p50, above p95 (400)
-		{Name: "test", DurationSec: 590},  // ~p50: not notable
+		{Name: "build", DurationSec: 450},         // +50% over p50, above p95 (400)
+		{Name: "test", DurationSec: 590},          // ~p50: not notable
 		{Name: "brand-new-job", DurationSec: 120}, // no baseline
 	}
 

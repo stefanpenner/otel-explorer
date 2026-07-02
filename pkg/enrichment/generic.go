@@ -66,7 +66,7 @@ func (e *GenericEnricher) Enrich(name string, attrs map[string]string, isZeroDur
 	if svc := attrs["service.name"]; svc != "" {
 		h.ServiceName = svc
 	}
-	if env := attrs["deployment.environment"]; env != "" {
+	if env := firstNonEmpty(attrs, "deployment.environment.name", "deployment.environment"); env != "" {
 		h.Environment = env
 	}
 
@@ -148,12 +148,12 @@ func (e *GenericEnricher) Enrich(name string, attrs map[string]string, isZeroDur
 			op := firstNonEmpty(attrs, "db.operation.name", "db.operation")
 			collection := firstNonEmpty(attrs, "db.collection.name", "db.sql.table")
 			switch {
-		case query != "":
-			const maxLen = 80
-			if runes := []rune(query); len(runes) > maxLen {
-				query = string(runes[:maxLen-3]) + "..."
-			}
-			h.Detail = dbSystem + ": " + query
+			case query != "":
+				const maxLen = 80
+				if runes := []rune(query); len(runes) > maxLen {
+					query = string(runes[:maxLen-3]) + "..."
+				}
+				h.Detail = dbSystem + ": " + query
 			case op != "":
 				h.Detail = dbSystem + ": " + op
 				if collection != "" {

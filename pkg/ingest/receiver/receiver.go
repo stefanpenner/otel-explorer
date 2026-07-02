@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -132,7 +133,13 @@ func (r *Receiver) handleTraces(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	// Match on the media type only: senders may append parameters
+	// ("application/x-protobuf; charset=..."), which must not silently
+	// reroute a binary payload to the JSON parser.
 	contentType := req.Header.Get("Content-Type")
+	if mediaType, _, ok := strings.Cut(contentType, ";"); ok {
+		contentType = strings.TrimSpace(mediaType)
+	}
 
 	var spans []sdktrace.ReadOnlySpan
 

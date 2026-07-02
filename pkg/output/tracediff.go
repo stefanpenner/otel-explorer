@@ -240,7 +240,9 @@ func pctSuffix(delta interface{ Seconds() float64 }, base interface{ Seconds() f
 		return ""
 	}
 	pct := delta.Seconds() / base.Seconds() * 100
-	if pct != 0 && pct > -0.5 && pct < 0.5 {
+	// Inclusive bounds: %.0f rounds ±0.5 to ±0 (half-to-even), which would
+	// print the misleading "(+0%)" this guard exists to avoid.
+	if pct != 0 && pct >= -0.5 && pct <= 0.5 {
 		return " (<1%)"
 	}
 	sign := ""

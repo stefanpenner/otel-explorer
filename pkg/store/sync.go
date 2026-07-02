@@ -56,6 +56,11 @@ func Sync(ctx context.Context, client githubapi.GitHubProvider, st *Store, owner
 	if !wm.IsZero() && !oldest.IsZero() && oldest.Before(requestStart.Add(24*time.Hour)) {
 		gap := now.Sub(wm.Add(-watermarkOverlap))
 		gapDays := int(gap/(24*time.Hour)) + 1
+		if gapDays < 1 {
+			// A watermark at/after now (clock skew) must not zero the
+			// window — a future `since` would list nothing and "succeed".
+			gapDays = 1
+		}
 		if gapDays < fetchDays {
 			fetchDays = gapDays
 		}

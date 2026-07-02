@@ -149,15 +149,6 @@ func colorForRate(rate float64) lipgloss.Style {
 	}
 }
 
-// padRight pads a string to the given width (using plain text width calculation)
-func padRight(styled, plain string, width int) string {
-	plainWidth := lipgloss.Width(plain)
-	if plainWidth >= width {
-		return styled
-	}
-	return styled + strings.Repeat(" ", width-plainWidth)
-}
-
 // renderHeader renders the title bar with statistics
 func (m Model) renderHeader() string {
 	width := m.width

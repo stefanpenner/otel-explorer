@@ -233,6 +233,10 @@ func renderGenAIUsageMarkdown(w io.Writer, spans []trace.ReadOnlySpan) {
 }
 
 func markdownLink(url, text string) string {
+	// Escape the characters that break a GFM table cell or the link syntax
+	// itself: `|` ends the cell, `]` ends the link text.
+	text = strings.ReplaceAll(text, "|", "\\|")
+	text = strings.ReplaceAll(text, "]", "\\]")
 	return fmt.Sprintf("[%s](%s)", text, url)
 }
 

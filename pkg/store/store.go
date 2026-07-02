@@ -98,6 +98,12 @@ func Open(path string) (*Store, error) {
 		{"runs", "run_attempt", "INTEGER NOT NULL DEFAULT 1"},
 		{"runs", "head_branch", "TEXT NOT NULL DEFAULT ''"},
 		{"runs", "event", "TEXT NOT NULL DEFAULT ''"},
+		// synced=1: written by `ote sync` (drives the incremental-listing
+		// watermark). synced=0: passively seeded by a URL analysis — usable
+		// for trends, but must not move the sync bounds (a seeded newer run
+		// would clamp the next listing window and leave permanent gaps).
+		// Pre-migration rows are sync-written, so DEFAULT 1 is correct.
+		{"runs", "synced", "INTEGER NOT NULL DEFAULT 1"},
 		{"jobs", "runner_name", "TEXT NOT NULL DEFAULT ''"},
 		{"jobs", "labels", "TEXT NOT NULL DEFAULT ''"},
 	} {
@@ -118,8 +124,21 @@ func (s *Store) Close() error {
 }
 
 // UpsertRuns inserts or updates runs (and, for runs carrying job detail,
-// replaces their jobs) inside one transaction.
+// replaces their jobs) inside one transaction. This is the sync path: the
+// written runs advance the incremental-listing watermark.
 func (s *Store) UpsertRuns(owner, repo string, runs []analyzer.RunData) error {
+	return s.upsertRuns(owner, repo, runs, true)
+}
+
+// SeedRuns stores runs discovered outside `ote sync` (e.g. a URL analysis).
+// They are loadable for trends but do not move the sync watermark or the
+// backfill depth — inferring listing coverage from them would leave
+// permanent gaps in history.
+func (s *Store) SeedRuns(owner, repo string, runs []analyzer.RunData) error {
+	return s.upsertRuns(owner, repo, runs, false)
+}
+
+func (s *Store) upsertRuns(owner, repo string, runs []analyzer.RunData, synced bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tx, err := s.db.Begin()
@@ -128,18 +147,25 @@ func (s *Store) UpsertRuns(owner, repo string, runs []analyzer.RunData) error {
 	}
 	defer tx.Rollback()
 
+	// jobs_fetched: a re-listed run with a HIGHER attempt invalidates stored
+	// job detail (attempt-1 jobs would otherwise be served forever); same
+	// attempt keeps the max so a listing without a jobs payload doesn't
+	// clear detail already fetched. synced only ever upgrades (max).
 	runStmt, err := tx.Prepare(`
 		INSERT INTO runs (id, owner, repo, workflow_name, head_sha, head_branch, event, status, conclusion,
-			created_at, started_at, updated_at, duration_ms, jobs_fetched, run_attempt)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			created_at, started_at, updated_at, duration_ms, jobs_fetched, run_attempt, synced)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (owner, repo, id) DO UPDATE SET
 			workflow_name=excluded.workflow_name, head_sha=excluded.head_sha,
 			head_branch=excluded.head_branch, event=excluded.event,
 			status=excluded.status, conclusion=excluded.conclusion,
 			created_at=excluded.created_at, started_at=excluded.started_at,
 			updated_at=excluded.updated_at, duration_ms=excluded.duration_ms,
-			jobs_fetched=max(runs.jobs_fetched, excluded.jobs_fetched),
-			run_attempt=excluded.run_attempt`)
+			jobs_fetched=CASE WHEN excluded.run_attempt > runs.run_attempt
+				THEN excluded.jobs_fetched
+				ELSE max(runs.jobs_fetched, excluded.jobs_fetched) END,
+			run_attempt=excluded.run_attempt,
+			synced=max(runs.synced, excluded.synced)`)
 	if err != nil {
 		return err
 	}
@@ -170,9 +196,13 @@ func (s *Store) UpsertRuns(owner, repo string, runs []analyzer.RunData) error {
 		if attempt == 0 {
 			attempt = 1
 		}
+		syncedVal := 0
+		if synced {
+			syncedVal = 1
+		}
 		if _, err := runStmt.Exec(run.ID, owner, repo, run.WorkflowName, run.HeadSHA,
 			run.Branch, run.Event, run.Status, run.Conclusion, msOf(run.CreatedAt), msOf(run.StartedAt),
-			msOf(run.UpdatedAt), run.Duration, jobsFetched, attempt); err != nil {
+			msOf(run.UpdatedAt), run.Duration, jobsFetched, attempt, syncedVal); err != nil {
 			return fmt.Errorf("upserting run %d: %w", run.ID, err)
 		}
 		if len(run.Jobs) == 0 {
@@ -266,7 +296,7 @@ func (s *Store) Watermark(owner, repo string) (time.Time, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var ms sql.NullInt64
-	err := s.db.QueryRow(`SELECT MAX(created_at) FROM runs WHERE owner=? AND repo=?`,
+	err := s.db.QueryRow(`SELECT MAX(created_at) FROM runs WHERE owner=? AND repo=? AND synced=1`,
 		owner, repo).Scan(&ms)
 	if err != nil || !ms.Valid || ms.Int64 == 0 {
 		return time.Time{}, err
@@ -385,7 +415,7 @@ func (s *Store) OldestRun(owner, repo string) (time.Time, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var ms sql.NullInt64
-	err := s.db.QueryRow(`SELECT MIN(created_at) FROM runs WHERE owner=? AND repo=? AND created_at > 0`,
+	err := s.db.QueryRow(`SELECT MIN(created_at) FROM runs WHERE owner=? AND repo=? AND created_at > 0 AND synced=1`,
 		owner, repo).Scan(&ms)
 	if err != nil || !ms.Valid || ms.Int64 == 0 {
 		return time.Time{}, err

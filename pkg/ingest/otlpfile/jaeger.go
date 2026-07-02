@@ -24,9 +24,9 @@ type jaegerResponse struct {
 }
 
 type jaegerTrace struct {
-	TraceID   string                    `json:"traceID"`
-	Spans     []jaegerSpan              `json:"spans"`
-	Processes map[string]jaegerProcess  `json:"processes"`
+	TraceID   string                   `json:"traceID"`
+	Spans     []jaegerSpan             `json:"spans"`
+	Processes map[string]jaegerProcess `json:"processes"`
 }
 
 type jaegerSpan struct {
@@ -35,7 +35,7 @@ type jaegerSpan struct {
 	OperationName string            `json:"operationName"`
 	References    []jaegerReference `json:"references"`
 	StartTime     int64             `json:"startTime"` // microseconds
-	Duration      int64             `json:"duration"`   // microseconds
+	Duration      int64             `json:"duration"`  // microseconds
 	Tags          []jaegerTag       `json:"tags"`
 	Logs          []jaegerLog       `json:"logs"`
 	ProcessID     string            `json:"processID"`

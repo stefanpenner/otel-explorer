@@ -2,9 +2,12 @@ package analyzer
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/stefanpenner/otel-explorer/pkg/enrichment"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/trace"
+	apitrace "go.opentelemetry.io/otel/trace"
 )
 
 // CombinedMetricsFromSpans derives header metrics directly from spans, for
@@ -41,14 +44,16 @@ func CombinedMetricsFromSpans(spans []trace.ReadOnlySpan, enricher enrichment.En
 	}
 
 	// Empty rate strings mean "unknown" — untyped traces carry no outcome
-	// attributes, and 0.0% would misread as everything failing.
+	// attributes, and 0.0% would misread as everything failing. Rates are
+	// computed over known outcomes only: dividing by the full count would
+	// treat unknown runs as failures and unknown jobs as successes.
 	successRate := ""
 	if knownRuns > 0 {
-		successRate = fmt.Sprintf("%.1f", float64(successRuns)/float64(runs)*100)
+		successRate = fmt.Sprintf("%.1f", float64(successRuns)/float64(knownRuns)*100)
 	}
 	jobSuccessRate := ""
 	if knownJobs > 0 {
-		jobSuccessRate = fmt.Sprintf("%.1f", float64(jobs-failedJobs)/float64(jobs)*100)
+		jobSuccessRate = fmt.Sprintf("%.1f", float64(knownJobs-failedJobs)/float64(knownJobs)*100)
 	}
 
 	return CombinedMetrics{
@@ -107,13 +112,31 @@ func isRootSpan(span trace.ReadOnlySpan, hints enrichment.SpanHints) bool {
 	return hints.IsRoot || !span.Parent().SpanID().IsValid()
 }
 
+// SpanEnrichmentAttrs flattens a span's attributes for enrichment. It uses
+// Emit() (AsString returns "" for int/bool/double values, which would hide
+// e.g. rpc.grpc.status_code from enrichers) and injects the span's OTel
+// status and kind as the synthetic attributes the enrichers read
+// (otel.status_code / otel.span_kind, uppercase per OTel convention) —
+// without this only Jaeger files, which persist them as literal tags,
+// carried them, and the documented status→Outcome mapping was dead code.
+// Real attributes with those names win over the injected values.
+func SpanEnrichmentAttrs(span trace.ReadOnlySpan) map[string]string {
+	attrs := make(map[string]string, len(span.Attributes())+2)
+	for _, a := range span.Attributes() {
+		attrs[string(a.Key)] = a.Value.Emit()
+	}
+	if _, ok := attrs["otel.status_code"]; !ok && span.Status().Code != codes.Unset {
+		attrs["otel.status_code"] = strings.ToUpper(span.Status().Code.String())
+	}
+	if _, ok := attrs["otel.span_kind"]; !ok && span.SpanKind() != apitrace.SpanKindUnspecified {
+		attrs["otel.span_kind"] = strings.ToUpper(span.SpanKind().String())
+	}
+	return attrs
+}
+
 // enrichSpan runs the enricher over a span's attributes the same way the
 // summary and tree builders do.
 func enrichSpan(span trace.ReadOnlySpan, enricher enrichment.Enricher) enrichment.SpanHints {
-	attrs := make(map[string]string, len(span.Attributes()))
-	for _, a := range span.Attributes() {
-		attrs[string(a.Key)] = a.Value.AsString()
-	}
 	isZeroDuration := span.EndTime().Before(span.StartTime()) || span.EndTime().Equal(span.StartTime())
-	return enricher.Enrich(span.Name(), attrs, isZeroDuration)
+	return enricher.Enrich(span.Name(), SpanEnrichmentAttrs(span), isZeroDuration)
 }

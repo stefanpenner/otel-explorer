@@ -363,6 +363,11 @@ func (r *rateLimiter) waitIfNeeded(ctx context.Context) error {
 	if d <= 0 {
 		return nil
 	}
+	// An exhausted primary limit can mean sleeping until the hourly reset —
+	// say so instead of appearing frozen.
+	if d > 5*time.Second {
+		fmt.Fprintf(os.Stderr, "GitHub rate limit exhausted; waiting %s for reset (ctrl+c to abort)\n", d.Round(time.Second))
+	}
 	return sleepContext(ctx, d)
 }
 
@@ -710,8 +715,10 @@ func (c *Client) FetchRecentWorkflowRuns(ctx context.Context, owner, repo string
 	))
 	defer span.End()
 
-	// Calculate created date filter (YYYY-MM-DD format)
-	since := time.Now().AddDate(0, 0, -days).Format("2006-01-02")
+	// Calculate created date filter (YYYY-MM-DD format). GitHub evaluates
+	// the qualifier in UTC; formatting a local date in a timezone ahead of
+	// UTC started the window up to ~14h late and silently dropped runs.
+	since := time.Now().UTC().AddDate(0, 0, -days).Format("2006-01-02")
 
 	params := url.Values{}
 	params.Set("per_page", "100")

@@ -211,7 +211,6 @@ func (k KeyMap) FullHelp() [][]string {
 		{"s", "Cycle sort (start/duration↓/duration↑)"},
 		{"[/]", "Resize tree/timeline split"},
 
-
 		{"L", "Fetch & parse step logs"},
 		{"r", "Reload data"},
 		{"p", "Open in Perfetto"},

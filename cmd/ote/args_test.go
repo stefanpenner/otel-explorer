@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -481,4 +482,80 @@ func slicesEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestHasOtherWork(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  config
+		want bool
+	}{
+		{"nothing else", config{}, false},
+		{"urls", config{urls: []string{"u"}}, true},
+		{"trace file", config{traceFiles: []string{"t.json"}}, true},
+		{"trends", config{trendsMode: true}, true},
+		{"diff", config{diffMode: true}, true},
+		{"sync", config{syncMode: true}, true},
+		{"listen", config{listenAddr: ":4318"}, true},
+		{"tempo backend", config{tempoURL: "http://t"}, true},
+		{"jaeger backend", config{jaegerURL: "http://j"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasOtherWork(tt.cfg); got != tt.want {
+				t.Errorf("hasOtherWork(%s) = %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestListenRejectsOtherInputs(t *testing.T) {
+	cases := [][]string{
+		{"--listen", "trace.json"},
+		{"--listen", "https://github.com/o/r/pull/1"},
+		{"--listen", "--tempo=http://t", "--trace-id=abc"},
+	}
+	for _, args := range cases {
+		if _, err := parseArgs(args, false); err == nil {
+			t.Errorf("parseArgs(%v) should reject --listen combined with other inputs", args)
+		}
+	}
+	if _, err := parseArgs([]string{"--listen"}, false); err != nil {
+		t.Errorf("plain --listen should parse: %v", err)
+	}
+}
+
+func TestOutputFormatModeMismatch(t *testing.T) {
+	if _, err := parseArgs([]string{"trends", "o/r", "--output=json"}, false); err == nil {
+		t.Error("trends + --output should error (trends uses --format)")
+	}
+	if _, err := parseArgs([]string{"https://github.com/o/r/pull/1", "--format=json"}, false); err == nil {
+		t.Error("--format outside trends mode should error (analysis uses --output)")
+	}
+	if _, err := parseArgs([]string{"trends", "o/r", "--format=json"}, false); err != nil {
+		t.Errorf("trends + --format should parse: %v", err)
+	}
+	if _, err := parseArgs([]string{"https://github.com/o/r/pull/1", "--output=json"}, false); err != nil {
+		t.Errorf("analysis + --output should parse: %v", err)
+	}
+}
+
+func TestMissingTraceFileError(t *testing.T) {
+	// A path-shaped arg that doesn't exist must say "file not found",
+	// not fall through to "Invalid GitHub URL".
+	for _, arg := range []string{"does-not-exist.json", "./nope.jsonl", "/tmp/definitely-not-here-ote.pftrace", "sub/dir/missing.json"} {
+		_, err := parseArgs([]string{arg}, false)
+		if err == nil || !strings.Contains(err.Error(), "file not found") {
+			t.Errorf("parseArgs(%q) = %v, want file-not-found error", arg, err)
+		}
+	}
+	// A directory is not a trace file.
+	if _, err := parseArgs([]string{"testdata"}, false); err == nil || !strings.Contains(err.Error(), "directory") {
+		t.Errorf("parseArgs(dir) = %v, want is-a-directory error", err)
+	}
+	// Bare owner/repo shorthand (no extension) still falls through to URL
+	// handling — its error talks about GitHub URLs, not files.
+	if cfg, err := parseArgs([]string{"nodejs/node"}, false); err != nil || len(cfg.urls) != 1 {
+		t.Errorf("parseArgs(owner/repo) = (%v, %v), want it kept as URL arg", cfg.urls, err)
+	}
 }

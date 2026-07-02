@@ -104,14 +104,9 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 	seenDedup := make(map[string]struct{})
 
 	for _, s := range spans {
-		attrs := make(map[string]string)
-		for _, a := range s.Attributes() {
-			// Emit() (not AsString()) so int/bool/double attributes — e.g.
-			// gen_ai.usage.input_tokens, http.response.status_code — stringify
-			// instead of collapsing to "" and vanishing from enrichment and the
-			// inspector.
-			attrs[string(a.Key)] = a.Value.Emit()
-		}
+		// Shared flattening: Emit()-stringified attributes plus the span's
+		// OTel status and kind injected as otel.status_code/otel.span_kind.
+		attrs := SpanEnrichmentAttrs(s)
 
 		isZeroDuration := s.EndTime().Before(s.StartTime()) || s.EndTime().Equal(s.StartTime())
 		hints := enricher.Enrich(s.Name(), attrs, isZeroDuration)
@@ -210,7 +205,10 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 			}
 		}
 		if sh.hints.Environment == "" {
-			if env, ok := resourceAttrs["deployment.environment"]; ok {
+			// Stable name first, then the legacy one.
+			if env, ok := resourceAttrs["deployment.environment.name"]; ok {
+				sh.hints.Environment = env
+			} else if env, ok := resourceAttrs["deployment.environment"]; ok {
 				sh.hints.Environment = env
 			}
 		}

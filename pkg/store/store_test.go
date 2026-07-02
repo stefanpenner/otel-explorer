@@ -211,7 +211,7 @@ func TestConcurrentReadWrite(t *testing.T) {
 				ID:           int64(100 + i),
 				WorkflowName: "CI",
 				HeadSHA:      "aaa",
-				Status:        "completed",
+				Status:       "completed",
 				Conclusion:   "success",
 				CreatedAt:    base.Add(time.Duration(i) * time.Hour),
 				StartedAt:    base.Add(time.Duration(i) * time.Hour),
@@ -238,4 +238,71 @@ func TestConcurrentReadWrite(t *testing.T) {
 	got, err := st.LoadRuns("o", "r", base.Add(-time.Hour), base.Add(100*time.Hour))
 	require.NoError(t, err)
 	require.Len(t, got, writers, "all writes should be visible after concurrent access")
+}
+
+func TestRetryResetsJobsFetched(t *testing.T) {
+	t.Parallel()
+	st := openTestStore(t)
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	// Attempt 1: failed run, jobs fetched.
+	require.NoError(t, st.UpsertRuns("o", "r", []analyzer.RunData{{
+		ID: 1, WorkflowName: "CI", Status: "completed", Conclusion: "failure",
+		CreatedAt: base, Attempt: 1,
+	}}))
+	require.NoError(t, st.UpsertJobs("o", "r", 1, []analyzer.JobData{{
+		ID: 11, Name: "build", Status: "completed", Conclusion: "failure",
+		CreatedAt: base, Duration: 60_000,
+	}}))
+
+	// The run is re-run: sync re-lists it as attempt 2 (no job payload).
+	require.NoError(t, st.UpsertRuns("o", "r", []analyzer.RunData{{
+		ID: 1, WorkflowName: "CI", Status: "completed", Conclusion: "success",
+		CreatedAt: base, Attempt: 2,
+	}}))
+
+	ids, err := st.RunsNeedingJobs("o", "r", base.Add(-time.Hour), base.Add(time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, []int64{1}, ids,
+		"a newer attempt must invalidate stored attempt-1 jobs, else stale failures are served forever")
+}
+
+func TestSeededRunsDoNotMoveSyncBounds(t *testing.T) {
+	t.Parallel()
+	st := openTestStore(t)
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	// Sync stored history up to `base`.
+	require.NoError(t, st.UpsertRuns("o", "r", []analyzer.RunData{{
+		ID: 1, WorkflowName: "CI", Status: "completed", Conclusion: "success", CreatedAt: base,
+	}}))
+
+	// A URL analysis passively seeds a much newer and a much older run.
+	require.NoError(t, st.SeedRuns("o", "r", []analyzer.RunData{
+		{ID: 2, WorkflowName: "CI", Status: "completed", Conclusion: "success", CreatedAt: base.Add(9 * 24 * time.Hour)},
+		{ID: 3, WorkflowName: "CI", Status: "completed", Conclusion: "success", CreatedAt: base.Add(-30 * 24 * time.Hour)},
+	}))
+
+	wm, err := st.Watermark("o", "r")
+	require.NoError(t, err)
+	assert.True(t, wm.Equal(base),
+		"passively seeded runs must not advance the sync watermark (would create silent listing gaps)")
+
+	oldest, err := st.OldestRun("o", "r")
+	require.NoError(t, err)
+	assert.True(t, oldest.Equal(base),
+		"passively seeded runs must not fake backfill depth")
+
+	// Seeded runs still load for analysis.
+	got, err := st.LoadRuns("o", "r", base.Add(-40*24*time.Hour), base.Add(10*24*time.Hour))
+	require.NoError(t, err)
+	assert.Len(t, got, 3)
+
+	// A real sync of the same run upgrades it to synced.
+	require.NoError(t, st.UpsertRuns("o", "r", []analyzer.RunData{{
+		ID: 2, WorkflowName: "CI", Status: "completed", Conclusion: "success", CreatedAt: base.Add(9 * 24 * time.Hour),
+	}}))
+	wm, err = st.Watermark("o", "r")
+	require.NoError(t, err)
+	assert.True(t, wm.Equal(base.Add(9*24*time.Hour)), "synced writes advance the watermark")
 }
