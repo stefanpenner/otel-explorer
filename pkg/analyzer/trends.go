@@ -393,10 +393,11 @@ func AnalyzeTrendsFromRuns(owner, repo string, days int, runs []RunData) *TrendA
 	for _, run := range runs {
 		if run.Status == "completed" {
 			// JobsFetched marks whether a run's job detail is available for
-			// faceting extrapolation. A run that genuinely has no jobs from the
-			// store still counts as fetched; only runs that were never synced
-			// or whose detail is missing should be false.
-			run.JobsFetched = len(run.Jobs) > 0
+			// faceting extrapolation. The store path is exact — every
+			// completed run's detail was fetched by sync — so a run that
+			// genuinely has no jobs still counts as fetched (len(Jobs)>0
+			// here would make facet weighting inflate counts).
+			run.JobsFetched = true
 			completed = append(completed, run)
 		}
 	}

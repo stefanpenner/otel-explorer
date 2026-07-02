@@ -1950,7 +1950,9 @@ func persistRunsToStore(ctx context.Context, client githubapi.GitHubProvider, re
 		if len(runData) == 0 {
 			continue
 		}
-		if err := st.UpsertRuns(res.Owner, res.Repo, runData); err != nil {
+		// SeedRuns, not UpsertRuns: passive seeding must not advance the
+		// sync watermark or fake backfill depth (silent listing gaps).
+		if err := st.SeedRuns(res.Owner, res.Repo, runData); err != nil {
 			return // best-effort: a write failure shouldn't fail the analysis
 		}
 	}
