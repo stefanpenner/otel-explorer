@@ -406,7 +406,10 @@ func TestRenderOTelTimelineMarkerAlignment(t *testing.T) {
 	}
 }
 
-func TestBuildSpanTreeDuplicateSpanIDKeepsFirst(t *testing.T) {
+func TestTimelineDuplicateSpanIDsBothRender(t *testing.T) {
+	// Span IDs are only unique within a trace; colliding IDs (e.g. two
+	// same-named steps) must not silently overwrite each other. The shared
+	// analyzer tree keeps every span.
 	now := time.Now().Truncate(time.Second)
 	sid := trace.SpanID{1, 1, 1, 1, 1, 1, 1, 1}
 
@@ -423,8 +426,10 @@ func TestBuildSpanTreeDuplicateSpanIDKeepsFirst(t *testing.T) {
 		spanID:    sid,
 	}
 
-	roots := BuildSpanTree([]sdktrace.ReadOnlySpan{span1, span2})
+	var sb strings.Builder
+	RenderOTelTimeline(&sb, []sdktrace.ReadOnlySpan{span1, span2}, time.Time{}, time.Time{}, enrichment.DefaultEnricher())
 
-	assert.NotEmpty(t, roots, "expected at least one root")
-	assert.Equal(t, "first-span", roots[0].Span.Name(), "should keep the first span for duplicate SpanIDs")
+	out := sb.String()
+	assert.Contains(t, out, "first-span")
+	assert.Contains(t, out, "second-span", "duplicate span IDs must not drop spans")
 }

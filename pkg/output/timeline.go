@@ -2,11 +2,11 @@ package output
 
 import (
 	"fmt"
-	"github.com/charmbracelet/lipgloss"
 	"io"
-	"sort"
 	"strings"
 	"time"
+
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/stefanpenner/otel-explorer/pkg/analyzer"
 	"github.com/stefanpenner/otel-explorer/pkg/enrichment"
@@ -14,189 +14,12 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace"
 )
 
-// SpanNode represents a node in the OTel span hierarchy tree.
-type SpanNode struct {
-	Span     trace.ReadOnlySpan
-	Attrs    map[string]string
-	Hints    enrichment.SpanHints
-	Children []*SpanNode
-}
-
-// BuildSpanTree constructs a hierarchy of spans based on ParentSpanID.
-func BuildSpanTree(spans []trace.ReadOnlySpan) []*SpanNode {
-	nodes := make(map[string]*SpanNode)
-	var roots []*SpanNode
-
-	// Create nodes for all spans
-	for _, s := range spans {
-		id := s.SpanContext().SpanID().String()
-		if _, exists := nodes[id]; exists {
-			continue
-		}
-		nodes[id] = &SpanNode{Span: s}
-	}
-
-	// Link children to parents
-	for _, s := range spans {
-		node := nodes[s.SpanContext().SpanID().String()]
-		if node == nil {
-			continue
-		}
-		parentID := s.Parent().SpanID().String()
-
-		if parentID == "0000000000000000" {
-			roots = append(roots, node)
-		} else if parent, ok := nodes[parentID]; ok {
-			parent.Children = append(parent.Children, node)
-		} else {
-			roots = append(roots, node)
-		}
-	}
-
-	sortNodes(roots)
-	for _, n := range nodes {
-		sortNodes(n.Children)
-	}
-
-	return roots
-}
-
-// BuildEnrichedSpanTree filters spans using the enricher, deduplicates, and builds the tree.
-func BuildEnrichedSpanTree(spans []trace.ReadOnlySpan, enricher enrichment.Enricher, globalEarliest, globalLatest time.Time) []*SpanNode {
-	var filtered []trace.ReadOnlySpan
-	seenDedup := make(map[string]struct{})
-
-	for _, s := range spans {
-		attrs := make(map[string]string)
-		for _, a := range s.Attributes() {
-			// Emit() (not AsString()) so int/bool/double attributes — e.g.
-			// gen_ai.usage.input_tokens, http.response.status_code — stringify
-			// instead of collapsing to "" and vanishing from enrichment.
-			attrs[string(a.Key)] = a.Value.Emit()
-		}
-
-		isZeroDuration := s.EndTime().Before(s.StartTime()) || s.EndTime().Equal(s.StartTime())
-		hints := enricher.Enrich(s.Name(), attrs, isZeroDuration)
-		if hints.Category == "" {
-			continue
-		}
-
-		if !globalEarliest.IsZero() && s.EndTime().Before(globalEarliest) {
-			continue
-		}
-		if !globalLatest.IsZero() && s.StartTime().After(globalLatest) {
-			continue
-		}
-
-		if hints.DedupKey != "" {
-			if _, seen := seenDedup[hints.DedupKey]; seen {
-				continue
-			}
-			seenDedup[hints.DedupKey] = struct{}{}
-		}
-
-		filtered = append(filtered, s)
-	}
-
-	if len(filtered) == 0 {
-		return nil
-	}
-
-	// Build tree, then enrich each node
-	roots := BuildSpanTree(filtered)
-	enrichNodes(roots, enricher)
-	return roots
-}
-
-// exceptionTypeFromSpan returns the exception type from the span's first
-// exception event, or "" if it has none.
-func exceptionTypeFromSpan(s trace.ReadOnlySpan) string {
-	for _, ev := range s.Events() {
-		evAttrs := make(map[string]string, len(ev.Attributes))
-		for _, a := range ev.Attributes {
-			evAttrs[string(a.Key)] = a.Value.Emit()
-		}
-		if t := enrichment.ExceptionTypeFromEvent(ev.Name, evAttrs); t != "" {
-			return t
-		}
-	}
-	return ""
-}
-
-// featureFlagsFromSpan returns feature-flag evaluation summaries ("key=variant")
-// recorded as events on the span.
-func featureFlagsFromSpan(s trace.ReadOnlySpan) []string {
-	var flags []string
-	for _, ev := range s.Events() {
-		evAttrs := make(map[string]string, len(ev.Attributes))
-		for _, a := range ev.Attributes {
-			evAttrs[string(a.Key)] = a.Value.Emit()
-		}
-		if f := enrichment.FeatureFlagFromEvent(ev.Name, evAttrs); f != "" {
-			flags = append(flags, f)
-		}
-	}
-	return flags
-}
-
-// enrichNodes enriches each SpanNode in-place with attrs and hints.
-func enrichNodes(nodes []*SpanNode, enricher enrichment.Enricher) {
-	for _, n := range nodes {
-		n.Attrs = make(map[string]string)
-		for _, a := range n.Span.Attributes() {
-			n.Attrs[string(a.Key)] = a.Value.Emit()
-		}
-		isZeroDuration := n.Span.EndTime().Before(n.Span.StartTime()) || n.Span.EndTime().Equal(n.Span.StartTime())
-		n.Hints = enricher.Enrich(n.Span.Name(), n.Attrs, isZeroDuration)
-		// Surface a recorded exception (a span event) onto the span itself so
-		// the failure is visible in the waterfall, not only in the inspector.
-		if excType := exceptionTypeFromSpan(n.Span); excType != "" {
-			enrichment.ApplyException(&n.Hints, excType)
-		}
-		// Surface feature-flag evaluations recorded as events.
-		enrichment.ApplyFeatureFlags(&n.Hints, featureFlagsFromSpan(n.Span))
-		enrichNodes(n.Children, enricher)
-	}
-}
-
-func sortNodes(nodes []*SpanNode) {
-	sort.Slice(nodes, func(i, j int) bool {
-		sI, sJ := nodes[i].Span, nodes[j].Span
-		if sI.StartTime().Equal(sJ.StartTime()) {
-			// Use hints sort priority if available, otherwise fall back to type
-			if nodes[i].Hints.SortPriority != nodes[j].Hints.SortPriority {
-				return nodes[i].Hints.SortPriority < nodes[j].Hints.SortPriority
-			}
-			typeI := getSpanType(sI)
-			typeJ := getSpanType(sJ)
-			if typeI != typeJ {
-				if typeI == "marker" {
-					return true
-				}
-				if typeJ == "marker" {
-					return false
-				}
-			}
-		}
-		return sI.StartTime().Before(sJ.StartTime())
-	})
-}
-
-func getSpanType(s trace.ReadOnlySpan) string {
-	for _, attr := range s.Attributes() {
-		if attr.Key == "type" {
-			return attr.Value.AsString()
-		}
-	}
-	return ""
-}
-
 // RenderOTelTimeline renders a generic OTel span tree as a terminal waterfall.
 func RenderOTelTimeline(w io.Writer, spans []trace.ReadOnlySpan, globalEarliest, globalLatest time.Time, enricher enrichment.Enricher) {
 	if len(spans) == 0 {
 		return
 	}
-	roots := BuildEnrichedSpanTree(spans, enricher, globalEarliest, globalLatest)
+	roots := analyzer.BuildTreeFromSpans(spans, globalEarliest, globalLatest, enricher)
 	if len(roots) == 0 {
 		return
 	}
@@ -206,16 +29,16 @@ func RenderOTelTimeline(w io.Writer, spans []trace.ReadOnlySpan, globalEarliest,
 	latest := globalLatest
 
 	if earliest.IsZero() || latest.IsZero() {
-		earliest = roots[0].Span.StartTime()
-		latest = roots[0].Span.EndTime()
-		var walk func([]*SpanNode)
-		walk = func(nodes []*SpanNode) {
+		earliest = roots[0].StartTime
+		latest = roots[0].EndTime
+		var walk func([]*analyzer.TreeNode)
+		walk = func(nodes []*analyzer.TreeNode) {
 			for _, n := range nodes {
-				if n.Span.StartTime().Before(earliest) {
-					earliest = n.Span.StartTime()
+				if n.StartTime.Before(earliest) {
+					earliest = n.StartTime
 				}
-				if n.Span.EndTime().After(latest) {
-					latest = n.Span.EndTime()
+				if n.EndTime.After(latest) {
+					latest = n.EndTime
 				}
 				walk(n.Children)
 			}
@@ -268,16 +91,15 @@ func markerWidth(barChar string) int {
 	return 1
 }
 
-func renderNode(w io.Writer, node *SpanNode, depth int, globalStart time.Time, totalDuration time.Duration, scale int) {
-	s := node.Span
+func renderNode(w io.Writer, node *analyzer.TreeNode, depth int, globalStart time.Time, totalDuration time.Duration, scale int) {
 	h := node.Hints
 
 	// Clamp start and end times to the global window for visualization
-	startT := s.StartTime()
+	startT := node.StartTime
 	if startT.Before(globalStart) {
 		startT = globalStart
 	}
-	endT := s.EndTime()
+	endT := node.EndTime
 	if endT.After(globalStart.Add(totalDuration)) {
 		endT = globalStart.Add(totalDuration)
 	}
@@ -332,7 +154,7 @@ func renderNode(w io.Writer, node *SpanNode, depth int, globalStart time.Time, t
 	}
 	remaining := strings.Repeat(" ", maxInt(0, remainingCount))
 
-	label := s.Name()
+	label := node.Name
 	if h.User != "" {
 		label = fmt.Sprintf("%s by %s", label, h.User)
 	}
@@ -343,7 +165,7 @@ func renderNode(w io.Writer, node *SpanNode, depth int, globalStart time.Time, t
 	// generic OTel spans — HTTP, DB, RPC, GenAI — read at a glance in the
 	// waterfall rather than as anonymous bars. Markers carry no detail.
 	if h.Detail != "" && !h.IsMarker {
-		if extra := enrichment.NonRedundantDetail(s.Name(), h.Detail); extra != "" {
+		if extra := enrichment.NonRedundantDetail(node.Name, h.Detail); extra != "" {
 			label = fmt.Sprintf("%s  %s", label, colorizeText(extra, "gray"))
 		}
 	}
