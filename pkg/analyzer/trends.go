@@ -994,9 +994,14 @@ func analyzeJobTrends(runs []RunData) []JobTrend {
 		})
 	}
 
-	// Sort by average duration (slowest first)
+	// Sort by average duration (slowest first). Name tiebreaker: the input
+	// order comes from map iteration, so ties would otherwise reshuffle
+	// between identical calls.
 	sort.Slice(trends, func(i, j int) bool {
-		return trends[i].AvgDuration > trends[j].AvgDuration
+		if trends[i].AvgDuration != trends[j].AvgDuration {
+			return trends[i].AvgDuration > trends[j].AvgDuration
+		}
+		return trends[i].Name < trends[j].Name
 	})
 
 	return trends
@@ -1120,7 +1125,8 @@ func detectFlakyJobs(runs []RunData) []FlakyJob {
 		}
 	}
 
-	// Definitive same-SHA flakes first, then transition score, then rate.
+	// Definitive same-SHA flakes first, then transition score, then rate,
+	// then name (map-fed input: ties must not reshuffle between calls).
 	sort.Slice(flakyJobs, func(i, j int) bool {
 		if flakyJobs[i].SameSHAFlakes != flakyJobs[j].SameSHAFlakes {
 			return flakyJobs[i].SameSHAFlakes > flakyJobs[j].SameSHAFlakes
@@ -1128,7 +1134,10 @@ func detectFlakyJobs(runs []RunData) []FlakyJob {
 		if flakyJobs[i].TransitionScore != flakyJobs[j].TransitionScore {
 			return flakyJobs[i].TransitionScore > flakyJobs[j].TransitionScore
 		}
-		return flakyJobs[i].FlakeRate > flakyJobs[j].FlakeRate
+		if flakyJobs[i].FlakeRate != flakyJobs[j].FlakeRate {
+			return flakyJobs[i].FlakeRate > flakyJobs[j].FlakeRate
+		}
+		return flakyJobs[i].Name < flakyJobs[j].Name
 	})
 
 	return flakyJobs
@@ -1361,12 +1370,20 @@ func calculateJobChanges(runs []RunData) ([]JobRegression, []JobImprovement) {
 		}
 	}
 
-	// Sort by percent change (worst first)
+	// Sort by percent change (worst first). Name tiebreaker: grid-rounded
+	// averages make exact ties common, and the top-10 truncation below
+	// would otherwise show a different job set on every invocation.
 	sort.Slice(regressions, func(i, j int) bool {
-		return regressions[i].PercentIncrease > regressions[j].PercentIncrease
+		if regressions[i].PercentIncrease != regressions[j].PercentIncrease {
+			return regressions[i].PercentIncrease > regressions[j].PercentIncrease
+		}
+		return regressions[i].Name < regressions[j].Name
 	})
 	sort.Slice(improvements, func(i, j int) bool {
-		return improvements[i].PercentDecrease > improvements[j].PercentDecrease
+		if improvements[i].PercentDecrease != improvements[j].PercentDecrease {
+			return improvements[i].PercentDecrease > improvements[j].PercentDecrease
+		}
+		return improvements[i].Name < improvements[j].Name
 	})
 
 	// Limit to top 10

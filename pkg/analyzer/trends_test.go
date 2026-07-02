@@ -1877,3 +1877,39 @@ func TestCalculateTrendSummary_RerunBurn(t *testing.T) {
 		t.Errorf("RerunComputeMs = %d, want 420000 (5m + 2m)", summary.RerunComputeMs)
 	}
 }
+
+// TestJobChangesDeterministicOnTies: ranked lists fed from map iteration
+// must not change between identical calls when values tie (display-grid
+// rounding makes exact ties common).
+func TestJobChangesDeterministicOnTies(t *testing.T) {
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	var runs []RunData
+	// 15 jobs, all regressing identically 10s -> 12s (= +20% each, all tied),
+	// spread over old and new halves of the window.
+	mkRun := func(createdAt time.Time, durMs int64) RunData {
+		var jobs []JobData
+		for j := 0; j < 15; j++ {
+			jobs = append(jobs, JobData{
+				Name:       fmt.Sprintf("job-%02d", j),
+				Conclusion: "success",
+				Duration:   durMs,
+			})
+		}
+		return makeRunData("success", durMs, createdAt, jobs)
+	}
+	for i := 0; i < 4; i++ {
+		runs = append(runs, mkRun(base.AddDate(0, 0, i), 10_000))
+	}
+	for i := 4; i < 8; i++ {
+		runs = append(runs, mkRun(base.AddDate(0, 0, i), 12_000))
+	}
+
+	firstReg, firstImp := calculateJobChanges(runs)
+	firstTrends := analyzeJobTrends(runs)
+	for i := 0; i < 20; i++ {
+		reg, imp := calculateJobChanges(runs)
+		assert.Equal(t, firstReg, reg, "regressions list changed between identical calls")
+		assert.Equal(t, firstImp, imp, "improvements list changed between identical calls")
+		assert.Equal(t, firstTrends, analyzeJobTrends(runs), "job trends order changed between identical calls")
+	}
+}
