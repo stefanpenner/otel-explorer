@@ -41,14 +41,16 @@ func CombinedMetricsFromSpans(spans []trace.ReadOnlySpan, enricher enrichment.En
 	}
 
 	// Empty rate strings mean "unknown" — untyped traces carry no outcome
-	// attributes, and 0.0% would misread as everything failing.
+	// attributes, and 0.0% would misread as everything failing. Rates are
+	// computed over known outcomes only: dividing by the full count would
+	// treat unknown runs as failures and unknown jobs as successes.
 	successRate := ""
 	if knownRuns > 0 {
-		successRate = fmt.Sprintf("%.1f", float64(successRuns)/float64(runs)*100)
+		successRate = fmt.Sprintf("%.1f", float64(successRuns)/float64(knownRuns)*100)
 	}
 	jobSuccessRate := ""
 	if knownJobs > 0 {
-		jobSuccessRate = fmt.Sprintf("%.1f", float64(jobs-failedJobs)/float64(jobs)*100)
+		jobSuccessRate = fmt.Sprintf("%.1f", float64(knownJobs-failedJobs)/float64(knownJobs)*100)
 	}
 
 	return CombinedMetrics{
@@ -112,7 +114,9 @@ func isRootSpan(span trace.ReadOnlySpan, hints enrichment.SpanHints) bool {
 func enrichSpan(span trace.ReadOnlySpan, enricher enrichment.Enricher) enrichment.SpanHints {
 	attrs := make(map[string]string, len(span.Attributes()))
 	for _, a := range span.Attributes() {
-		attrs[string(a.Key)] = a.Value.AsString()
+		// Emit(), not AsString(): AsString returns "" for int/bool/double
+		// values, which would hide e.g. rpc.grpc.status_code from enrichers.
+		attrs[string(a.Key)] = a.Value.Emit()
 	}
 	isZeroDuration := span.EndTime().Before(span.StartTime()) || span.EndTime().Equal(span.StartTime())
 	return enricher.Enrich(span.Name(), attrs, isZeroDuration)

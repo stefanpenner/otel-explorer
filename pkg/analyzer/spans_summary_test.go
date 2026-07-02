@@ -187,3 +187,84 @@ func TestCombinedMetricsFromSpansUnknownOutcomes(t *testing.T) {
 	assert.Equal(t, "", cm.SuccessRate, "unknown outcomes must not read as 0%")
 	assert.Equal(t, "", cm.JobSuccessRate, "unknown job outcomes must not read as 0%")
 }
+
+func TestCombinedMetricsFromSpansMixedKnownUnknown(t *testing.T) {
+	t.Parallel()
+	// Rates must be computed over KNOWN outcomes only: an unknown-outcome
+	// run must not count as a failure, and an unknown-outcome job must not
+	// count as a success.
+	tid := githubapi.NewTraceID(11, 1)
+	sc := func(id int64) trace.SpanContext {
+		return trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID: tid, SpanID: githubapi.NewSpanID(id), TraceFlags: trace.FlagsSampled,
+		})
+	}
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	known, untyped := sc(1), sc(2)
+	builder := &SpanBuilder{}
+	// Run 1: known success.
+	builder.Add(tracetest.SpanStub{
+		Name: "Workflow: known", SpanContext: known,
+		StartTime: base, EndTime: base.Add(time.Minute),
+		Attributes: []attribute.KeyValue{
+			attribute.String("type", "workflow"),
+			attribute.String("github.conclusion", "success"),
+		},
+	})
+	// Run 2: untyped root, unknown outcome.
+	builder.Add(tracetest.SpanStub{
+		Name: "Workflow: untyped", SpanContext: untyped,
+		StartTime: base, EndTime: base.Add(time.Minute),
+	})
+	// Job 1 (under run 1): known FAILURE.
+	builder.Add(tracetest.SpanStub{
+		Name: "build", SpanContext: sc(3), Parent: known,
+		StartTime: base, EndTime: base.Add(30 * time.Second),
+		Attributes: []attribute.KeyValue{
+			attribute.String("type", "job"),
+			attribute.String("github.conclusion", "failure"),
+		},
+	})
+	// Job 2 (under run 2): unknown outcome.
+	builder.Add(tracetest.SpanStub{
+		Name: "mystery", SpanContext: sc(4), Parent: untyped,
+		StartTime: base, EndTime: base.Add(30 * time.Second),
+	})
+
+	cm := CombinedMetricsFromSpans(builder.Spans(), enrichment.DefaultEnricher())
+	assert.Equal(t, "100.0", cm.SuccessRate, "the only known run succeeded; unknown must not dilute")
+	assert.Equal(t, "0.0", cm.JobSuccessRate, "the only known job failed; unknown must not inflate")
+}
+
+func TestCombinedMetricsFromSpansIntAttrOutcome(t *testing.T) {
+	t.Parallel()
+	// Int-typed attributes must reach the enricher: a gRPC span whose only
+	// failure signal is the int attr rpc.grpc.status_code=5 is a failed job.
+	// (AsString() returns "" for ints; Emit() is required.)
+	tid := githubapi.NewTraceID(12, 1)
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	root := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: tid, SpanID: githubapi.NewSpanID(1), TraceFlags: trace.FlagsSampled,
+	})
+	builder := &SpanBuilder{}
+	builder.Add(tracetest.SpanStub{
+		Name: "pipeline", SpanContext: root,
+		StartTime: base, EndTime: base.Add(time.Minute),
+	})
+	builder.Add(tracetest.SpanStub{
+		Name: "Cart/Get",
+		SpanContext: trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID: tid, SpanID: githubapi.NewSpanID(2), TraceFlags: trace.FlagsSampled,
+		}),
+		Parent:    root,
+		StartTime: base, EndTime: base.Add(30 * time.Second),
+		Attributes: []attribute.KeyValue{
+			attribute.String("rpc.system", "grpc"),
+			attribute.String("rpc.service", "Cart"),
+			attribute.Int64("rpc.grpc.status_code", 5),
+		},
+	})
+
+	cm := CombinedMetricsFromSpans(builder.Spans(), enrichment.DefaultEnricher())
+	assert.Equal(t, "0.0", cm.JobSuccessRate, "int-typed grpc status 5 = NOT_FOUND = failed job")
+}
