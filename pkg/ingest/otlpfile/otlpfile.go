@@ -351,24 +351,22 @@ func convertAttr(a attrJSON) attribute.KeyValue {
 	return key.String(fmt.Sprintf("%v", a.Value.Value))
 }
 
-// looksLikeChromeTrace checks for bare-array Chrome Tracing format
-// by looking for the "ph" key (event phase) which is unique to Chrome Tracing.
+// looksLikeChromeTrace checks for bare-array Chrome Tracing format: a JSON
+// array whose first element carries a top-level "ph" key (event phase). A
+// structural check, not a byte scan — "ph" appearing inside nested maps
+// (e.g. Zipkin tags or span attributes) must not claim the file for Chrome.
 func looksLikeChromeTrace(data []byte) bool {
-	// Check for "ph": pattern — the "ph" JSON key followed by a colon.
-	for i := 0; i < len(data)-4; i++ {
-		if data[i] == '"' && data[i+1] == 'p' && data[i+2] == 'h' && data[i+3] == '"' {
-			// Look for colon after optional whitespace
-			for j := i + 4; j < len(data); j++ {
-				if data[j] == ':' {
-					return true
-				}
-				if data[j] != ' ' && data[j] != '\t' {
-					break
-				}
-			}
-		}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.Token()
+	if err != nil || tok != json.Delim('[') {
+		return false
 	}
-	return false
+	var first map[string]json.RawMessage
+	if err := dec.Decode(&first); err != nil {
+		return false
+	}
+	_, ok := first["ph"]
+	return ok
 }
 
 // maxDecompressedBytes caps decompressed trace data to guard against
