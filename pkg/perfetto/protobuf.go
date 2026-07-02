@@ -18,9 +18,9 @@ import (
 
 // Wire types
 const (
-	wireVarint = 0
+	wireVarint  = 0
 	wireFixed64 = 1
-	wireBytes  = 2
+	wireBytes   = 2
 )
 
 // TrackEvent.Type enum values

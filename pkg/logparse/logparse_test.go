@@ -65,7 +65,7 @@ func TestTimestampParser(t *testing.T) {
 	// Verify boundaries
 	assert.Equal(t, base, spans[0].StartTime)
 	assert.Equal(t, lines[3].Time, spans[0].EndTime) // next group start
-	assert.Equal(t, stepEnd, spans[2].EndTime)        // last span ends at step end
+	assert.Equal(t, stepEnd, spans[2].EndTime)       // last span ends at step end
 }
 
 func TestTimestampParserFiltersShortSpans(t *testing.T) {
@@ -185,10 +185,10 @@ func TestTruncateName(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name    string
-		input   string
-		maxLen  int
-		want    string
+		name   string
+		input  string
+		maxLen int
+		want   string
 	}{
 		{name: "short", input: "short", maxLen: 80, want: "short"},
 		{name: "ascii truncate", input: "abcdefghijklm", maxLen: 10, want: "abcdefg..."},
@@ -432,8 +432,8 @@ func TestLeadingWord(t *testing.T) {
 	assert.Equal(t, "Compiling", leadingWord("Compiling foo v1.0"))
 	assert.Equal(t, "Downloading", leadingWord("Downloading package"))
 	assert.Equal(t, "", leadingWord(""))
-	assert.Equal(t, "", leadingWord("[5 / 10] stuff"))  // starts with non-letter
-	assert.Equal(t, "", leadingWord("singleword"))       // no space = no prefix
+	assert.Equal(t, "", leadingWord("[5 / 10] stuff")) // starts with non-letter
+	assert.Equal(t, "", leadingWord("singleword"))     // no space = no prefix
 }
 
 func TestRegistryParseFiltersInsignificantSpans(t *testing.T) {

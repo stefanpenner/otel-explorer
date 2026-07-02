@@ -31,11 +31,11 @@ type clearCopyFeedbackMsg struct{}
 
 // inspectorBreadcrumbEntry saves UI state when navigating into a child.
 type inspectorBreadcrumbEntry struct {
-	item        *TreeItem
-	sidebarIdx  int
-	cursor      int
-	scroll      int
-	focusLeft   bool
+	item       *TreeItem
+	sidebarIdx int
+	cursor     int
+	scroll     int
+	focusLeft  bool
 }
 
 // LoadingProgressMsg updates loading progress display
@@ -54,53 +54,53 @@ type LoadingReporter interface {
 
 // Model represents the TUI state
 type Model struct {
-	enricher      enrichment.Enricher
-	roots         []*analyzer.TreeNode
-	treeItems     []*TreeItem
-	visibleItems  []TreeItem
-	expandedState map[string]bool
-	hiddenState   map[string]bool // items hidden from chart
-	cursor        int
+	enricher       enrichment.Enricher
+	roots          []*analyzer.TreeNode
+	treeItems      []*TreeItem
+	visibleItems   []TreeItem
+	expandedState  map[string]bool
+	hiddenState    map[string]bool // items hidden from chart
+	cursor         int
 	selectionStart int // start of multi-selection range (-1 if no range)
-	width         int
-	height        int
-	globalStart   time.Time
-	globalEnd     time.Time
-	chartStart    time.Time // calculated from non-hidden items
-	chartEnd      time.Time // calculated from non-hidden items
-	keys          KeyMap
+	width          int
+	height         int
+	globalStart    time.Time
+	globalEnd      time.Time
+	chartStart     time.Time // calculated from non-hidden items
+	chartEnd       time.Time // calculated from non-hidden items
+	keys           KeyMap
 	// Statistics (full dataset)
-	summary     analyzer.Summary
-	wallTimeMs  int64
-	computeMs   int64
-	stepCount   int
+	summary    analyzer.Summary
+	wallTimeMs int64
+	computeMs  int64
+	stepCount  int
 	// Displayed statistics (only visible items)
-	displayedSummary   analyzer.Summary
+	displayedSummary    analyzer.Summary
 	displayedWallTimeMs int64
 	displayedComputeMs  int64
 	displayedStepCount  int
 	// Input URLs from CLI
 	inputURLs []string
 	// Modal state
-	showDetailModal  bool
-	showHelpModal    bool
-	modalItem        *TreeItem
-	modalScroll      int
-	inspectorNodes   []*InspectorNode
-	inspectorFlat    []FlatInspectorEntry
-	inspectorCursor  int
+	showDetailModal bool
+	showHelpModal   bool
+	modalItem       *TreeItem
+	modalScroll     int
+	inspectorNodes  []*InspectorNode
+	inspectorFlat   []FlatInspectorEntry
+	inspectorCursor int
 	// Two-pane inspector state
-	inspectorSidebarIdx  int  // 0-indexed into inspectorNodes
-	inspectorFocusLeft   bool // true = sidebar focused
+	inspectorSidebarIdx int  // 0-indexed into inspectorNodes
+	inspectorFocusLeft  bool // true = sidebar focused
 	// Inspector search
-	inspectorSearching   bool
-	inspectorSearchQuery string
+	inspectorSearching     bool
+	inspectorSearchQuery   string
 	inspectorSearchMatches []int // indices into inspectorFlat
-	inspectorSearchIdx   int    // current match index
+	inspectorSearchIdx     int   // current match index
 	// Inspector breadcrumb navigation (traverse into children)
-	inspectorBreadcrumb      []inspectorBreadcrumbEntry // stack of parent states
+	inspectorBreadcrumb []inspectorBreadcrumbEntry // stack of parent states
 	// Copy feedback
-	inspectorCopyMsg     string // transient "Copied!" message
+	inspectorCopyMsg string // transient "Copied!" message
 	// Reload state
 	isLoading     bool
 	reloadFunc    func(reporter LoadingReporter) ([]trace.ReadOnlySpan, time.Time, time.Time, error)
@@ -157,10 +157,10 @@ type Model struct {
 	// Workflow definition files
 	workflowFiles []string
 	// Log fetch state
-	logFetchFunc      LogFetchFunc
-	logFetchingJobID  int64            // non-zero while a log fetch is in progress
-	logFetchedJobIDs  map[int64]bool   // job IDs that have already been fetched
-	logFetchInline    *logFetchState   // inline progress for the item being fetched
+	logFetchFunc     LogFetchFunc
+	logFetchingJobID int64          // non-zero while a log fetch is in progress
+	logFetchedJobIDs map[int64]bool // job IDs that have already been fetched
+	logFetchInline   *logFetchState // inline progress for the item being fetched
 }
 
 // ReloadFunc is the function signature for reloading data
@@ -2372,4 +2372,3 @@ func Run(spans []trace.ReadOnlySpan, globalStart, globalEnd time.Time, inputURLs
 	_ = finalModel
 	return nil
 }
-

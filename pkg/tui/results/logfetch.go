@@ -138,4 +138,3 @@ func (m *Model) logFetchPhase(itemID string) string {
 	}
 	return ""
 }
-

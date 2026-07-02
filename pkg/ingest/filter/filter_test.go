@@ -181,11 +181,11 @@ func TestApply_EmptyFilter(t *testing.T) {
 
 func TestMatches_SpanAttrsTakePrecedenceOverResourceAttrs(t *testing.T) {
 	tests := []struct {
-		name           string
-		spanAttrs      []attribute.KeyValue
-		resourceAttrs  []attribute.KeyValue
-		filterExpr     string
-		expectMatch    bool
+		name          string
+		spanAttrs     []attribute.KeyValue
+		resourceAttrs []attribute.KeyValue
+		filterExpr    string
+		expectMatch   bool
 	}{
 		{
 			name: "span attr wins over resource attr with same key",

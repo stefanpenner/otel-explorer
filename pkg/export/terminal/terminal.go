@@ -42,7 +42,7 @@ func (e *Exporter) Finish(ctx context.Context) error {
 	}
 
 	summary := analyzer.CalculateSummary(e.spans, e.enricher)
-	
+
 	fmt.Fprintf(e.writer, "\n%s\n", strings.Repeat("=", 80))
 	fmt.Fprintf(e.writer, "📊 Trace Performance Report\n")
 	fmt.Fprintf(e.writer, "%s\n", strings.Repeat("=", 80))

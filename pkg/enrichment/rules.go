@@ -104,4 +104,3 @@ func matchesRule(match RuleMatch, name string, attrs map[string]string) bool {
 	// At least one condition must be specified
 	return match.SpanName != "" || len(match.Attributes) > 0
 }
-

@@ -37,8 +37,8 @@ func TestGHAEnricher_Workflow(t *testing.T) {
 func TestGHAEnricher_Job(t *testing.T) {
 	e := &GHAEnricher{}
 	attrs := map[string]string{
-		"type":              "job",
-		"github.conclusion": "failure",
+		"type":               "job",
+		"github.conclusion":  "failure",
 		"github.is_required": "true",
 	}
 	h := e.Enrich("build", attrs, false)
@@ -82,11 +82,11 @@ func TestGHAEnricher_Step(t *testing.T) {
 func TestGHAEnricher_MarkerMerged(t *testing.T) {
 	e := &GHAEnricher{}
 	attrs := map[string]string{
-		"type":               "marker",
-		"github.event_type":  "merged",
-		"github.event_id":    "evt-1",
-		"github.event_time":  "2024-01-01T00:00:00Z",
-		"github.user":        "alice",
+		"type":              "marker",
+		"github.event_type": "merged",
+		"github.event_id":   "evt-1",
+		"github.event_time": "2024-01-01T00:00:00Z",
+		"github.user":       "alice",
 	}
 	h := e.Enrich("Merged", attrs, true)
 

@@ -19,8 +19,8 @@ type HourBucket struct {
 // runners"); duration changes that don't track volume mean the code changed.
 type HourlyPatterns struct {
 	Hours          [24]HourBucket
-	PeakQueueHour  int  // hour with the highest queue p50; -1 when no queue data
-	PeakVolumeHour int  // hour with the most runs
+	PeakQueueHour  int // hour with the highest queue p50; -1 when no queue data
+	PeakVolumeHour int // hour with the most runs
 }
 
 // computeHourlyPatterns buckets runs by the UTC hour they were created.

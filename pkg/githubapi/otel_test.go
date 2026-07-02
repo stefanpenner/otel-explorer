@@ -25,16 +25,16 @@ func TestClientInstrumentation(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(NewContext("test-token"), WithCacheDir(""))
-	
+
 	ctx := context.Background()
-	
+
 	// Call a method that uses the tracer directly
 	_, _ = client.FetchRepository(ctx, server.URL)
 
 	// Verify spans
 	spans := exporter.GetSpans()
 	assert.NotEmpty(t, spans, "Should have at least one span from tracer.Start")
-	
+
 	foundFetch := false
 	foundHTTP := false
 	for _, span := range spans {

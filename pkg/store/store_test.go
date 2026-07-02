@@ -211,7 +211,7 @@ func TestConcurrentReadWrite(t *testing.T) {
 				ID:           int64(100 + i),
 				WorkflowName: "CI",
 				HeadSHA:      "aaa",
-				Status:        "completed",
+				Status:       "completed",
 				Conclusion:   "success",
 				CreatedAt:    base.Add(time.Duration(i) * time.Hour),
 				StartedAt:    base.Add(time.Duration(i) * time.Hour),

@@ -782,8 +782,8 @@ func overlayLogicalEndLine(timeline string, col, width int, selected bool) strin
 	bytes := []byte(timeline)
 	visPos := 0
 	i := 0
-	beforeEnd := 0   // byte offset where col starts
-	afterStart := 0   // byte offset where col+1 starts
+	beforeEnd := 0  // byte offset where col starts
+	afterStart := 0 // byte offset where col+1 starts
 	found := false
 
 	for i < len(bytes) && visPos <= col {

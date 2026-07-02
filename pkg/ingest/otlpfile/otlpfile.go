@@ -28,18 +28,18 @@ import (
 
 // stdoutSpan is the JSON structure emitted by stdouttrace exporter.
 type stdoutSpan struct {
-	Name                   string                       `json:"Name"`
-	SpanContext            spanContextJSON               `json:"SpanContext"`
-	Parent                 spanContextJSON               `json:"Parent"`
-	SpanKind               int                           `json:"SpanKind"`
-	StartTime              time.Time                     `json:"StartTime"`
-	EndTime                time.Time                     `json:"EndTime"`
-	Attributes             []attrJSON                    `json:"Attributes"`
-	Events                 []eventJSON                   `json:"Events"`
-	Links                  []linkJSON                    `json:"Links"`
-	Status                 statusJSON                    `json:"Status"`
-	Resource               []attrJSON                    `json:"Resource"`
-	InstrumentationScope   *stdoutInstrumentationScope   `json:"InstrumentationScope,omitempty"`
+	Name                 string                      `json:"Name"`
+	SpanContext          spanContextJSON             `json:"SpanContext"`
+	Parent               spanContextJSON             `json:"Parent"`
+	SpanKind             int                         `json:"SpanKind"`
+	StartTime            time.Time                   `json:"StartTime"`
+	EndTime              time.Time                   `json:"EndTime"`
+	Attributes           []attrJSON                  `json:"Attributes"`
+	Events               []eventJSON                 `json:"Events"`
+	Links                []linkJSON                  `json:"Links"`
+	Status               statusJSON                  `json:"Status"`
+	Resource             []attrJSON                  `json:"Resource"`
+	InstrumentationScope *stdoutInstrumentationScope `json:"InstrumentationScope,omitempty"`
 }
 
 // stdoutInstrumentationScope mirrors the InstrumentationScope object
@@ -74,7 +74,7 @@ type eventJSON struct {
 
 type linkJSON struct {
 	SpanContext spanContextJSON `json:"SpanContext"`
-	Attributes  []attrJSON     `json:"Attributes"`
+	Attributes  []attrJSON      `json:"Attributes"`
 }
 
 type statusJSON struct {
