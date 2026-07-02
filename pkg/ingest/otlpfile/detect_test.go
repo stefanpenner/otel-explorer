@@ -101,3 +101,53 @@ func TestEmptyInputNoError(t *testing.T) {
 		t.Fatalf("Parse(empty) = (%d, %v), want (0, nil)", len(spans), err)
 	}
 }
+
+// OTLP/JSON with a NUMERIC intValue (hand-rolled emitters) must not reject
+// the whole file — the spec form is a string, but numbers are common.
+func TestProtoJSONNumericIntValue(t *testing.T) {
+	input := `{"resourceSpans":[{"scopeSpans":[{"spans":[{
+		"traceId":"0af7651916cd43dd8448eb211c80319c",
+		"spanId":"b7ad6b7169203331",
+		"name":"call",
+		"startTimeUnixNano":"1718000000000000000",
+		"endTimeUnixNano":"1718000001000000000",
+		"attributes":[
+			{"key":"http.status_code","value":{"intValue":500}},
+			{"key":"retries","value":{"intValue":"3"}}
+		]}]}]}]}`
+	spans, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1", len(spans))
+	}
+	got := map[string]int64{}
+	for _, a := range spans[0].Attributes() {
+		got[string(a.Key)] = a.Value.AsInt64()
+	}
+	if got["http.status_code"] != 500 || got["retries"] != 3 {
+		t.Errorf("attrs = %v, want status 500 and retries 3", got)
+	}
+}
+
+// OTLP/JSON spans with zero IDs must be kept with a zero SpanContext (like
+// the stdout path after fd4db38), not silently dropped.
+func TestProtoJSONZeroIDSpanKept(t *testing.T) {
+	input := `{"resourceSpans":[{"scopeSpans":[{"spans":[{
+		"traceId":"00000000000000000000000000000000",
+		"spanId":"0000000000000000",
+		"name":"degenerate",
+		"startTimeUnixNano":"1718000000000000000",
+		"endTimeUnixNano":"1718000001000000000"}]}]}]}`
+	spans, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1 (zero-ID span silently dropped)", len(spans))
+	}
+	if spans[0].Name() != "degenerate" {
+		t.Errorf("name = %q", spans[0].Name())
+	}
+}
