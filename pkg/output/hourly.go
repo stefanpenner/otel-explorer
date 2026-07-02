@@ -47,11 +47,17 @@ func renderHourlyPatterns(w io.Writer, hp *analyzer.HourlyPatterns) {
 	fmt.Fprintf(w, "  Queue  %s\n", sparkline(queue))
 
 	peakV := hp.Hours[hp.PeakVolumeHour]
-	peakQ := hp.Hours[hp.PeakQueueHour]
-	fmt.Fprintf(w, "\n  %s\n", dimStyle.Render(fmt.Sprintf(
-		"Busiest hour %02d:00 (%d runs). Worst queue %02d:00 (p50 %s).",
-		hp.PeakVolumeHour, peakV.RunCount, hp.PeakQueueHour, utils.HumanizeTime(peakQ.QueueP50))))
-	if peakQ.QueueP50 > 0 && hp.PeakQueueHour == hp.PeakVolumeHour {
-		fmt.Fprintf(w, "  %s\n", dimStyle.Render("Queue peaks with volume — runner contention; capacity, not code, is the fix."))
+	summary := fmt.Sprintf("Busiest hour %02d:00 (%d runs).", hp.PeakVolumeHour, peakV.RunCount)
+	// PeakQueueHour is -1 when no hour had enough queue observations.
+	if hp.PeakQueueHour >= 0 {
+		peakQ := hp.Hours[hp.PeakQueueHour]
+		summary += fmt.Sprintf(" Worst queue %02d:00 (p50 %s).",
+			hp.PeakQueueHour, utils.HumanizeTime(peakQ.QueueP50))
+		fmt.Fprintf(w, "\n  %s\n", dimStyle.Render(summary))
+		if peakQ.QueueP50 > 0 && hp.PeakQueueHour == hp.PeakVolumeHour {
+			fmt.Fprintf(w, "  %s\n", dimStyle.Render("Queue peaks with volume — runner contention; capacity, not code, is the fix."))
+		}
+		return
 	}
+	fmt.Fprintf(w, "\n  %s\n", dimStyle.Render(summary))
 }
