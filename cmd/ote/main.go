@@ -19,7 +19,6 @@ import (
 	"github.com/stefanpenner/otel-explorer/pkg/export"
 	otelexport "github.com/stefanpenner/otel-explorer/pkg/export/otel"
 	perfettoexport "github.com/stefanpenner/otel-explorer/pkg/export/perfetto"
-	"github.com/stefanpenner/otel-explorer/pkg/export/terminal"
 	"github.com/stefanpenner/otel-explorer/pkg/githubapi"
 	"github.com/stefanpenner/otel-explorer/pkg/ingest/filter"
 	"github.com/stefanpenner/otel-explorer/pkg/ingest/otlpfile"
@@ -969,9 +968,7 @@ func main() {
 	}
 
 	// 3. Setup Exporters
-	exporters := []core.Exporter{
-		terminal.NewExporter(os.Stderr, enricher),
-	}
+	var exporters []core.Exporter
 
 	if perfettoFile != "" {
 		exporters = append(exporters, perfettoexport.NewExporter(os.Stderr, perfettoFile, cfg.openInPerfetto))

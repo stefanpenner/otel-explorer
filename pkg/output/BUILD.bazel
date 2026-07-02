@@ -32,6 +32,7 @@ go_library(
 go_test(
     name = "output_test",
     srcs = [
+        "hourly_test.go",
         "markdown_test.go",
         "nest_test.go",
         "render_fuzz_test.go",
