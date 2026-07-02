@@ -401,11 +401,19 @@ func parseArgs(args []string, terminal bool) (config, error) {
 		}
 
 		// If the arg looks like a local file (not a URL, not a flag), check if
-		// it exists on disk — if so, treat it as a trace file input.
+		// it exists on disk — if so, treat it as a trace file input. A
+		// path-shaped arg that does NOT exist gets a file error here instead
+		// of falling through to a misleading "Invalid GitHub URL".
 		if !strings.HasPrefix(arg, "http") && !strings.HasPrefix(arg, "-") {
-			if _, err := os.Stat(arg); err == nil {
+			info, err := os.Stat(arg)
+			switch {
+			case err == nil && !info.IsDir():
 				cfg.traceFiles = append(cfg.traceFiles, arg)
 				continue
+			case err == nil: // exists but is a directory
+				return cfg, fmt.Errorf("%s is a directory, not a trace file", arg)
+			case looksLikeTracePath(arg):
+				return cfg, fmt.Errorf("file not found: %s", arg)
 			}
 		}
 
@@ -448,6 +456,23 @@ func parseArgs(args []string, terminal bool) (config, error) {
 	}
 
 	return cfg, nil
+}
+
+// looksLikeTracePath reports whether a nonexistent positional arg was almost
+// certainly meant as a file path (explicit path prefix or a trace-file
+// extension) rather than a GitHub URL or owner/repo shorthand, so the error
+// can say "file not found" instead of "Invalid GitHub URL".
+func looksLikeTracePath(arg string) bool {
+	for _, prefix := range []string{"./", "../", "/", "~"} {
+		if strings.HasPrefix(arg, prefix) {
+			return true
+		}
+	}
+	switch strings.ToLower(filepath.Ext(strings.TrimSuffix(strings.TrimSuffix(arg, ".gz"), ".zst"))) {
+	case ".json", ".jsonl", ".ndjson", ".pftrace", ".pb", ".txt", ".trace":
+		return true
+	}
+	return false
 }
 
 // hasOtherWork reports whether the invocation requests any work beyond
