@@ -148,6 +148,7 @@ func (m *mockReadOnlySpan) ChildSpanCount() int                 { return 0 }
 func (m *mockReadOnlySpan) Links() []sdktrace.Link              { return nil }
 func (m *mockReadOnlySpan) Events() []sdktrace.Event            { return m.events }
 func (m *mockReadOnlySpan) Status() sdktrace.Status             { return sdktrace.Status{} }
+func (m *mockReadOnlySpan) SpanKind() trace.SpanKind            { return trace.SpanKindInternal }
 func (m *mockReadOnlySpan) DroppedAttributesCount() int         { return 0 }
 func (m *mockReadOnlySpan) DroppedEventsCount() int             { return 0 }
 func (m *mockReadOnlySpan) DroppedLinksCount() int              { return 0 }

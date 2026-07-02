@@ -284,10 +284,7 @@ func WithLogFetchFunc(f LogFetchFunc) ModelOption {
 // using the enricher to classify spans by category instead of hardcoding GHA types.
 func calculateComputeAndSteps(spans []trace.ReadOnlySpan, enricher enrichment.Enricher) (computeMs int64, stepCount int) {
 	for _, s := range spans {
-		attrs := make(map[string]string)
-		for _, a := range s.Attributes() {
-			attrs[string(a.Key)] = a.Value.AsString()
-		}
+		attrs := analyzer.SpanEnrichmentAttrs(s)
 		isZeroDuration := s.EndTime().Before(s.StartTime()) || s.EndTime().Equal(s.StartTime())
 		hints := enricher.Enrich(s.Name(), attrs, isZeroDuration)
 		if hints.Category == "" || hints.IsMarker {

@@ -8,6 +8,8 @@ import (
 	"github.com/stefanpenner/otel-explorer/pkg/githubapi"
 	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -267,4 +269,42 @@ func TestCombinedMetricsFromSpansIntAttrOutcome(t *testing.T) {
 
 	cm := CombinedMetricsFromSpans(builder.Spans(), enrichment.DefaultEnricher())
 	assert.Equal(t, "0.0", cm.JobSuccessRate, "int-typed grpc status 5 = NOT_FOUND = failed job")
+}
+
+func TestStatusAndKindReachEnrichment(t *testing.T) {
+	t.Parallel()
+	// A span whose ONLY failure signal is OTel status=Error must enrich as a
+	// failure, and span kind must drive the kind icons — neither was
+	// reaching the enrichers (only Jaeger files carried them as tags).
+	tid := githubapi.NewTraceID(13, 1)
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	root := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: tid, SpanID: githubapi.NewSpanID(1), TraceFlags: trace.FlagsSampled,
+	})
+	builder := &SpanBuilder{}
+	builder.Add(tracetest.SpanStub{
+		Name: "pipeline", SpanContext: root,
+		StartTime: base, EndTime: base.Add(time.Minute),
+	})
+	builder.Add(tracetest.SpanStub{
+		Name: "charge-card",
+		SpanContext: trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID: tid, SpanID: githubapi.NewSpanID(2), TraceFlags: trace.FlagsSampled,
+		}),
+		Parent:    root,
+		StartTime: base, EndTime: base.Add(30 * time.Second),
+		SpanKind: trace.SpanKindClient,
+		Status:   sdktrace.Status{Code: codes.Error, Description: "declined"},
+	})
+
+	spans := builder.Spans()
+	cm := CombinedMetricsFromSpans(spans, enrichment.DefaultEnricher())
+	assert.Equal(t, "0.0", cm.JobSuccessRate, "status=Error span is a failed job")
+
+	roots := BuildTreeFromSpans(spans, time.Time{}, time.Time{}, enrichment.DefaultEnricher())
+	if assert.Len(t, roots, 1) && assert.Len(t, roots[0].Children, 1) {
+		child := roots[0].Children[0]
+		assert.Equal(t, "failure", child.Hints.Outcome, "OTel ERROR status must set failure outcome")
+		assert.Equal(t, "⇢ ", child.Hints.Icon, "CLIENT span kind must set the client icon")
+	}
 }
