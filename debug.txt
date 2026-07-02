@@ -1,4 +1,0 @@
-# github.com/stefanpenner/otel-explorer/pkg/analyzer
-pkg/analyzer/analyzer.go:374:15: undefined: os
-pkg/analyzer/analyzer.go:379:16: undefined: os
-pkg/analyzer/analyzer.go:388:16: undefined: os

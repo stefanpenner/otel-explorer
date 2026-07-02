@@ -38,7 +38,7 @@ func (e *GenAIEnricher) Enrich(name string, attrs map[string]string, isZeroDurat
 	if svc := attrs["service.name"]; svc != "" {
 		h.ServiceName = svc
 	}
-	if env := attrs["deployment.environment"]; env != "" {
+	if env := firstNonEmpty(attrs, "deployment.environment.name", "deployment.environment"); env != "" {
 		h.Environment = env
 	}
 

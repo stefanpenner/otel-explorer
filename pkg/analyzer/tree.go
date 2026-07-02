@@ -205,7 +205,10 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 			}
 		}
 		if sh.hints.Environment == "" {
-			if env, ok := resourceAttrs["deployment.environment"]; ok {
+			// Stable name first, then the legacy one.
+			if env, ok := resourceAttrs["deployment.environment.name"]; ok {
+				sh.hints.Environment = env
+			} else if env, ok := resourceAttrs["deployment.environment"]; ok {
 				sh.hints.Environment = env
 			}
 		}
