@@ -1878,12 +1878,16 @@ func buildLintData(spans []sdktrace.ReadOnlySpan) []enrichment.SpanData {
 	for _, s := range spans {
 		attrs := make(map[string]string)
 		for _, a := range s.Attributes() {
-			attrs[string(a.Key)] = a.Value.AsString()
+			// Emit(), not AsString(): int-typed attrs (http.status_code,
+			// net.peer.port) must reach the deprecation checks.
+			attrs[string(a.Key)] = a.Value.Emit()
 		}
 		data = append(data, enrichment.SpanData{
-			Name:      s.Name(),
-			Attrs:     attrs,
-			SpanKind:  s.SpanKind().String(),
+			Name:  s.Name(),
+			Attrs: attrs,
+			// The SDK renders kinds lowercase ("client"); lint's kind-gated
+			// checks compare the OTel-convention uppercase form.
+			SpanKind:  strings.ToUpper(s.SpanKind().String()),
 			ScopeName: s.InstrumentationScope().Name,
 			HasEvents: len(s.Events()) > 0,
 		})
