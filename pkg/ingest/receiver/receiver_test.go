@@ -74,21 +74,20 @@ func TestGetTracesReturns405(t *testing.T) {
 	}
 }
 
-func TestPostMalformedBodyAccumulatesNoSpans(t *testing.T) {
+func TestPostMalformedBodyRejected(t *testing.T) {
 	r := New(":0")
 	handler := setupMux(r)
 
-	// otlpfile.Parse is lenient and doesn't error on garbage — it just returns
-	// zero spans. The receiver should still respond 200 (no parse error) but
-	// accumulate nothing.
+	// A body that decodes to zero spans is a parse error: the receiver must
+	// reject it (400) rather than ACK a lost export with 200.
 	req := httptest.NewRequest(http.MethodPost, "/v1/traces", strings.NewReader("{{{not json at all"))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected status 200 (parser is lenient), got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for undecodable body, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	if r.SpanCount() != 0 {

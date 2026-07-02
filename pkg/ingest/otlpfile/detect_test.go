@@ -43,3 +43,61 @@ func TestBareArrayChromeStillDetected(t *testing.T) {
 		t.Fatalf("got %d spans, want 1 chrome span", len(spans))
 	}
 }
+
+const stdoutSpanA = `{"Name":"my-workflow","SpanContext":{"TraceID":"0af7651916cd43dd8448eb211c80319c","SpanID":"b7ad6b7169203331","TraceFlags":"01"},"Parent":{"TraceID":"","SpanID":""},"SpanKind":1,"StartTime":"2024-01-15T10:00:00Z","EndTime":"2024-01-15T10:05:00Z","Attributes":[],"Events":null,"Links":null,"Status":{"Code":"OK","Description":""}}`
+const stdoutSpanB = `{"Name":"build","SpanContext":{"TraceID":"0af7651916cd43dd8448eb211c80319c","SpanID":"00f067aa0ba902b7","TraceFlags":"01"},"Parent":{"TraceID":"0af7651916cd43dd8448eb211c80319c","SpanID":"b7ad6b7169203331"},"SpanKind":1,"StartTime":"2024-01-15T10:00:30Z","EndTime":"2024-01-15T10:04:00Z","Attributes":[],"Events":null,"Links":null,"Status":{"Code":"","Description":""}}`
+
+// A compact single-line JSON array of valid spans must parse, not silently
+// vanish (the line-based heuristic skipped any line starting with '[').
+func TestCompactArrayParses(t *testing.T) {
+	input := "[" + stdoutSpanA + "," + stdoutSpanB + "]"
+	spans, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(spans) != 2 {
+		t.Fatalf("got %d spans, want 2", len(spans))
+	}
+}
+
+// A pretty-printed single span object spanning multiple lines must parse.
+func TestPrettyPrintedObjectParses(t *testing.T) {
+	input := "{\n  \"Name\": \"my-workflow\",\n  \"SpanContext\": {\"TraceID\": \"0af7651916cd43dd8448eb211c80319c\", \"SpanID\": \"b7ad6b7169203331\"},\n  \"StartTime\": \"2024-01-15T10:00:00Z\",\n  \"EndTime\": \"2024-01-15T10:05:00Z\"\n}\n"
+	spans, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1", len(spans))
+	}
+}
+
+// Unrecognized non-empty input must error, not return (0 spans, nil).
+func TestGarbageInputErrors(t *testing.T) {
+	for _, input := range []string{"hello world\nnot a trace\n", "<html><body>404</body></html>"} {
+		spans, err := Parse(strings.NewReader(input))
+		if err == nil && len(spans) == 0 {
+			t.Errorf("Parse(%q) = (0 spans, nil err): silent data loss", input)
+		}
+	}
+}
+
+// Tolerance preserved: spans interleaved with app log lines still parse.
+func TestMixedLogLinesStillParse(t *testing.T) {
+	input := "INFO starting up\n" + stdoutSpanA + "\nWARN something odd\n" + stdoutSpanB + "\n"
+	spans, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(spans) != 2 {
+		t.Fatalf("got %d spans, want 2", len(spans))
+	}
+}
+
+// Empty input stays a non-error empty result.
+func TestEmptyInputNoError(t *testing.T) {
+	spans, err := Parse(strings.NewReader(""))
+	if err != nil || len(spans) != 0 {
+		t.Fatalf("Parse(empty) = (%d, %v), want (0, nil)", len(spans), err)
+	}
+}
