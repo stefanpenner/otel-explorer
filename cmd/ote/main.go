@@ -436,6 +436,12 @@ func parseArgs(args []string, terminal bool) (config, error) {
 		return cfg, fmt.Errorf("--output is not supported with --listen (receiver mode); use --no-tui to disable the TUI")
 	}
 
+	// Receiver mode runs alone: with other inputs present the receiver used to
+	// shut down immediately and the inputs were never analyzed.
+	if cfg.listenAddr != "" && (len(cfg.urls) > 0 || len(cfg.traceFiles) > 0 || cfg.tempoURL != "" || cfg.jaegerURL != "") {
+		return cfg, fmt.Errorf("--listen cannot be combined with URL, trace-file, or backend inputs; run the receiver on its own")
+	}
+
 	if cfg.tempoURL != "" && cfg.jaegerURL != "" {
 		return cfg, fmt.Errorf("--tempo and --jaeger cannot be used together; specify a single trace backend")
 	}
@@ -444,6 +450,15 @@ func parseArgs(args []string, terminal bool) (config, error) {
 	}
 
 	return cfg, nil
+}
+
+// hasOtherWork reports whether the invocation requests any work beyond
+// housekeeping flags like --clear-cache: URLs or trace files to analyze,
+// a mode (trends/diff/sync/receiver), or a trace backend to fetch from.
+func hasOtherWork(cfg config) bool {
+	return len(cfg.urls) > 0 || len(cfg.traceFiles) > 0 ||
+		cfg.trendsMode || cfg.diffMode || cfg.syncMode ||
+		cfg.listenAddr != "" || cfg.tempoURL != "" || cfg.jaegerURL != ""
 }
 
 func main() {
@@ -484,7 +499,7 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Fprintf(os.Stderr, "Cache cleared: %s\n", cacheDir)
-		if len(args) == 0 && !cfg.trendsMode && !cfg.diffMode {
+		if !hasOtherWork(cfg) {
 			os.Exit(0)
 		}
 	}
@@ -730,54 +745,64 @@ func main() {
 
 	// Handle OTLP receiver mode
 	if cfg.listenAddr != "" {
+		displayAddr := cfg.listenAddr
+		if strings.HasPrefix(displayAddr, ":") {
+			displayAddr = "localhost" + displayAddr
+		}
 		fmt.Fprintf(os.Stderr, "Starting OTLP/HTTP receiver on %s...\n", cfg.listenAddr)
-		fmt.Fprintf(os.Stderr, "  POST traces to http://localhost%s/v1/traces\n", cfg.listenAddr)
-		fmt.Fprintf(os.Stderr, "  Set OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost%s in your app\n", cfg.listenAddr)
+		fmt.Fprintf(os.Stderr, "  POST traces to http://%s/v1/traces\n", displayAddr)
+		fmt.Fprintf(os.Stderr, "  Set OTEL_EXPORTER_OTLP_ENDPOINT=http://%s in your app\n", displayAddr)
 		fmt.Fprintf(os.Stderr, "  Press Ctrl+C to stop and analyze collected spans\n")
 
 		recv := receiver.New(cfg.listenAddr)
 		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
 
 		errCh := make(chan error, 1)
 		go func() {
 			errCh <- recv.Start(ctx)
 		}()
 
-		// Pure receiver mode: wait for user input or a signal to stop.
-		if len(args) == 0 && len(cfg.traceFiles) == 0 && !hasTraceBackend {
-			fmt.Fprintf(os.Stderr, "  Waiting for traces... (press Enter or Ctrl+C to stop)\n")
-			sigCh := make(chan os.Signal, 1)
-			signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-			stdinCh := make(chan struct{})
-			go func() {
-				buf := make([]byte, 1)
-				for {
-					n, err := os.Stdin.Read(buf)
-					if n > 0 {
-						close(stdinCh)
-						return
-					}
-					if err != nil {
-						// Stdin is closed or redirected (e.g. </dev/null,
-						// nohup, CI): an immediate EOF must not shut the
-						// receiver down — rely on SIGINT/SIGTERM instead.
-						return
-					}
+		// Wait for user input, a signal, or a receiver failure to stop.
+		fmt.Fprintf(os.Stderr, "  Waiting for traces... (press Enter or Ctrl+C to stop)\n")
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+		stdinCh := make(chan struct{})
+		go func() {
+			buf := make([]byte, 1)
+			for {
+				n, err := os.Stdin.Read(buf)
+				if n > 0 {
+					close(stdinCh)
+					return
 				}
-			}()
-			select {
-			case <-stdinCh:
-			case <-sigCh:
-			case err := <-errCh:
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Receiver error: %v\n", err)
+					// Stdin is closed or redirected (e.g. </dev/null,
+					// nohup, CI): an immediate EOF must not shut the
+					// receiver down — rely on SIGINT/SIGTERM instead.
+					return
 				}
 			}
-			signal.Stop(sigCh)
+		}()
+		var recvErr error
+		select {
+		case <-stdinCh:
+		case <-sigCh:
+		case recvErr = <-errCh:
+			errCh = nil // already drained; don't read it again below
 		}
+		signal.Stop(sigCh)
 
 		cancel()
-		<-errCh
+		if errCh != nil {
+			recvErr = <-errCh
+		}
+		// A receiver that failed to start (e.g. port already bound) must exit
+		// non-zero instead of reporting "Received 0 spans".
+		if recvErr != nil {
+			fmt.Fprintf(os.Stderr, "Receiver error: %v\n", recvErr)
+			os.Exit(1)
+		}
 
 		receivedSpans := recv.Spans()
 		fmt.Fprintf(os.Stderr, "Received %d spans\n", len(receivedSpans))

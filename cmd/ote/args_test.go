@@ -482,3 +482,44 @@ func slicesEqual(a, b []string) bool {
 	}
 	return true
 }
+
+func TestHasOtherWork(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  config
+		want bool
+	}{
+		{"nothing else", config{}, false},
+		{"urls", config{urls: []string{"u"}}, true},
+		{"trace file", config{traceFiles: []string{"t.json"}}, true},
+		{"trends", config{trendsMode: true}, true},
+		{"diff", config{diffMode: true}, true},
+		{"sync", config{syncMode: true}, true},
+		{"listen", config{listenAddr: ":4318"}, true},
+		{"tempo backend", config{tempoURL: "http://t"}, true},
+		{"jaeger backend", config{jaegerURL: "http://j"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasOtherWork(tt.cfg); got != tt.want {
+				t.Errorf("hasOtherWork(%s) = %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestListenRejectsOtherInputs(t *testing.T) {
+	cases := [][]string{
+		{"--listen", "trace.json"},
+		{"--listen", "https://github.com/o/r/pull/1"},
+		{"--listen", "--tempo=http://t", "--trace-id=abc"},
+	}
+	for _, args := range cases {
+		if _, err := parseArgs(args, false); err == nil {
+			t.Errorf("parseArgs(%v) should reject --listen combined with other inputs", args)
+		}
+	}
+	if _, err := parseArgs([]string{"--listen"}, false); err != nil {
+		t.Errorf("plain --listen should parse: %v", err)
+	}
+}
