@@ -2783,7 +2783,7 @@ func TestLogFetchResultMsg(t *testing.T) {
 		m.logFetchingJobID = 42
 		m.logFetchInline = &logFetchState{itemID: "x", phase: "Fetching logs..."}
 
-		newModel, _ := m.Update(LogFetchResultMsg{err: fmt.Errorf("boom")})
+		newModel, _ := m.Update(LogFetchResultMsg{jobID: 42, err: fmt.Errorf("boom")})
 		m = newModel.(Model)
 
 		assert.False(t, m.logFetchedJobIDs[42])
@@ -2796,7 +2796,7 @@ func TestLogFetchResultMsg(t *testing.T) {
 		m := createTestModel()
 		m.logFetchingJobID = 42
 
-		newModel, _ := m.Update(LogFetchResultMsg{})
+		newModel, _ := m.Update(LogFetchResultMsg{jobID: 42})
 		m = newModel.(Model)
 
 		assert.True(t, m.logFetchedJobIDs[42])
@@ -2807,10 +2807,22 @@ func TestLogFetchResultMsg(t *testing.T) {
 		m := createTestModel()
 		m.logFetchingJobID = 0
 
-		newModel, _ := m.Update(LogFetchResultMsg{})
+		newModel, _ := m.Update(LogFetchResultMsg{jobID: 42})
 		m = newModel.(Model)
 
 		assert.Empty(t, m.logFetchedJobIDs)
+	})
+
+	t.Run("result from an older reload generation is ignored", func(t *testing.T) {
+		m := createTestModel()
+		m.logFetchingJobID = 42
+		m.reloadGen = 1
+
+		newModel, _ := m.Update(LogFetchResultMsg{jobID: 42, gen: 0})
+		m = newModel.(Model)
+
+		assert.Empty(t, m.logFetchedJobIDs)
+		assert.Equal(t, int64(42), m.logFetchingJobID, "in-flight fetch untouched")
 	})
 }
 

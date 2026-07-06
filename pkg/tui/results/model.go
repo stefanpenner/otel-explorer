@@ -161,6 +161,7 @@ type Model struct {
 	logFetchingJobID int64          // non-zero while a log fetch is in progress
 	logFetchedJobIDs map[int64]bool // job IDs that have already been fetched
 	logFetchInline   *logFetchState // inline progress for the item being fetched
+	reloadGen        int            // bumped on each successful reload; fetch results from an older generation are stale
 }
 
 // ReloadFunc is the function signature for reloading data
@@ -172,7 +173,11 @@ type ReloadFunc func(reporter LoadingReporter) ([]trace.ReadOnlySpan, time.Time,
 type LogFetchFunc func(owner, repo string, jobID int64, existingSpans []trace.ReadOnlySpan) ([]trace.ReadOnlySpan, error)
 
 // LogFetchResultMsg is sent when log fetch completes for a step.
+// jobID and gen are stamped at command creation so a result arriving after
+// a reload (or for a superseded fetch) can be recognized as stale.
 type LogFetchResultMsg struct {
+	jobID    int64 // job the fetch was started for
+	gen      int   // reload generation the fetch was started under
 	newSpans []trace.ReadOnlySpan
 	err      error
 }
@@ -357,12 +362,15 @@ func (m Model) Init() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case LogFetchResultMsg:
-		fetchedJobID := m.logFetchingJobID
-		if fetchedJobID == 0 {
-			// No fetch in flight (e.g. the model was reloaded while a fetch
-			// was running); discard the stale result.
+		if msg.jobID == 0 || msg.jobID != m.logFetchingJobID || msg.gen != m.reloadGen {
+			// Stale result: the fetch was started for a different job or
+			// against a previous reload generation (e.g. the model was
+			// reloaded while the fetch goroutine was running). Its spans
+			// were computed from the old span set; discard so they never
+			// attach to the current data or clear the in-flight fetch.
 			return m, nil
 		}
+		fetchedJobID := m.logFetchingJobID
 		m.logFetchingJobID = 0
 		m.logFetchInline = nil
 		if msg.err != nil {
@@ -397,7 +405,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.reloadError = "" // clear previous error on success
 		// Reset log fetch state so previously fetched jobs can be re-fetched
-		// against the fresh data, and any in-flight fetch result is ignored.
+		// against the fresh data, and any in-flight fetch result is ignored
+		// (results are tagged with the generation they were started under).
+		m.reloadGen++
 		m.logFetchedJobIDs = nil
 		m.logFetchingJobID = 0
 		m.logFetchInline = nil

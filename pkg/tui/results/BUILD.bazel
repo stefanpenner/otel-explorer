@@ -32,6 +32,7 @@ go_test(
     srcs = [
         "inspector_test.go",
         "items_test.go",
+        "logfetch_test.go",
         "model_test.go",
         "provenance_test.go",
         "timeline_test.go",
@@ -41,10 +42,15 @@ go_test(
     deps = [
         "//pkg/analyzer",
         "//pkg/enrichment",
+        "//pkg/githubapi",
         "@com_github_charmbracelet_bubbletea//:bubbletea",
         "@com_github_charmbracelet_lipgloss//:lipgloss",
         "@com_github_muesli_termenv//:termenv",
         "@com_github_stretchr_testify//assert",
+        "@com_github_stretchr_testify//require",
+        "@io_opentelemetry_go_otel//attribute",
         "@io_opentelemetry_go_otel_sdk//trace",
+        "@io_opentelemetry_go_otel_sdk//trace/tracetest",
+        "@io_opentelemetry_go_otel_trace//:trace",
     ],
 )

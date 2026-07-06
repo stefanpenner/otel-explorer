@@ -359,16 +359,23 @@ func (r *rateLimiter) waitDuration() time.Duration {
 }
 
 func (r *rateLimiter) waitIfNeeded(ctx context.Context) error {
-	d := r.waitDuration()
-	if d <= 0 {
-		return nil
+	// Recheck after every sleep: while we slept another response may have
+	// reported a newly exhausted window, and firing into it anyway would
+	// join the post-reset stampede (rate-limit spec, wake-together race).
+	for {
+		d := r.waitDuration()
+		if d <= 0 {
+			return nil
+		}
+		// An exhausted primary limit can mean sleeping until the hourly reset —
+		// say so instead of appearing frozen.
+		if d > 5*time.Second {
+			fmt.Fprintf(os.Stderr, "GitHub rate limit exhausted; waiting %s for reset (ctrl+c to abort)\n", d.Round(time.Second))
+		}
+		if err := sleepContext(ctx, d); err != nil {
+			return err
+		}
 	}
-	// An exhausted primary limit can mean sleeping until the hourly reset —
-	// say so instead of appearing frozen.
-	if d > 5*time.Second {
-		fmt.Fprintf(os.Stderr, "GitHub rate limit exhausted; waiting %s for reset (ctrl+c to abort)\n", d.Round(time.Second))
-	}
-	return sleepContext(ctx, d)
 }
 
 // sleepContext sleeps for d or until ctx is cancelled, whichever comes first.
@@ -396,11 +403,16 @@ func (r *rateLimiter) updateFromHeaders(headers http.Header) {
 	defer r.mu.Unlock()
 	if remaining := headers.Get("x-ratelimit-remaining"); remaining != "" {
 		if value, err := strconv.Atoi(remaining); err == nil {
+			if value < 0 {
+				// Hostile/buggy header: waitDuration tests remaining == 0
+				// exactly, so a stored negative would disable waiting.
+				value = 0
+			}
 			r.remaining = value
 		}
 	}
 	if reset := headers.Get("x-ratelimit-reset"); reset != "" {
-		if seconds, err := strconv.ParseInt(reset, 10, 64); err == nil {
+		if seconds, err := strconv.ParseInt(reset, 10, 64); err == nil && seconds > 0 {
 			r.resetTime = time.Unix(seconds, 0)
 		}
 	}
@@ -703,26 +715,30 @@ func (c *Client) FetchWorkflowRun(ctx context.Context, owner, repo string, runID
 	return &run, nil
 }
 
-// FetchRecentWorkflowRuns fetches workflow runs for a repository from the last N days.
-// The optional onPage callback is called after each page with (fetchedSoFar, totalCount).
-func (c *Client) FetchRecentWorkflowRuns(ctx context.Context, owner, repo string, days int, branch, workflow string, onPage func(fetched, total int)) ([]WorkflowRun, error) {
-	ctx, span := getTracer().Start(ctx, "FetchRecentWorkflowRuns", trace.WithAttributes(
+// FetchWorkflowRunsSince fetches workflow runs for a repository created on or
+// after `since`. The caller computes `since` once (e.g. from the `now` a sync
+// captured at its start) — recomputing it here from a fresh time.Now() let a
+// clock jump mid-sync (laptop suspend) slide the listing window and silently
+// skip runs. The optional onPage callback is called after each page with
+// (fetchedSoFar, totalCount).
+func (c *Client) FetchWorkflowRunsSince(ctx context.Context, owner, repo string, since time.Time, branch, workflow string, onPage func(fetched, total int)) ([]WorkflowRun, error) {
+	ctx, span := getTracer().Start(ctx, "FetchWorkflowRunsSince", trace.WithAttributes(
 		attribute.String("github.owner", owner),
 		attribute.String("github.repo", repo),
-		attribute.Int("days", days),
+		attribute.String("since", since.UTC().Format("2006-01-02")),
 		attribute.String("github.branch", branch),
 		attribute.String("github.workflow", workflow),
 	))
 	defer span.End()
 
-	// Calculate created date filter (YYYY-MM-DD format). GitHub evaluates
-	// the qualifier in UTC; formatting a local date in a timezone ahead of
+	// Created date filter (YYYY-MM-DD format). GitHub evaluates the
+	// qualifier in UTC; formatting a local date in a timezone ahead of
 	// UTC started the window up to ~14h late and silently dropped runs.
-	since := time.Now().UTC().AddDate(0, 0, -days).Format("2006-01-02")
+	sinceDate := since.UTC().Format("2006-01-02")
 
 	params := url.Values{}
 	params.Set("per_page", "100")
-	params.Set("created", ">="+since) // Filter by creation date
+	params.Set("created", ">="+sinceDate) // Filter by creation date
 
 	// Add optional branch filter
 	if branch != "" {

@@ -70,13 +70,14 @@ func TestStepSpanClampedToJobEnd(t *testing.T) {
 		},
 	}
 
+	jobStart, _ := utils.ParseTime(job.StartedAt)
 	jobEnd, _ := utils.ParseTime(job.CompletedAt)
 	jobEndTs := jobEnd.UnixMilli()
 
 	metrics := InitializeMetrics()
 	var traceEvents []TraceEvent
 
-	processStep(step, job, run, 10, 1001, jobEnd.UnixMilli(), jobEndTs,
+	processStep(step, job, run, 10, 1001, jobEnd.UnixMilli(), jobStart.UnixMilli(), jobEndTs,
 		&metrics, &traceEvents, "", 0, "", "", "",
 		builder, tid, jobSC)
 
@@ -126,13 +127,14 @@ func TestStepSpanStartClampedToJobEnd(t *testing.T) {
 		},
 	}
 
+	jobStart, _ := utils.ParseTime(job.StartedAt)
 	jobEnd, _ := utils.ParseTime(job.CompletedAt)
 	jobEndTs := jobEnd.UnixMilli()
 
 	metrics := InitializeMetrics()
 	var traceEvents []TraceEvent
 
-	processStep(step, job, run, 10, 1001, jobEnd.UnixMilli(), jobEndTs,
+	processStep(step, job, run, 10, 1001, jobEnd.UnixMilli(), jobStart.UnixMilli(), jobEndTs,
 		&metrics, &traceEvents, "", 0, "", "", "",
 		builder, tid, jobSC)
 
@@ -181,6 +183,7 @@ func TestJobSpanClampedToWorkflowEnd(t *testing.T) {
 		RunnerName:  "runner-1",
 	}
 
+	wfStart, _ := utils.ParseTime(run.CreatedAt)
 	wfEnd, _ := utils.ParseTime(run.UpdatedAt)
 	runEndTs := wfEnd.UnixMilli()
 	earliestTime := wfEnd.UnixMilli() // doesn't matter for span times
@@ -189,7 +192,7 @@ func TestJobSpanClampedToWorkflowEnd(t *testing.T) {
 	var traceEvents []TraceEvent
 	var jobStartTimes, jobEndTimes []JobEvent
 
-	processJob(job, 0, run, 10, 1001, earliestTime, runEndTs,
+	processJob(job, 0, run, 10, 1001, earliestTime, wfStart.UnixMilli(), runEndTs,
 		&metrics, &traceEvents, &jobStartTimes, &jobEndTimes,
 		"", 0, "", "", "", nil, builder, tid, wfSC, nil)
 
@@ -235,6 +238,7 @@ func TestPendingJobSpanUsesWorkflowEnd(t *testing.T) {
 		RunnerName: "runner-1",
 	}
 
+	wfStart, _ := utils.ParseTime(run.CreatedAt)
 	wfEnd, _ := utils.ParseTime(run.UpdatedAt)
 	runEndTs := wfEnd.UnixMilli()
 	earliestTime := wfEnd.UnixMilli()
@@ -243,7 +247,7 @@ func TestPendingJobSpanUsesWorkflowEnd(t *testing.T) {
 	var traceEvents []TraceEvent
 	var jobStartTimes, jobEndTimes []JobEvent
 
-	processJob(job, 0, run, 10, 1001, earliestTime, runEndTs,
+	processJob(job, 0, run, 10, 1001, earliestTime, wfStart.UnixMilli(), runEndTs,
 		&metrics, &traceEvents, &jobStartTimes, &jobEndTimes,
 		"", 0, "", "", "", nil, builder, tid, wfSC, nil)
 
@@ -457,12 +461,13 @@ func TestSkippedAndCancelledJobsNotCountedAsFailed(t *testing.T) {
 				CompletedAt: completedAt,
 			}
 
+			wfStart, _ := utils.ParseTime("2026-03-18T17:00:00Z")
 			wfEnd, _ := utils.ParseTime("2026-03-18T17:10:00Z")
 			metrics := InitializeMetrics()
 			var traceEvents []TraceEvent
 			var jobStartTimes, jobEndTimes []JobEvent
 
-			processJob(job, 0, run, 10, 1001, wfEnd.UnixMilli(), wfEnd.UnixMilli(),
+			processJob(job, 0, run, 10, 1001, wfEnd.UnixMilli(), wfStart.UnixMilli(), wfEnd.UnixMilli(),
 				&metrics, &traceEvents, &jobStartTimes, &jobEndTimes,
 				"", 0, "", "", "", nil, builder, tid, wfSC, nil)
 

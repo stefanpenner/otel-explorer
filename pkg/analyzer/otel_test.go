@@ -69,8 +69,8 @@ func (m *mockGitHubProvider) FetchBranchProtection(ctx context.Context, owner, r
 	return args.Get(0).(*githubapi.BranchProtection), args.Error(1)
 }
 
-func (m *mockGitHubProvider) FetchRecentWorkflowRuns(ctx context.Context, owner, repo string, days int, branch, workflow string, onPage func(fetched, total int)) ([]githubapi.WorkflowRun, error) {
-	args := m.Called(ctx, owner, repo, days, branch, workflow, onPage)
+func (m *mockGitHubProvider) FetchWorkflowRunsSince(ctx context.Context, owner, repo string, since time.Time, branch, workflow string, onPage func(fetched, total int)) ([]githubapi.WorkflowRun, error) {
+	args := m.Called(ctx, owner, repo, since, branch, workflow, onPage)
 	return args.Get(0).([]githubapi.WorkflowRun), args.Error(1)
 }
 

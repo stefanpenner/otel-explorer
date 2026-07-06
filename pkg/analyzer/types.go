@@ -11,6 +11,7 @@ type Metrics struct {
 	TotalRuns       int
 	SuccessfulRuns  int
 	FailedRuns      int
+	PendingRuns     int
 	RetriedRuns     int
 	TotalJobs       int
 	FailedJobs      int

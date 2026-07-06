@@ -36,9 +36,33 @@ No Makefile. Build with `go build` or `bazel build //cmd/ote:ote`.
 ```bash
 go test ./pkg/... ./cmd/...           # unit + fuzz tests
 OTE=/tmp/ote ./scripts/verify-sources.sh  # golden source verification
+scripts/check-specs.sh                # TLA+ model checks (skips without a JVM)
 ```
 
 Known failing test: `pkg/ingest/filter` — 2 tests fail (span attrs precedence). Fix before making changes to that package.
+
+## TLA+ Specs (specs/)
+
+Model-checked specs for the concurrency/state-machine subsystems.
+See `specs/README.md` (conventions) and `specs/FINDINGS.md` (campaign results).
+CI runs them via the `tla-specs` job (`scripts/check-specs.sh`).
+
+Rules for changes:
+
+- Touching a modeled subsystem? Update its spec to match, rerun
+  `scripts/check-specs.sh <spec>`. The spec models the code —
+  drift makes it worthless.
+- Modeled subsystems → spec dir:
+  store sync/watermark → `sync-bounds`; TUI reload/log-fetch → `tui-reload`;
+  githubapi limiter/retry → `rate-limit`; analyzer run/job lifecycle →
+  `gha-lifecycle`; analyzer time clamping → `timing-clamp`;
+  tree/dedup → `span-tree`; logparse groups → `log-groups`.
+- New concurrent/stateful design (queues, retries, invalidation,
+  cancellation, "stale"/"race"/"in-flight" anywhere in the design)?
+  Spec FIRST — an incoherent design should die in the spec, not in code.
+- Never weaken a spec or property to silence a violation — report it.
+- Regression tests derived from TLC witness traces are named
+  `Test<Spec>Spec_*` — keep that convention so the spec↔test link stays visible.
 
 ## Architecture Notes
 

@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"resourceSpans\":[{\"scopeSpans\":[{\"spans\":[{\"traceId\":\"00000000000000000000000000000001\",\"spanId\":\"0000000000000001\",\"parentSpanId\":\"0000000000000001\",\"name\":\"build\",\"startTimeUnixNano\":\"2\",\"endTimeUnixNano\":\"5\"}]}]}]s")

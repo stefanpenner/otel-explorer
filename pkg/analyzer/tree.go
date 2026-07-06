@@ -90,8 +90,10 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 	}
 
 	// Collapse API/runner duplicates (same job/step from both the GitHub API
-	// reconstruction and the runner). Idempotent, so safe on every rebuild —
-	// including TUI reloads and log-fetch appends that bypass the initial combine.
+	// reconstruction and the runner). Idempotent by construction — group-based
+	// resolution, pinned by TestDedupSpec_Idempotent — so safe on every
+	// rebuild, including TUI reloads and log-fetch appends that bypass the
+	// initial combine.
 	spans = DedupeRunnerSpans(spans)
 
 	type spanWithHints struct {
@@ -256,6 +258,7 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 
 	// Link children to parents
 	var roots []*TreeNode
+	parentNode := make(map[*TreeNode]*TreeNode)
 	for i, sh := range filtered {
 		parentID := sh.span.Parent().SpanID().String()
 		node := nodeList[i]
@@ -264,10 +267,52 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 			roots = append(roots, node)
 		} else if parent, ok := nodes[node.TraceID+"/"+parentID]; ok && parent != node {
 			parent.Children = append(parent.Children, node)
+			parentNode[node] = parent
 		} else {
 			// Parent not in this batch, treat as root
 			roots = append(roots, node)
 		}
+	}
+
+	// Contain parent cycles: a node whose parent chain never reaches a root
+	// (mutual/looped parent IDs in hostile or corrupt input) is unreachable
+	// from the forest, and FlattenTree — which walks from roots — would
+	// silently drop it from every renderer. Promote one node per cycle to
+	// root (deterministic: smallest span ID, earliest position on ties),
+	// detached from its parent so it renders exactly once; the rest of the
+	// cycle hangs under it. Pinned by TestTreeSpec_ParentCycleSpansReachable.
+	reachable := make(map[*TreeNode]bool, len(nodeList))
+	var mark func(n *TreeNode)
+	mark = func(n *TreeNode) {
+		if reachable[n] {
+			return
+		}
+		reachable[n] = true
+		for _, c := range n.Children {
+			mark(c)
+		}
+	}
+	for _, r := range roots {
+		mark(r)
+	}
+	for len(reachable) < len(nodeList) {
+		var promote *TreeNode
+		for _, n := range nodeList {
+			if !reachable[n] && (promote == nil || n.SpanID < promote.SpanID) {
+				promote = n
+			}
+		}
+		if p := parentNode[promote]; p != nil {
+			for i, c := range p.Children {
+				if c == promote {
+					p.Children = append(p.Children[:i], p.Children[i+1:]...)
+					break
+				}
+			}
+		}
+		promote.Attrs["otel-explorer.parent_cycle"] = "detached: parent chain forms a cycle"
+		roots = append(roots, promote)
+		mark(promote)
 	}
 
 	// Sort all nodes by start time

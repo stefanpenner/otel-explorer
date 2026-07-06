@@ -293,9 +293,14 @@ func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex
 	jobEndTimes := []JobEvent{}
 
 	metrics.TotalRuns = 1
-	if run.Status == "completed" && run.Conclusion == "success" {
+	// Three-way classification: a run still queued/in_progress is pending,
+	// not failed. Only completed runs count toward success/failure.
+	switch {
+	case run.Status != "completed":
+		metrics.PendingRuns = 1
+	case run.Conclusion == "success":
 		metrics.SuccessfulRuns = 1
-	} else {
+	default:
 		metrics.FailedRuns = 1
 	}
 	if run.RunAttempt > 1 {
@@ -316,6 +321,10 @@ func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex
 	// Fetch and process previous retry attempts.
 	// The default /jobs endpoint only returns the latest attempt's jobs,
 	// so we must fetch each previous attempt explicitly.
+	// emittedAttempts tracks which attempt spans were actually emitted so
+	// retry links never target a span that doesn't exist (a fetch failure
+	// or empty attempt is skipped, and so must its link).
+	emittedAttempts := map[int64]bool{}
 	if run.RunAttempt > 1 {
 		for attempt := int64(1); attempt < run.RunAttempt; attempt++ {
 			attemptJobsURL := fmt.Sprintf("%s/actions/runs/%d/attempts/%d/jobs?per_page=100", baseURL, run.ID, attempt)
@@ -323,7 +332,9 @@ func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex
 			if err != nil {
 				continue // best-effort: skip attempts we can't fetch
 			}
-			processPreviousAttempt(attempt, attemptJobs, run, processID, earliestTime, owner, repo, identifier, urlIndex, displayURL, sourceType, requiredContexts, builder, &traceEvents, &metrics, &jobStartTimes, &jobEndTimes)
+			if processPreviousAttempt(attempt, attemptJobs, run, processID, earliestTime, owner, repo, identifier, urlIndex, displayURL, sourceType, requiredContexts, builder, &traceEvents, &metrics, &jobStartTimes, &jobEndTimes, emittedAttempts[attempt-1]) {
+				emittedAttempts[attempt] = true
+			}
 		}
 	}
 
@@ -339,7 +350,9 @@ func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex
 		}
 	}
 	runEnd, ok := utils.ParseTime(run.UpdatedAt)
-	if !ok {
+	if !ok || !runEnd.After(runStart) {
+		// Missing or inverted UpdatedAt (server-side skew / stale cache):
+		// keep run bounds ordered so every child clamp has a sane window.
 		runEnd = runStart.Add(time.Millisecond)
 	}
 
@@ -369,19 +382,24 @@ func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex
 		}
 	}
 	// Clamp runEndTs to not be too far in the future if the run is completed
-	if run.Status == "completed" && runEndTs > runStartTs+24*3600*1000 {
+	if threshold := runStartTs + 24*3600*1000; run.Status == "completed" && runEndTs > threshold {
 		// If a run claims to take more than 24h but jobs are short, something is wrong.
-		// We'll use the max job end time instead.
+		// Use the max job end time instead — excluding ends that are themselves
+		// past the 24h threshold, so a poisoned CompletedAt (the very value
+		// that triggered this anomaly) cannot defeat the heal.
 		maxJobEnd := runStartTs
 		for _, job := range jobs {
 			if t, ok := utils.ParseTime(job.CompletedAt); ok {
-				if t.UnixMilli() > maxJobEnd {
-					maxJobEnd = t.UnixMilli()
+				if ts := t.UnixMilli(); ts > maxJobEnd && ts <= threshold {
+					maxJobEnd = ts
 				}
 			}
 		}
 		if maxJobEnd > runStartTs {
 			runEndTs = maxJobEnd
+		} else {
+			// No usable job end at all: cap at the threshold.
+			runEndTs = threshold
 		}
 	}
 	// Keep the workflow OTel span end in sync with the extended/clamped
@@ -499,7 +517,7 @@ func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex
 
 	for jobIndex, job := range jobs {
 		jobThreadID := jobIndex + 10
-		processJob(job, jobIndex, run, jobThreadID, processID, earliestTime, runEndTs, &metrics, &traceEvents, &jobStartTimes, &jobEndTimes, prURL, urlIndex, displayURL, sourceType, identifier, requiredContexts, builder, tid, wfSC, jobAnnotations[job.ID])
+		processJob(job, jobIndex, run, jobThreadID, processID, earliestTime, runStartTs, runEndTs, &metrics, &traceEvents, &jobStartTimes, &jobEndTimes, prURL, urlIndex, displayURL, sourceType, identifier, requiredContexts, builder, tid, wfSC, jobAnnotations[job.ID])
 	}
 
 	// Fetch billable timing (best-effort, don't fail on error)
@@ -525,6 +543,14 @@ func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex
 		_ = IngestStepLogs(ctx, client, owner, repo, run.ID, run.RunAttempt, jobs, builder, urlIndex, tid, nil)
 	}
 
+	// A completed run can report an empty conclusion (API fault); derive one
+	// from its jobs — the same derivation attempt spans use. Runs still in
+	// progress keep their (genuinely unknown) empty conclusion.
+	wfConclusion := run.Conclusion
+	if wfConclusion == "" && run.Status == "completed" {
+		wfConclusion = conclusionFromJobs(jobs)
+	}
+
 	// Build workflow span stub (runEnd was extended to cover the latest job completion)
 	wfAttrs := []attribute.KeyValue{
 		// OTel CI/CD semconv
@@ -536,7 +562,7 @@ func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex
 		attribute.String("type", "workflow"),
 		attribute.Int64("github.run_id", run.ID),
 		attribute.String("github.status", run.Status),
-		attribute.String("github.conclusion", run.Conclusion),
+		attribute.String("github.conclusion", wfConclusion),
 		attribute.String("github.repo", fmt.Sprintf("%s/%s", owner, repo)),
 		attribute.String("github.url", workflowURL),
 		attribute.Int("github.url_index", urlIndex),
@@ -554,7 +580,7 @@ func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex
 		wfAttrs = append(wfAttrs, attribute.String("vcs.change.id", identifier))
 	}
 	// Map conclusion to cicd.pipeline.run.result
-	wfAttrs = append(wfAttrs, attribute.String("cicd.pipeline.run.result", ghConclusionToResult(run.Conclusion)))
+	wfAttrs = append(wfAttrs, attribute.String("cicd.pipeline.run.result", ghConclusionToResult(wfConclusion)))
 	if run.RunAttempt > 1 {
 		wfAttrs = append(wfAttrs, attribute.Int64("github.run_attempt", run.RunAttempt))
 	}
@@ -604,9 +630,10 @@ func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex
 	// Collect review/merge events as span events on the workflow root span
 	wfEvents := emitter.CollectEvents(urlIndex, tid)
 
-	// Build span links for retry attempts
+	// Build span links for retry attempts — only when the previous attempt's
+	// span was actually emitted (its fetch can fail or return no jobs).
 	var wfLinks []sdktrace.Link
-	if run.RunAttempt > 1 {
+	if run.RunAttempt > 1 && emittedAttempts[run.RunAttempt-1] {
 		prevTID := githubapi.NewTraceID(run.ID, run.RunAttempt-1)
 		prevWfSID := previousAttemptSpanID(run.ID, run.RunAttempt-1)
 		wfLinks = append(wfLinks, sdktrace.Link{
@@ -635,7 +662,7 @@ func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex
 		Attributes:  wfAttrs,
 		Events:      wfEvents,
 		Links:       wfLinks,
-		Status:      ghConclusionToStatus(run.Conclusion),
+		Status:      ghConclusionToStatus(wfConclusion),
 	})
 
 	return metrics, traceEvents, jobStartTimes, jobEndTimes, nil
@@ -671,9 +698,12 @@ func fetchJobAnnotations(ctx context.Context, client githubapi.GitHubProvider, r
 
 // processPreviousAttempt creates a synthetic workflow span and job spans for a previous
 // retry attempt. This surfaces the full retry history in the trace tree.
-func processPreviousAttempt(attempt int64, jobs []githubapi.Job, run githubapi.WorkflowRun, processID int, earliestTime int64, owner, repo, identifier string, urlIndex int, displayURL, sourceType string, requiredContexts []string, builder *SpanBuilder, traceEvents *[]TraceEvent, metrics *Metrics, jobStartTimes, jobEndTimes *[]JobEvent) {
+// linkPrev says whether the previous attempt's span was emitted — the retry
+// link is only added when its target exists. Returns whether this attempt's
+// span was emitted.
+func processPreviousAttempt(attempt int64, jobs []githubapi.Job, run githubapi.WorkflowRun, processID int, earliestTime int64, owner, repo, identifier string, urlIndex int, displayURL, sourceType string, requiredContexts []string, builder *SpanBuilder, traceEvents *[]TraceEvent, metrics *Metrics, jobStartTimes, jobEndTimes *[]JobEvent, linkPrev bool) bool {
 	if len(jobs) == 0 {
-		return
+		return false
 	}
 
 	tid := githubapi.NewTraceID(run.ID, attempt)
@@ -684,9 +714,8 @@ func processPreviousAttempt(attempt int64, jobs []githubapi.Job, run githubapi.W
 		TraceFlags: trace.FlagsSampled,
 	})
 
-	// Derive workflow timing and conclusion from jobs
+	// Derive workflow timing from jobs
 	var wfStart, wfEnd time.Time
-	conclusion := "success"
 	for _, job := range jobs {
 		if t, ok := utils.ParseTime(job.CreatedAt); ok && (wfStart.IsZero() || t.Before(wfStart)) {
 			wfStart = t
@@ -694,14 +723,10 @@ func processPreviousAttempt(attempt int64, jobs []githubapi.Job, run githubapi.W
 		if t, ok := utils.ParseTime(job.CompletedAt); ok && (wfEnd.IsZero() || t.After(wfEnd)) {
 			wfEnd = t
 		}
-		if job.Conclusion == "failure" {
-			conclusion = "failure"
-		} else if job.Conclusion == "cancelled" && conclusion != "failure" {
-			conclusion = "cancelled"
-		}
 	}
+	conclusion := conclusionFromJobs(jobs)
 	if wfStart.IsZero() {
-		return
+		return false
 	}
 	if wfEnd.IsZero() {
 		wfEnd = wfStart.Add(time.Millisecond)
@@ -727,9 +752,9 @@ func processPreviousAttempt(attempt int64, jobs []githubapi.Job, run githubapi.W
 		attribute.String("cicd.pipeline.definition", run.Path),
 	}
 
-	// Span link to previous attempt
+	// Span link to previous attempt — only when that attempt's span exists
 	var wfLinks []sdktrace.Link
-	if attempt > 1 {
+	if attempt > 1 && linkPrev {
 		prevTID := githubapi.NewTraceID(run.ID, attempt-1)
 		prevWfSID := previousAttemptSpanID(run.ID, attempt-1)
 		wfLinks = append(wfLinks, sdktrace.Link{
@@ -759,52 +784,75 @@ func processPreviousAttempt(attempt int64, jobs []githubapi.Job, run githubapi.W
 	prURL := fmt.Sprintf("https://github.com/%s/%s/pull/%s", owner, repo, identifier)
 	for jobIndex, job := range jobs {
 		jobThreadID := jobIndex + 10
-		processJob(job, jobIndex, run, jobThreadID, processID, earliestTime, wfEnd.UnixMilli(), metrics, traceEvents, jobStartTimes, jobEndTimes, prURL, urlIndex, displayURL, sourceType, identifier, requiredContexts, builder, tid, wfSC, nil)
+		processJob(job, jobIndex, run, jobThreadID, processID, earliestTime, wfStart.UnixMilli(), wfEnd.UnixMilli(), metrics, traceEvents, jobStartTimes, jobEndTimes, prURL, urlIndex, displayURL, sourceType, identifier, requiredContexts, builder, tid, wfSC, nil)
 	}
+	return true
 }
 
-func processJob(job githubapi.Job, jobIndex int, run githubapi.WorkflowRun, jobThreadID, processID int, earliestTime int64, runEndTs int64, metrics *Metrics, traceEvents *[]TraceEvent, jobStartTimes, jobEndTimes *[]JobEvent, prURL string, urlIndex int, displayURL, sourceType, identifier string, requiredContexts []string, builder *SpanBuilder, traceID trace.TraceID, parentSC trace.SpanContext, annotations []githubapi.Annotation) {
-	if job.StartedAt == "" {
-		return
-	}
-
-	jobStart, _ := utils.ParseTime(job.StartedAt)
-	jobEnd := time.Now()
-	if job.CompletedAt != "" {
-		if t, ok := utils.ParseTime(job.CompletedAt); ok {
-			jobEnd = t
+// conclusionFromJobs derives a workflow-level conclusion from job
+// conclusions: failure > timed_out > cancelled > success. Used for attempt
+// spans (previous attempts carry no run-level conclusion) and as the
+// fallback when a completed run reports an empty conclusion (API fault).
+func conclusionFromJobs(jobs []githubapi.Job) string {
+	conclusion := "success"
+	for _, job := range jobs {
+		switch job.Conclusion {
+		case "failure":
+			return "failure"
+		case "timed_out":
+			conclusion = "timed_out"
+		case "cancelled":
+			if conclusion != "timed_out" {
+				conclusion = "cancelled"
+			}
 		}
 	}
-	// Clamp job end time to parent workflow's end time so child spans
-	// don't visually escape their parent in the flamechart.
-	wfEndTime := time.UnixMilli(runEndTs)
-	if jobEnd.After(wfEndTime) {
-		jobEnd = wfEndTime
-	}
-	if jobStart.After(wfEndTime) {
-		jobStart = wfEndTime
-	}
+	return conclusion
+}
 
+// isJobPending reports whether a job has not yet run to completion. GitHub
+// can report a completed job with no completed_at (fault); treat it as
+// still pending — the same discipline FailedJobs counting relies on.
+func isJobPending(job githubapi.Job) bool {
+	return job.Status != "completed" || job.CompletedAt == ""
+}
+
+// clampSpanToParent forces a child span into its parent's window: start
+// lands in [parentStart, parentEnd-1] and end in [start+1, parentEnd], so
+// hostile timestamps render as a >=1ms sliver at the parent's edge instead
+// of escaping the parent or disappearing. The 1ms floor leaves room for the
+// perfetto exporter's own 1ms minimum without re-escaping the parent.
+// Mirrors ClampSpan in specs/timing-clamp/TimingClamp.tla.
+func clampSpanToParent(start, end, parentStart, parentEnd int64) (int64, int64) {
+	if parentEnd <= parentStart {
+		parentEnd = parentStart + 1 // degenerate parent: give the floor room
+	}
+	if start < parentStart {
+		start = parentStart
+	} else if start > parentEnd-1 {
+		start = parentEnd - 1
+	}
+	if end > parentEnd {
+		end = parentEnd
+	}
+	if end < start+1 {
+		end = start + 1
+	}
+	return start, end
+}
+
+func processJob(job githubapi.Job, jobIndex int, run githubapi.WorkflowRun, jobThreadID, processID int, earliestTime int64, runStartTs, runEndTs int64, metrics *Metrics, traceEvents *[]TraceEvent, jobStartTimes, jobEndTimes *[]JobEvent, prURL string, urlIndex int, displayURL, sourceType, identifier string, requiredContexts []string, builder *SpanBuilder, traceID trace.TraceID, parentSC trace.SpanContext, annotations []githubapi.Annotation) {
 	jobURL := job.HTMLURL
 	if jobURL == "" {
 		jobURL = fmt.Sprintf("https://github.com/%s/%s/actions/runs/%d/job/%d", run.Repository.Owner.Login, run.Repository.Name, run.ID, job.ID)
 	}
 
-	jobSID := githubapi.NewJobSpanID(run.ID, run.RunAttempt, job.Name)
-	jobSC := trace.NewSpanContext(trace.SpanContextConfig{
-		TraceID:    traceID,
-		SpanID:     jobSID,
-		TraceFlags: trace.FlagsSampled,
-	})
-
 	// Determine if this job is a required status check
 	isRequired := isJobRequired(job.Name, run.Name, requiredContexts)
-	requiredSuffix := ""
-	if isRequired {
-		requiredSuffix = " 🔒"
-	}
 
-	isPending := job.Status != "completed" || job.CompletedAt == ""
+	// Classify pending BEFORE the never-started early return so a job that
+	// is still queued (StartedAt == "") is visible in PendingJobs.
+	isPending := isJobPending(job)
 	if isPending {
 		metrics.PendingJobs = append(metrics.PendingJobs, PendingJob{
 			Name:       job.Name,
@@ -815,23 +863,46 @@ func processJob(job githubapi.Job, jobIndex int, run githubapi.WorkflowRun, jobT
 		})
 	}
 
+	// A job that never started has no timing to process.
+	if job.StartedAt == "" {
+		return
+	}
+
 	absoluteJobStart, ok := utils.ParseTime(job.StartedAt)
 	if !ok {
 		return
 	}
-	absoluteJobEnd := jobEnd
+	absoluteJobEnd := time.Now()
+	if job.CompletedAt != "" {
+		if t, ok := utils.ParseTime(job.CompletedAt); ok {
+			absoluteJobEnd = t
+		}
+	}
+	// Clamp the job span into the parent workflow's window so child spans
+	// never escape their parent — on the OTel path AND the ms/flamechart
+	// path (which previously used the raw start, an unbounded escape).
+	jobStartTs, jobEndTs := clampSpanToParent(
+		absoluteJobStart.UnixMilli(), absoluteJobEnd.UnixMilli(), runStartTs, runEndTs)
+	jobStart := time.UnixMilli(jobStartTs)
+	jobEnd := time.UnixMilli(jobEndTs)
+	jobDuration := jobEndTs - jobStartTs
+
+	jobSID := githubapi.NewJobSpanID(run.ID, run.RunAttempt, job.Name)
+	jobSC := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     jobSID,
+		TraceFlags: trace.FlagsSampled,
+	})
+
+	requiredSuffix := ""
+	if isRequired {
+		requiredSuffix = " 🔒"
+	}
 
 	metrics.TotalJobs++
 	// Only count genuine failures — skipped/cancelled/neutral jobs are not failures.
 	if !isPending && (job.Conclusion == "failure" || job.Conclusion == "timed_out") {
 		metrics.FailedJobs++
-	}
-
-	jobStartTs := absoluteJobStart.UnixMilli()
-	jobEndTs := maxInt64(jobStartTs+1, absoluteJobEnd.UnixMilli())
-	jobDuration := jobEndTs - jobStartTs
-	if jobStartTs >= jobEndTs || jobDuration <= 0 {
-		return
 	}
 
 	metrics.JobDurations = append(metrics.JobDurations, float64(jobDuration))
@@ -848,8 +919,11 @@ func processJob(job githubapi.Job, jobIndex int, run githubapi.WorkflowRun, jobT
 		metrics.RunnerDurations[job.RunnerName] += float64(jobDuration)
 	}
 
-	// Queue time: CreatedAt → StartedAt (only for jobs that actually ran)
-	if job.CreatedAt != "" && job.Conclusion != "skipped" && job.Conclusion != "cancelled" {
+	// Queue time: CreatedAt → StartedAt — only for jobs that actually ran
+	// to completion; a still-pending job's queue time is not final data.
+	countsQueueTime := job.CreatedAt != "" && !isPending &&
+		job.Conclusion != "skipped" && job.Conclusion != "cancelled"
+	if countsQueueTime {
 		if createdAt, ok := utils.ParseTime(job.CreatedAt); ok {
 			queueMs := float64(absoluteJobStart.UnixMilli() - createdAt.UnixMilli())
 			if queueMs > 0 {
@@ -886,8 +960,9 @@ func processJob(job githubapi.Job, jobIndex int, run githubapi.WorkflowRun, jobT
 	}
 	AddThreadMetadata(traceEvents, processID, jobThreadID, jobLabel, intPtr(jobIndex+10))
 
-	// Emit queued span (CreatedAt → StartedAt) — only for jobs that actually ran
-	if job.CreatedAt != "" && job.Conclusion != "skipped" && job.Conclusion != "cancelled" {
+	// Emit queued span (CreatedAt → StartedAt) — same completed-jobs-only
+	// gate as the queue-time metric above.
+	if countsQueueTime {
 		if createdAt, ok := utils.ParseTime(job.CreatedAt); ok {
 			queueStartTs := createdAt.UnixMilli()
 			if queueStartTs < jobStartTs {
@@ -962,7 +1037,7 @@ func processJob(job githubapi.Job, jobIndex int, run githubapi.WorkflowRun, jobT
 	})
 
 	for _, step := range job.Steps {
-		processStep(step, job, run, jobThreadID, processID, earliestTime, jobEndTs, metrics, traceEvents, prURL, urlIndex, displayURL, sourceType, identifier, builder, traceID, jobSC)
+		processStep(step, job, run, jobThreadID, processID, earliestTime, jobStartTs, jobEndTs, metrics, traceEvents, prURL, urlIndex, displayURL, sourceType, identifier, builder, traceID, jobSC)
 	}
 
 	jobAttrs := []attribute.KeyValue{
@@ -1022,7 +1097,7 @@ func processJob(job githubapi.Job, jobIndex int, run githubapi.WorkflowRun, jobT
 	})
 }
 
-func processStep(step githubapi.Step, job githubapi.Job, run githubapi.WorkflowRun, jobThreadID, processID int, earliestTime, jobEndTs int64, metrics *Metrics, traceEvents *[]TraceEvent, prURL string, urlIndex int, displayURL, sourceType, identifier string, builder *SpanBuilder, traceID trace.TraceID, parentSC trace.SpanContext) {
+func processStep(step githubapi.Step, job githubapi.Job, run githubapi.WorkflowRun, jobThreadID, processID int, earliestTime, jobStartTs, jobEndTs int64, metrics *Metrics, traceEvents *[]TraceEvent, prURL string, urlIndex int, displayURL, sourceType, identifier string, builder *SpanBuilder, traceID trace.TraceID, parentSC trace.SpanContext) {
 	if step.StartedAt == "" || step.CompletedAt == "" {
 		return
 	}
@@ -1032,23 +1107,20 @@ func processStep(step githubapi.Step, job githubapi.Job, run githubapi.WorkflowR
 		jobURL = fmt.Sprintf("https://github.com/%s/%s/actions/runs/%d/job/%d", run.Repository.Owner.Login, run.Repository.Name, run.ID, job.ID)
 	}
 
-	start, ok := utils.ParseTime(step.StartedAt)
+	rawStart, ok := utils.ParseTime(step.StartedAt)
 	if !ok {
 		return
 	}
-	end, ok := utils.ParseTime(step.CompletedAt)
+	rawEnd, ok := utils.ParseTime(step.CompletedAt)
 	if !ok {
 		return
 	}
-	// Clamp step end time to parent job's end time so child spans
-	// don't visually escape their parent in the flamechart.
-	jobEndTime := time.UnixMilli(jobEndTs)
-	if end.After(jobEndTime) {
-		end = jobEndTime
-	}
-	if start.After(jobEndTime) {
-		start = jobEndTime
-	}
+	// Same shared clamp as jobs: the step span stays inside the parent
+	// job's window on both the OTel and ms/flamechart paths.
+	stepStart, stepEnd := clampSpanToParent(
+		rawStart.UnixMilli(), rawEnd.UnixMilli(), jobStartTs, jobEndTs)
+	start := time.UnixMilli(stepStart)
+	end := time.UnixMilli(stepEnd)
 
 	stepURL := fmt.Sprintf("%s#step:%d:1", jobURL, step.Number)
 
@@ -1086,15 +1158,7 @@ func processStep(step githubapi.Step, job githubapi.Job, run githubapi.WorkflowR
 		metrics.FailedSteps++
 	}
 
-	stepStart := start.UnixMilli()
-	stepEnd := maxInt64(stepStart+1, end.UnixMilli())
-	if stepEnd > jobEndTs {
-		stepEnd = maxInt64(stepStart+1, jobEndTs)
-	}
 	duration := stepEnd - stepStart
-	if stepStart >= stepEnd || duration <= 0 {
-		return
-	}
 
 	stepIcon := utils.GetStepIcon(step.Name, step.Conclusion)
 	stepCategory := utils.CategorizeStep(step.Name)
@@ -1325,6 +1389,7 @@ func mergeMetrics(target *Metrics, source Metrics) {
 	target.TotalRuns += source.TotalRuns
 	target.SuccessfulRuns += source.SuccessfulRuns
 	target.FailedRuns += source.FailedRuns
+	target.PendingRuns += source.PendingRuns
 	target.TotalJobs += source.TotalJobs
 	target.FailedJobs += source.FailedJobs
 	target.TotalSteps += source.TotalSteps

@@ -25,6 +25,27 @@ jobs:
           sleep 2
           echo "Done!"
 
+  tla-specs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Cache tla2tools.jar
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/tla2tools.jar
+          key: tla2tools
+
+      - name: Model-check TLA+ specs
+        run: scripts/check-specs.sh
+
   test:
     runs-on: ubuntu-latest
     steps:

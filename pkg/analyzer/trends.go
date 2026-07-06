@@ -268,7 +268,7 @@ func AnalyzeTrends(ctx context.Context, client githubapi.GitHubProvider, owner, 
 			}
 		}
 	}
-	runs, err := client.FetchRecentWorkflowRuns(ctx, owner, repo, days, branch, workflow, onPage)
+	runs, err := client.FetchWorkflowRunsSince(ctx, owner, repo, time.Now().UTC().AddDate(0, 0, -days), branch, workflow, onPage)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch workflow runs: %w", err)
 	}

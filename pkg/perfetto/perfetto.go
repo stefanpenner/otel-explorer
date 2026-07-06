@@ -35,6 +35,25 @@ func makeUUID(parts ...interface{}) uint64 {
 	return h.Sum64()
 }
 
+// sanitizeEventNs clamps a span's normalized times at the export boundary:
+// no negative start, never inverted, and non-markers get a 1ms minimum
+// duration so they are visible in the Perfetto UI. Spans the analyzer
+// already clamped (end >= start+1ms, inside their parent) pass through
+// unchanged, so this bump cannot re-escape a parent for analyzer spans; it
+// exists for other span sources (logs, artifacts) and hostile input.
+func sanitizeEventNs(startNs, endNs int64, isMarker bool) (uint64, uint64) {
+	if startNs < 0 {
+		startNs = 0
+	}
+	if endNs < startNs {
+		endNs = startNs
+	}
+	if !isMarker && endNs <= startNs {
+		endNs = startNs + 1_000_000 // 1ms minimum
+	}
+	return uint64(startNs), uint64(endNs)
+}
+
 // spanEvent holds the data needed to emit a TracePacket for one span or legacy event.
 type spanEvent struct {
 	trackUUID   uint64
@@ -121,22 +140,15 @@ func WriteTrace(w io.Writer, urlResults []analyzer.URLResult, combined analyzer.
 			attrs[string(attr.Key)] = val
 		}
 
-		startNs := s.StartTime().UnixNano() - earliestNs
-		endNs := s.EndTime().UnixNano() - earliestNs
-		if startNs < 0 {
-			startNs = 0
-		}
-		if endNs < startNs {
-			endNs = startNs
-		}
-
 		spanType, _ := attrs["type"].(string)
 		name := utils.StripANSI(s.Name())
 		isMarker := spanType == "marker"
 
-		if !isMarker && endNs <= startNs {
-			endNs = startNs + 1_000_000 // 1ms minimum
-		}
+		startNs, endNs := sanitizeEventNs(
+			s.StartTime().UnixNano()-earliestNs,
+			s.EndTime().UnixNano()-earliestNs,
+			isMarker,
+		)
 
 		// Build debug annotations
 		var annotations [][]byte
@@ -223,8 +235,8 @@ func WriteTrace(w io.Writer, urlResults []analyzer.URLResult, combined analyzer.
 
 		events = append(events, spanEvent{
 			trackUUID:   trackUUID,
-			startNs:     uint64(startNs),
-			endNs:       uint64(endNs),
+			startNs:     startNs,
+			endNs:       endNs,
 			name:        name,
 			annotations: annotations,
 			isInstant:   isMarker,

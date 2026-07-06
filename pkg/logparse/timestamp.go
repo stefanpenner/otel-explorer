@@ -2,6 +2,7 @@ package logparse
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -48,6 +49,12 @@ func splitGroups(lines []LogLine) ([]LogLine, []groupBlock) {
 	for _, l := range lines {
 		content := l.Content
 		if name, ok := strings.CutPrefix(content, "##[group]"); ok {
+			// Nested ##[group]: implicitly close the outer group at this
+			// line's time instead of silently discarding it and its lines.
+			if current != nil {
+				current.end = l.Time
+				groups = append(groups, *current)
+			}
 			current = &groupBlock{
 				name:    name,
 				start:   l.Time,
@@ -95,13 +102,19 @@ func (p *TimestampParser) Parse(lines []LogLine, stepStart, stepEnd time.Time) [
 	}
 
 	// No groups — use the original gap-based parsing on all lines
-	return p.parseGapBased(lines, stepStart, stepEnd)
+	return p.parseGapBased(lines, stepEnd)
 }
 
 // parseWithGroups builds spans from a mix of top-level lines and group blocks.
 // Each group becomes a parent span; substantive lines within groups become children.
 // Top-level lines between groups become their own spans if they have meaningful duration.
 func (p *TimestampParser) parseWithGroups(topLevel []LogLine, groups []groupBlock, stepStart, stepEnd time.Time) []ParsedSpan {
+	// splitGroups appends in close order; non-monotonic timestamps can leave
+	// that unsorted, and the end override below assumes start order.
+	sort.SliceStable(groups, func(i, j int) bool {
+		return groups[i].start.Before(groups[j].start)
+	})
+
 	// Collect all span-producing elements with their start times for ordering
 	var elements []spanElement
 
@@ -114,6 +127,15 @@ func (p *TimestampParser) parseWithGroups(topLevel []LogLine, groups []groupBloc
 		} else if !stepEnd.IsZero() {
 			// Last group extends to the step end (or next top-level line)
 			endTime = stepEnd
+		}
+		// Non-monotonic timestamps or a step window that ends before the
+		// group opens can pull the override before the group start; fall
+		// back rather than emit an inverted span.
+		if endTime.Before(g.start) {
+			endTime = g.end
+			if endTime.Before(g.start) {
+				endTime = g.start
+			}
 		}
 
 		groupLineNum := fmt.Sprintf("%d", g.lineNum)
@@ -129,7 +151,10 @@ func (p *TimestampParser) parseWithGroups(topLevel []LogLine, groups []groupBloc
 
 		// Parse children within the group using gap-based parsing
 		if len(g.lines) > 0 {
-			children := p.parseGapBased(g.lines, g.start, endTime)
+			children := p.parseGapBased(g.lines, endTime)
+			// Non-monotonic timestamps can push gap-parsed children outside
+			// the group span; the span tree needs children inside parents.
+			clampSpans(children, g.start, endTime)
 			// Override child line numbers to point to the group header,
 			// because GHA collapses groups by default and deep links to
 			// lines inside collapsed groups don't scroll correctly.
@@ -144,7 +169,7 @@ func (p *TimestampParser) parseWithGroups(topLevel []LogLine, groups []groupBloc
 
 	// Process top-level lines (outside groups) into gap-based spans
 	if len(topLevel) > 0 {
-		topSpans := p.parseGapBased(topLevel, stepStart, stepEnd)
+		topSpans := p.parseGapBased(topLevel, stepEnd)
 		for _, s := range topSpans {
 			elements = append(elements, spanElement{start: s.StartTime, span: s})
 		}
@@ -175,9 +200,30 @@ func sortSpanElements(elements []spanElement) {
 	}
 }
 
+// clampSpans clamps spans (and, recursively, their children) into
+// [start, end]. Requires start <= end.
+func clampSpans(spans []ParsedSpan, start, end time.Time) {
+	for i := range spans {
+		s := &spans[i]
+		if s.StartTime.Before(start) {
+			s.StartTime = start
+		}
+		if s.StartTime.After(end) {
+			s.StartTime = end
+		}
+		if s.EndTime.After(end) {
+			s.EndTime = end
+		}
+		if s.EndTime.Before(s.StartTime) {
+			s.EndTime = s.StartTime
+		}
+		clampSpans(s.Children, s.StartTime, s.EndTime)
+	}
+}
+
 // parseGapBased groups consecutive lines by timestamp gaps and returns spans.
 // This is the original parsing logic, now used both at top level and within groups.
-func (p *TimestampParser) parseGapBased(lines []LogLine, regionStart, regionEnd time.Time) []ParsedSpan {
+func (p *TimestampParser) parseGapBased(lines []LogLine, regionEnd time.Time) []ParsedSpan {
 	if len(lines) == 0 {
 		return nil
 	}
@@ -215,7 +261,11 @@ func (p *TimestampParser) parseGapBased(lines []LogLine, regionStart, regionEnd 
 			}
 		} else {
 			current.lines = append(current.lines, lines[i])
-			current.end = lines[i].Time
+			// Only advance forward: an out-of-order line must not drag the
+			// gap baseline backward and manufacture a split.
+			if lines[i].Time.After(current.end) {
+				current.end = lines[i].Time
+			}
 		}
 	}
 	groups = append(groups, current)

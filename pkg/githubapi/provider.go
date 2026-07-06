@@ -2,12 +2,13 @@ package githubapi
 
 import (
 	"context"
+	"time"
 )
 
 // GitHubProvider defines the interface for interacting with GitHub's API.
 type GitHubProvider interface {
 	FetchWorkflowRuns(ctx context.Context, baseURL, headSHA string, branch, event string) ([]WorkflowRun, error)
-	FetchRecentWorkflowRuns(ctx context.Context, owner, repo string, days int, branch, workflow string, onPage func(fetched, total int)) ([]WorkflowRun, error)
+	FetchWorkflowRunsSince(ctx context.Context, owner, repo string, since time.Time, branch, workflow string, onPage func(fetched, total int)) ([]WorkflowRun, error)
 	FetchRepository(ctx context.Context, baseURL string) (*RepoMeta, error)
 	FetchCommitAssociatedPRs(ctx context.Context, owner, repo, sha string) ([]PullAssociated, error)
 	FetchCommit(ctx context.Context, baseURL, sha string) (*CommitResponse, error)

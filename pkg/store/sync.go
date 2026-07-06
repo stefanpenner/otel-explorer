@@ -27,13 +27,16 @@ const syncWorkers = 8
 // status and duration.
 const watermarkOverlap = 24 * time.Hour
 
+// timeNow is a test seam for the instant a sync captures as "now".
+var timeNow = time.Now
+
 // Sync fetches runs (and the job detail the store doesn't already hold) for
 // the last `days` and upserts them. Re-syncs are incremental: the run
 // listing is bounded by the stored watermark, and job detail is fetched
 // only for completed runs missing it.
 func Sync(ctx context.Context, client githubapi.GitHubProvider, st *Store, owner, repo string, days int, progress func(string)) (SyncStats, error) {
 	var stats SyncStats
-	now := time.Now()
+	now := timeNow()
 	report := func(format string, args ...any) {
 		if progress != nil {
 			progress(fmt.Sprintf(format, args...))
@@ -67,7 +70,11 @@ func Sync(ctx context.Context, client githubapi.GitHubProvider, st *Store, owner
 	}
 
 	report("listing runs (last %dd)", fetchDays)
-	runs, err := client.FetchRecentWorkflowRuns(ctx, owner, repo, fetchDays, "", "", nil)
+	// Anchor the listing floor to the now captured above: deriving it from a
+	// fresh time.Now() inside the client meant a clock jump mid-sync (laptop
+	// suspend) slid the window forward and permanently skipped runs.
+	listSince := now.UTC().AddDate(0, 0, -fetchDays)
+	runs, err := client.FetchWorkflowRunsSince(ctx, owner, repo, listSince, "", "", nil)
 	if err != nil {
 		return stats, fmt.Errorf("listing workflow runs: %w", err)
 	}
@@ -127,7 +134,7 @@ func Sync(ctx context.Context, client githubapi.GitHubProvider, st *Store, owner
 				return
 			}
 			converted := analyzer.ConvertJobs(jobs, attempt)
-			if err := st.UpsertJobs(owner, repo, runID, converted); err != nil {
+			if err := st.UpsertJobs(owner, repo, runID, attempt, converted); err != nil {
 				mu.Lock()
 				if firstErr == nil {
 					firstErr = err

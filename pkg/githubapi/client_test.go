@@ -92,6 +92,88 @@ func TestRateLimiterNoWaitWhenRemaining(t *testing.T) {
 	assert.Less(t, time.Since(start), time.Second)
 }
 
+// TestSyncBoundsSpec_ListingWindowFromCaller pins the fix for the
+// sync-bounds spec's MCFinding2 at the client level: the listing `created`
+// qualifier must come from the caller's `since` (as a UTC date), not from a
+// fresh time.Now() inside the client.
+func TestSyncBoundsSpec_ListingWindowFromCaller(t *testing.T) {
+	var gotCreated string
+	rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		gotCreated = req.URL.Query().Get("created")
+		return jsonResponse(req, `{"total_count":0,"workflow_runs":[]}`, nil), nil
+	})
+	client := NewClient(NewContext("test-token"), WithHTTPClient(&http.Client{Transport: rt}))
+
+	// 2026-06-29 23:30 -0700 is 2026-06-30 in UTC.
+	since := time.Date(2026, 6, 29, 23, 30, 0, 0, time.FixedZone("PDT", -7*3600))
+	_, err := client.FetchWorkflowRunsSince(context.Background(), "o", "r", since, "", "", nil)
+	assert.NoError(t, err)
+	assert.Equal(t, ">=2026-06-30", gotCreated,
+		"listing window must be the caller's since, evaluated as a UTC date")
+}
+
+// TestRateLimitSpec_WakeRechecksLimiter encodes the rate-limit spec's
+// MCFinding2 witness (specs/rate-limit/README.md): while a goroutine sleeps
+// on an exhausted window, a delivered response reports a NEW exhausted
+// window. The woken sleeper must recheck the limiter (and sleep again)
+// instead of firing into the fresh window it knows is exhausted.
+func TestRateLimitSpec_WakeRechecksLimiter(t *testing.T) {
+	t.Parallel()
+	limiter := &rateLimiter{
+		remaining: 0,
+		resetTime: time.Now().Add(50 * time.Millisecond),
+	}
+
+	// While the waiter sleeps (~1.05s: wait duration includes +1s slack),
+	// another response reports a new exhausted window further out.
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		limiter.mu.Lock()
+		limiter.remaining = 0
+		limiter.resetTime = time.Now().Add(2 * time.Second)
+		limiter.mu.Unlock()
+	}()
+
+	err := limiter.waitIfNeeded(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, time.Duration(0), limiter.waitDuration(),
+		"waitIfNeeded returned while the limiter still demanded waiting; a woken sleeper must recheck")
+}
+
+// TestRateLimitSpec_NegativeHeadersHardened covers the rate-limit spec's
+// hardening note (FINDINGS.md #14): a negative x-ratelimit-remaining header
+// must clamp to 0 (exhausted) rather than disable waiting via the
+// `remaining == 0` equality test, and a nonsensical reset is ignored.
+func TestRateLimitSpec_NegativeHeadersHardened(t *testing.T) {
+	t.Parallel()
+	t.Run("negative remaining clamps to zero", func(t *testing.T) {
+		t.Parallel()
+		limiter := &rateLimiter{}
+		headers := http.Header{}
+		headers.Set("x-ratelimit-remaining", "-1")
+		headers.Set("x-ratelimit-reset", fmt.Sprintf("%d", time.Now().Add(time.Hour).Unix()))
+		limiter.updateFromHeaders(headers)
+
+		remaining, _, known := limiter.snapshot()
+		assert.True(t, known)
+		assert.Equal(t, 0, remaining, "negative remaining must clamp to 0 (exhausted)")
+		assert.Greater(t, limiter.waitDuration(), time.Duration(0),
+			"a negative remaining header must not disable waiting")
+	})
+
+	t.Run("nonsensical reset is ignored", func(t *testing.T) {
+		t.Parallel()
+		limiter := &rateLimiter{}
+		headers := http.Header{}
+		headers.Set("x-ratelimit-remaining", "0")
+		headers.Set("x-ratelimit-reset", "-5")
+		limiter.updateFromHeaders(headers)
+
+		_, reset, _ := limiter.snapshot()
+		assert.True(t, reset.IsZero(), "a non-positive reset header must be ignored")
+	})
+}
+
 func TestRetryDelayClampsHeaderDelay(t *testing.T) {
 	resp := &http.Response{Header: http.Header{}}
 	resp.Header.Set("Retry-After", "3600")

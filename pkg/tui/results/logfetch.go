@@ -58,10 +58,11 @@ func (m *Model) fetchLogsForCurrentItem() tea.Cmd {
 
 	fetchFunc := m.logFetchFunc
 	spans := m.spans
+	gen := m.reloadGen
 
 	return func() tea.Msg {
 		newSpans, err := fetchFunc(owner, repo, jobID, spans)
-		return LogFetchResultMsg{newSpans: newSpans, err: err}
+		return LogFetchResultMsg{jobID: jobID, gen: gen, newSpans: newSpans, err: err}
 	}
 }
 

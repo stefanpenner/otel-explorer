@@ -19,6 +19,7 @@ go_test(
     srcs = [
         "fuzz_test.go",
         "logparse_test.go",
+        "timestamp_spec_test.go",
     ],
     embed = [":logparse"],
     deps = [

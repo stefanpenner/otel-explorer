@@ -371,7 +371,12 @@ func timeOf(ms int64) time.Time {
 // UpsertJobs replaces one run's jobs and marks the run's job detail as
 // fetched, without touching any other run column — safe to call with data
 // from a jobs-only fetch where the run listing fields are unknown.
-func (s *Store) UpsertJobs(owner, repo string, runID int64, jobs []analyzer.JobData) error {
+// attempt is the run_attempt the jobs were fetched for (0 = unknown, accept
+// unconditionally). A payload for a superseded attempt is discarded: setting
+// jobs_fetched=1 after a concurrent writer advanced run_attempt would make
+// the attempts equal, so the upsert CASE reset could never refetch and the
+// stale (or filtered-empty) detail would be served forever.
+func (s *Store) UpsertJobs(owner, repo string, runID, attempt int64, jobs []analyzer.JobData) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tx, err := s.db.Begin()
@@ -379,6 +384,20 @@ func (s *Store) UpsertJobs(owner, repo string, runID int64, jobs []analyzer.JobD
 		return err
 	}
 	defer tx.Rollback()
+
+	// The attempt guard and jobs_fetched=1 are one statement so the jobs
+	// DELETE below can never run against a run that has moved on.
+	res, err := tx.Exec(`UPDATE runs SET jobs_fetched=1
+		WHERE owner=? AND repo=? AND id=? AND (?=0 OR run_attempt=?)`,
+		owner, repo, runID, attempt, attempt)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return nil // stale fetch (or unknown run): leave stored jobs alone
+	}
 
 	if _, err := tx.Exec(`DELETE FROM jobs WHERE owner=? AND repo=? AND run_id=?`,
 		owner, repo, runID); err != nil {
@@ -401,10 +420,6 @@ func (s *Store) UpsertJobs(owner, repo string, runID int64, jobs []analyzer.JobD
 			job.Duration, job.QueueTime, job.RunnerName, encodeLabels(job.Labels)); err != nil {
 			return fmt.Errorf("upserting job %d: %w", job.ID, err)
 		}
-	}
-	if _, err := tx.Exec(`UPDATE runs SET jobs_fetched=1 WHERE owner=? AND repo=? AND id=?`,
-		owner, repo, runID); err != nil {
-		return err
 	}
 	return tx.Commit()
 }

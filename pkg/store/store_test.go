@@ -164,7 +164,7 @@ func TestStoreUpsertJobsDoesNotClobberRun(t *testing.T) {
 	// Attach jobs to run 2 without touching its run row.
 	jobs := []analyzer.JobData{{ID: 21, Name: "test", Status: "completed", Conclusion: "failure",
 		CreatedAt: base.Add(time.Hour), StartedAt: base.Add(time.Hour), CompletedAt: base.Add(time.Hour + 4*time.Minute), Duration: 240_000}}
-	require.NoError(t, st.UpsertJobs("o", "r", 2, jobs))
+	require.NoError(t, st.UpsertJobs("o", "r", 2, 1, jobs))
 
 	got, err := st.LoadRuns("o", "r", base.Add(-time.Hour), base.Add(2*time.Hour))
 	require.NoError(t, err)
@@ -250,7 +250,7 @@ func TestRetryResetsJobsFetched(t *testing.T) {
 		ID: 1, WorkflowName: "CI", Status: "completed", Conclusion: "failure",
 		CreatedAt: base, Attempt: 1,
 	}}))
-	require.NoError(t, st.UpsertJobs("o", "r", 1, []analyzer.JobData{{
+	require.NoError(t, st.UpsertJobs("o", "r", 1, 1, []analyzer.JobData{{
 		ID: 11, Name: "build", Status: "completed", Conclusion: "failure",
 		CreatedAt: base, Duration: 60_000,
 	}}))
@@ -265,6 +265,80 @@ func TestRetryResetsJobsFetched(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []int64{1}, ids,
 		"a newer attempt must invalidate stored attempt-1 jobs, else stale failures are served forever")
+}
+
+// TestSyncBoundsSpec_StaleWorkerCannotStompNewerAttempt encodes the
+// sync-bounds spec MCFinding1 witness (specs/sync-bounds/README.md):
+// an in-flight job-fetch worker still holding attempt 1 lands AFTER a
+// concurrent writer advanced the run to attempt 2. The stale write must be
+// discarded — otherwise it deletes the good jobs and sets jobs_fetched=1
+// with store attempt == upstream attempt, so the upsert CASE reset can
+// never refetch (stale/empty detail served forever).
+func TestSyncBoundsSpec_StaleWorkerCannotStompNewerAttempt(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	t.Run("seeded attempt-2 jobs survive a stale attempt-1 worker", func(t *testing.T) {
+		t.Parallel()
+		st := openTestStore(t)
+
+		// Sync lists run 1 at attempt 1 (no jobs payload); a worker captures attempt 1.
+		require.NoError(t, st.UpsertRuns("o", "r", []analyzer.RunData{{
+			ID: 1, WorkflowName: "CI", Status: "completed", Conclusion: "failure",
+			CreatedAt: base, Attempt: 1,
+		}}))
+
+		// Upstream re-attempts; a URL analysis seeds attempt 2 WITH its jobs.
+		require.NoError(t, st.SeedRuns("o", "r", []analyzer.RunData{{
+			ID: 1, WorkflowName: "CI", Status: "completed", Conclusion: "success",
+			CreatedAt: base, Attempt: 2,
+			Jobs: []analyzer.JobData{{ID: 12, Name: "build", Status: "completed", Conclusion: "success",
+				CreatedAt: base, Duration: 60_000}},
+		}}))
+
+		// The stale worker lands: its attempt-1 filter dropped every job.
+		require.NoError(t, st.UpsertJobs("o", "r", 1, 1, nil))
+
+		runs, err := st.LoadRuns("o", "r", base.Add(-time.Hour), base.Add(time.Hour))
+		require.NoError(t, err)
+		require.Len(t, runs, 1)
+		assert.Len(t, runs[0].Jobs, 1, "stale attempt-1 worker must not delete attempt-2 jobs")
+
+		ids, err := st.RunsNeedingJobs("o", "r", base.Add(-time.Hour), base.Add(time.Hour))
+		require.NoError(t, err)
+		assert.Empty(t, ids, "attempt-2 jobs are already stored")
+	})
+
+	t.Run("stale attempt-1 jobs cannot mark a re-listed attempt-2 run fetched", func(t *testing.T) {
+		t.Parallel()
+		st := openTestStore(t)
+
+		require.NoError(t, st.UpsertRuns("o", "r", []analyzer.RunData{{
+			ID: 1, WorkflowName: "CI", Status: "completed", Conclusion: "failure",
+			CreatedAt: base, Attempt: 1,
+		}}))
+		// Re-listed at attempt 2 without a jobs payload: jobs_fetched reset to 0.
+		require.NoError(t, st.UpsertRuns("o", "r", []analyzer.RunData{{
+			ID: 1, WorkflowName: "CI", Status: "completed", Conclusion: "success",
+			CreatedAt: base, Attempt: 2,
+		}}))
+
+		// A stale worker writes attempt-1 jobs.
+		require.NoError(t, st.UpsertJobs("o", "r", 1, 1, []analyzer.JobData{{
+			ID: 11, Name: "build", Status: "completed", Conclusion: "failure",
+			CreatedAt: base, Duration: 60_000,
+		}}))
+
+		ids, err := st.RunsNeedingJobs("o", "r", base.Add(-time.Hour), base.Add(time.Hour))
+		require.NoError(t, err)
+		assert.Equal(t, []int64{1}, ids,
+			"a stale attempt-1 write must not set jobs_fetched=1 for the attempt-2 run")
+
+		runs, err := st.LoadRuns("o", "r", base.Add(-time.Hour), base.Add(time.Hour))
+		require.NoError(t, err)
+		require.Len(t, runs, 1)
+		assert.Empty(t, runs[0].Jobs, "stale attempt-1 jobs must not be stored against attempt 2")
+	})
 }
 
 func TestSeededRunsDoNotMoveSyncBounds(t *testing.T) {

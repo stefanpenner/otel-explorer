@@ -23,14 +23,13 @@ type fakeProvider struct {
 	jobErr    error
 }
 
-func (f *fakeProvider) FetchRecentWorkflowRuns(ctx context.Context, owner, repo string, days int, branch, workflow string, onPage func(fetched, total int)) ([]githubapi.WorkflowRun, error) {
+func (f *fakeProvider) FetchWorkflowRunsSince(ctx context.Context, owner, repo string, since time.Time, branch, workflow string, onPage func(fetched, total int)) ([]githubapi.WorkflowRun, error) {
 	f.listCalls.Add(1)
-	// Honor the window like the real API: only runs created within `days`.
-	cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	// Honor the window like the real API: only runs created on/after since.
 	var out []githubapi.WorkflowRun
 	for _, run := range f.runs {
 		created, _ := time.Parse(time.RFC3339, run.CreatedAt)
-		if created.After(cutoff) {
+		if !created.Before(since) {
 			out = append(out, run)
 		}
 	}
@@ -128,6 +127,46 @@ func TestSyncBackfillsDeeperHistory(t *testing.T) {
 	for _, run := range runs {
 		assert.NotEmpty(t, run.Jobs, "backfilled run %d has job detail", run.ID)
 	}
+}
+
+// TestSyncBoundsSpec_ClockJumpMidSyncKeepsListingWindow encodes the
+// sync-bounds spec MCFinding2 witness (specs/sync-bounds/README.md):
+// the machine suspends between the sync's `now` capture and the listing
+// call, so the wall clock jumps forward. The listing window must stay
+// anchored to the captured now — recomputing `since` from a fresh
+// time.Now() slides the window, skips a run inside the requested depth,
+// and the advancing watermark then clamps it out permanently.
+func TestSyncBoundsSpec_ClockJumpMidSyncKeepsListingWindow(t *testing.T) {
+	// Not parallel: overrides the timeNow seam.
+	st := openTestStore(t)
+
+	// Wall clock is "day 3"; the sync captured its now on "day 1" and the
+	// machine then slept for two days.
+	wallNow := time.Now()
+	capturedNow := wallNow.Add(-48 * time.Hour)
+	timeNow = func() time.Time { return capturedNow }
+	t.Cleanup(func() { timeNow = time.Now })
+
+	// Victim run: inside [capturedNow-2d, capturedNow], but outside the
+	// slid window [wallNow-2d, wallNow].
+	victim := capturedNow.Add(-24 * time.Hour)
+	provider := &fakeProvider{}
+	provider.runs = append(provider.runs, githubapi.WorkflowRun{
+		ID: 1, RunAttempt: 1, Name: "CI", Status: "completed", Conclusion: "success",
+		HeadSHA:    "sha1",
+		CreatedAt:  victim.Format(time.RFC3339),
+		UpdatedAt:  victim.Add(time.Hour).Format(time.RFC3339),
+		Repository: githubapi.RepoRef{Owner: githubapi.RepoOwner{Login: "o"}, Name: "r"},
+	})
+
+	stats, err := Sync(context.Background(), provider, st, "o", "r", 2, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.RunsFetched,
+		"listing window must derive from the captured now, not a fresh time.Now()")
+
+	runs, err := st.LoadRuns("o", "r", wallNow.Add(-5*24*time.Hour), wallNow)
+	require.NoError(t, err)
+	assert.Len(t, runs, 1, "the victim run must be stored, not permanently skipped")
 }
 
 func TestSyncPropagatesFetchJobsError(t *testing.T) {

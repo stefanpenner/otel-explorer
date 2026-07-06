@@ -1313,7 +1313,7 @@ type stubTrendProvider struct {
 	failRunIDs map[int64]bool
 }
 
-func (s *stubTrendProvider) FetchRecentWorkflowRuns(ctx context.Context, owner, repo string, days int, branch, workflow string, onPage func(fetched, total int)) ([]githubapi.WorkflowRun, error) {
+func (s *stubTrendProvider) FetchWorkflowRunsSince(ctx context.Context, owner, repo string, since time.Time, branch, workflow string, onPage func(fetched, total int)) ([]githubapi.WorkflowRun, error) {
 	return s.runs, nil
 }
 
