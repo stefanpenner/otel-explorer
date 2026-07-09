@@ -80,15 +80,44 @@ func PurePredicates() []PurePredicate     // enumerate all pure gates
 ```
 
 ```bash
-scripts/decision-stack-status.sh                         # inventory table
+# Hermetic Bazel pipeline (preferred — used by CI via bazel test //...)
+bazel test  //tools/decision:up_to_date     # fail if *spec stale vs Decision.tla
+bazel run   //tools/decision:update         # rewrite committed *spec from .tla
+bazel build //tools/specgen                 # hermetic codegen binary
+
+# Inventory / TLC / duals
+scripts/decision-stack-status.sh
 scripts/verify-decision-wires.sh
-SPECGEN_CHECK_REGEN=1 scripts/verify-decision-wires.sh   # needs specgen on PATH
-scripts/regenerate-decision-cores.sh                     # after Decision.tla edits
-scripts/check-specs.sh                                   # TLC + *spec + duals + wires
+scripts/check-specs.sh                      # TLC full + decision + duals + wires
+scripts/regenerate-decision-cores.sh        # → bazel run //tools/decision:update
 ```
 
-CI (`tla-specs` job) always runs committed `go test ./pkg/.../*spec` when `go`
-is available — does **not** require `specgen` on PATH. Regen stays intentional.
+### Complete Bazel graph (production path)
+
+```
+specs/<core>/decision/Decision.tla
+        │
+        ▼
+//tools/specgen          (hermetic binary)
+        │
+        ▼
+//tools/decision:<core>_gen/spec.go   (genrule outs)
+        │
+        ▼
+//pkg/.../<name>spec     (go_library srcs = genrule outs)
+        │
+        ▼
+//pkg/analyzer (etc.)
+        │
+        ▼
+//:ote   ←  bazel run //:ote
+```
+
+Committed `spec.go` copies are for IDE + `up_to_date` checks only.
+**Library and binary use genrule outputs** — changing `.tla` rebuilds `ote`.
+
+`bazel test //...` includes `//tools/decision:up_to_date`.
+The `tla-specs` job still runs TLC + duals; the unit `test` job runs Bazel.
 
 Full TLC specs remain authoritative for multi-object interleavings.
 Decision cores pin the **pure decisions** that must not drift.

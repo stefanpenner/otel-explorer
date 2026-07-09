@@ -1,8 +1,15 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+# gazelle:ignore
+# Graph: Decision.tla → //tools/decision:rate_limit_gen → this package → githubapi → ote
+# Handwritten: conform_test.go
+# Update committed copies: bazel run //tools/decision:update
+
+exports_files(["spec.go", "spec_test.go"])
+
 go_library(
     name = "ratelimitspec",
-    srcs = ["spec.go"],
+    srcs = ["//tools/decision:rate_limit_gen/spec.go"],
     importpath = "github.com/stefanpenner/otel-explorer/pkg/githubapi/ratelimitspec",
     visibility = ["//visibility:public"],
 )
@@ -11,7 +18,7 @@ go_test(
     name = "ratelimitspec_test",
     srcs = [
         "conform_test.go",
-        "spec_test.go",
+        "//tools/decision:rate_limit_gen/spec_test.go",
     ],
     embed = [":ratelimitspec"],
 )

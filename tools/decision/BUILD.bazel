@@ -1,0 +1,117 @@
+load(":defs.bzl", "decision_core")
+
+# gazelle:ignore
+#
+# Decision cores: Decision.tla → pkg/.../*spec via hermetic //tools/specgen.
+#
+#   bazel test  //tools/decision:up_to_date   # fail if committed *spec is stale
+#   bazel run   //tools/decision:update       # rewrite committed *spec from .tla
+#   bazel build //tools/specgen               # hermetic codegen binary
+#
+# Keep this table in sync with scripts/regenerate-decision-cores.sh and
+# specs/DECISION_CORES.md.
+
+decision_core(
+    name = "tui_reload",
+    consts = ["MaxGen=2", "MaxJobs=2", "Bug=FALSE"],
+    dest = "pkg/tui/results/tuireloadspec",
+    pkg = "tuireloadspec",
+    src_go = "//pkg/tui/results/tuireloadspec:spec.go",
+    src_test = "//pkg/tui/results/tuireloadspec:spec_test.go",
+    tla = "//specs:tui-reload/decision/Decision.tla",
+)
+
+decision_core(
+    name = "rate_limit",
+    consts = ["MaxRem=2", "MaxClock=3", "Bug=FALSE"],
+    dest = "pkg/githubapi/ratelimitspec",
+    pkg = "ratelimitspec",
+    src_go = "//pkg/githubapi/ratelimitspec:spec.go",
+    src_test = "//pkg/githubapi/ratelimitspec:spec_test.go",
+    tla = "//specs:rate-limit/decision/Decision.tla",
+)
+
+decision_core(
+    name = "timing_clamp",
+    consts = ["Tmax=4", "Bug=FALSE"],
+    dest = "pkg/analyzer/timingclampspec",
+    pkg = "timingclampspec",
+    src_go = "//pkg/analyzer/timingclampspec:spec.go",
+    src_test = "//pkg/analyzer/timingclampspec:spec_test.go",
+    tla = "//specs:timing-clamp/decision/Decision.tla",
+)
+
+decision_core(
+    name = "sync_bounds",
+    consts = ["Bug=FALSE"],
+    dest = "pkg/store/syncboundsspec",
+    pkg = "syncboundsspec",
+    src_go = "//pkg/store/syncboundsspec:spec.go",
+    src_test = "//pkg/store/syncboundsspec:spec_test.go",
+    tla = "//specs:sync-bounds/decision/Decision.tla",
+)
+
+decision_core(
+    name = "gha_lifecycle",
+    consts = ["Bug=FALSE"],
+    dest = "pkg/analyzer/ghalifecyclespec",
+    pkg = "ghalifecyclespec",
+    src_go = "//pkg/analyzer/ghalifecyclespec:spec.go",
+    src_test = "//pkg/analyzer/ghalifecyclespec:spec_test.go",
+    tla = "//specs:gha-lifecycle/decision/Decision.tla",
+)
+
+decision_core(
+    name = "log_groups",
+    consts = ["MaxDepth=3", "Bug=FALSE"],
+    dest = "pkg/logparse/loggroupsspec",
+    pkg = "loggroupsspec",
+    src_go = "//pkg/logparse/loggroupsspec:spec.go",
+    src_test = "//pkg/logparse/loggroupsspec:spec_test.go",
+    tla = "//specs:log-groups/decision/Decision.tla",
+)
+
+decision_core(
+    name = "span_tree",
+    consts = ["Bug=FALSE"],
+    dest = "pkg/analyzer/spantreespec",
+    pkg = "spantreespec",
+    src_go = "//pkg/analyzer/spantreespec:spec.go",
+    src_test = "//pkg/analyzer/spantreespec:spec_test.go",
+    tla = "//specs:span-tree/decision/Decision.tla",
+)
+
+test_suite(
+    name = "up_to_date",
+    tests = [
+        ":tui_reload_up_to_date",
+        ":rate_limit_up_to_date",
+        ":timing_clamp_up_to_date",
+        ":sync_bounds_up_to_date",
+        ":gha_lifecycle_up_to_date",
+        ":log_groups_up_to_date",
+        ":span_tree_up_to_date",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "all",
+    tests = [":up_to_date"],
+    visibility = ["//visibility:public"],
+)
+
+sh_binary(
+    name = "update",
+    srcs = ["update.sh"],
+    data = [
+        ":tui_reload_gen",
+        ":rate_limit_gen",
+        ":timing_clamp_gen",
+        ":sync_bounds_gen",
+        ":gha_lifecycle_gen",
+        ":log_groups_gen",
+        ":span_tree_gen",
+    ],
+    visibility = ["//visibility:public"],
+)

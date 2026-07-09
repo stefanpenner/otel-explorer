@@ -55,14 +55,20 @@ Two layers:
 
 1. **Full TLC specs** (`specs/<name>/<Spec>.tla`) — design model-checkers
    (records/quantifiers OK). Bait + mutation configs required.
-2. **Decision cores** (`specs/<name>/decision/`) — scalar SMs for
-   `specgen` → `pkg/.../<name>spec/`. Never hand-edit generated code.
-   Dual/conform tests pin load-bearing guards to production helpers.
+2. **Decision cores** (`specs/<name>/decision/`) — scalar SMs codegen'd by
+   hermetic `//tools/specgen` into `pkg/.../*spec/`. Never hand-edit
+   generated `spec.go` / `spec_test.go`.
+
+```bash
+bazel test //tools/decision:up_to_date   # codegen freshness (in bazel test //...)
+bazel run  //tools/decision:update       # regenerate committed *spec from .tla
+```
 
 Rules for changes:
 
 - Touching a modeled subsystem? Update full spec **and** decision core
-  (if present), rerun `scripts/check-specs.sh <spec>`, re-`specgen`.
+  (if present), rerun `scripts/check-specs.sh <spec>`, then
+  `bazel run //tools/decision:update`.
 - Modeled subsystems → spec dir:
   store sync/watermark → `sync-bounds`; TUI reload/log-fetch → `tui-reload`;
   githubapi limiter/retry → `rate-limit`; analyzer run/job lifecycle →

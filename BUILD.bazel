@@ -16,3 +16,16 @@ alias(
     name = "ote",
     actual = "//cmd/ote",
 )
+
+# Decision-core codegen (TLA+ → Go via hermetic //tools/specgen).
+#   bazel test  //tools/decision:up_to_date
+#   bazel run   //tools/decision:update
+alias(
+    name = "decision_cores_up_to_date",
+    actual = "//tools/decision:up_to_date",
+)
+
+alias(
+    name = "update_decision_cores",
+    actual = "//tools/decision:update",
+)
