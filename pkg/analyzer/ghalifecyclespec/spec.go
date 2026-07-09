@@ -107,11 +107,6 @@ func (s State) QueueOnlyNotPending() bool {
 	return (!(s.QueueCounted) || (s.HasCompletedAt))
 }
 
-// BaitNeverPending is the pure TLA+ operator BaitNeverPending.
-func (s State) BaitNeverPending() bool {
-	return !(s.CountedPending)
-}
-
 // --- Trace emission for conformance checking ---
 
 // TraceEntry is a single recorded transition for conformance validation.

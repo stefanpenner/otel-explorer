@@ -111,11 +111,6 @@ func (s State) Inv_RunnerWins() bool {
 	return (!(s.Done && s.HaveAPI && s.HaveRunner) || (s.Kept == "runner"))
 }
 
-// BaitNeverRunner is the pure TLA+ operator BaitNeverRunner.
-func (s State) BaitNeverRunner() bool {
-	return s.Kept != "runner"
-}
-
 // --- Trace emission for conformance checking ---
 
 // TraceEntry is a single recorded transition for conformance validation.

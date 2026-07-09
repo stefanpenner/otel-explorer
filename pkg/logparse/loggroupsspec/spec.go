@@ -91,11 +91,6 @@ func (s State) Inv_DepthNonNeg() bool {
 	return s.Depth >= 0
 }
 
-// BaitNeverOpens is the pure TLA+ operator BaitNeverOpens.
-func (s State) BaitNeverOpens() bool {
-	return s.Depth == 0
-}
-
 // --- Trace emission for conformance checking ---
 
 // TraceEntry is a single recorded transition for conformance validation.

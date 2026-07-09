@@ -115,6 +115,8 @@ func TestClampDecisionDual(t *testing.T) {
 				"DoClamp outStart must match clampSpanToParent")
 			assert.Equal(t, gotE, st.OutEnd,
 				"DoClamp outEnd must match clampSpanToParent")
+			assert.True(t, st.ClampedOrdered(), "generated pure ClampedOrdered")
+			assert.True(t, st.ClampedContained(), "generated pure ClampedContained")
 
 			// Containment contract when parent is valid.
 			assert.Less(t, st.OutStart, st.OutEnd, "ordered")
