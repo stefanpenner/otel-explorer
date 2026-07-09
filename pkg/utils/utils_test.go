@@ -431,3 +431,67 @@ func TestStripANSIWriter(t *testing.T) {
 	assert.Equal(t, len(input), n)
 	assert.Equal(t, "ok link", sb.String())
 }
+
+func TestRecoverBoundary(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns result and nil error on success", func(t *testing.T) {
+		got, err := RecoverBoundary(func() (int, error) { return 42, nil })
+		assert.NoError(t, err)
+		assert.Equal(t, 42, got)
+	})
+
+	t.Run("propagates error from fn", func(t *testing.T) {
+		_, err := RecoverBoundary(func() (int, error) { return 0, assert.AnError })
+		assert.ErrorIs(t, err, assert.AnError)
+	})
+
+	t.Run("converts panic into error, does not crash", func(t *testing.T) {
+		assert.NotPanics(t, func() {
+			_, err := RecoverBoundary(func() (int, error) {
+				panic("hostile input caused library panic")
+			})
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "recovered")
+			assert.Contains(t, err.Error(), "hostile input")
+		})
+	})
+
+	t.Run("converts runtime panic (nil deref) into error", func(t *testing.T) {
+		assert.NotPanics(t, func() {
+			_, err := RecoverBoundary(func() (string, error) {
+				var m map[string]int // nil map
+				m["k"] = 1           // panic: assignment to entry in nil map
+				return "x", nil
+			})
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "recovered")
+		})
+	})
+}
+
+func TestRecoverBoundary0(t *testing.T) {
+	t.Parallel()
+
+	t.Run("converts panic into error via pointer", func(t *testing.T) {
+		assert.NotPanics(t, func() {
+			var err error
+			func() {
+				defer RecoverBoundary0(&err)
+				panic("library blew up on hostile bytes")
+			}()
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "recovered")
+			assert.Contains(t, err.Error(), "hostile bytes")
+		})
+	})
+
+	t.Run("no panic leaves err untouched", func(t *testing.T) {
+		var err error = assert.AnError
+		func() {
+			defer RecoverBoundary0(&err)
+			// no panic
+		}()
+		assert.ErrorIs(t, err, assert.AnError, "err must be unchanged when no panic occurs")
+	})
+}

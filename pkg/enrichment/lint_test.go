@@ -162,3 +162,64 @@ func TestFormatLintResults_Dedup(t *testing.T) {
 		t.Errorf("expected deduplicated count (×3), got:\n%s", out)
 	}
 }
+
+// TestLintSpans_DeprecationGolden locks the exact Message+Suggestion for every
+// deprecated attribute. If lintSpan is refactored (e.g. table-driven), this
+// catches any drift in user-facing text.
+func TestLintSpans_DeprecationGolden(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		attr        string
+		value       string // empty → no value
+		wantMessage string
+		wantSugg    string
+	}{
+		{"http.method with value", "http.method", "GET", "Deprecated attribute 'http.method' (value: GET)", "Use 'http.request.method' instead (semconv v1.20+)"},
+		{"http.status_code with value", "http.status_code", "200", "Deprecated attribute 'http.status_code' (value: 200)", "Use 'http.response.status_code' instead (semconv v1.20+)"},
+		{"http.url", "http.url", "x", "Deprecated attribute 'http.url'", "Use 'url.full' instead (semconv v1.20+)"},
+		{"http.target", "http.target", "x", "Deprecated attribute 'http.target'", "Use 'url.path' and 'url.query' instead (semconv v1.20+)"},
+		{"http.scheme", "http.scheme", "x", "Deprecated attribute 'http.scheme'", "Use 'url.scheme' instead (semconv v1.20+)"},
+		{"http.host", "http.host", "x", "Deprecated attribute 'http.host'", "Use 'server.address' and 'server.port' instead (semconv v1.20+)"},
+		{"db.system", "db.system", "pg", "Deprecated attribute 'db.system'", "Use 'db.system.name' instead"},
+		{"db.statement", "db.statement", "x", "Deprecated attribute 'db.statement'", "Use 'db.query.text' instead"},
+		{"db.operation", "db.operation", "x", "Deprecated attribute 'db.operation'", "Use 'db.operation.name' instead"},
+		{"db.sql.table", "db.sql.table", "x", "Deprecated attribute 'db.sql.table'", "Use 'db.collection.name' instead"},
+		{"db.name", "db.name", "x", "Deprecated attribute 'db.name'", "Use 'db.namespace' instead"},
+		{"db.connection_string", "db.connection_string", "x", "Deprecated attribute 'db.connection_string'", "Use 'server.address and server.port' instead"},
+		{"net.peer.name", "net.peer.name", "x", "Deprecated attribute 'net.peer.name'", "Use 'server.address' (client spans) or 'client.address' (server spans) instead"},
+		{"net.peer.port", "net.peer.port", "x", "Deprecated attribute 'net.peer.port'", "Use 'server.port' (client spans) or 'client.port' (server spans) instead"},
+		{"messaging.destination", "messaging.destination", "x", "Deprecated attribute 'messaging.destination'", "Use 'messaging.destination.name' instead (semconv v1.20+)"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			// Provide ONLY the deprecated attr so other checks don't fire.
+			// For http.method we must also suppress the "missing server.address"
+			// info check by... well, info-level is fine; we filter to warnings.
+			spans := []SpanData{{
+				Name:    "span",
+				Attrs:   map[string]string{tc.attr: tc.value},
+				SpanKind: "INTERNAL",
+			}}
+			for _, r := range LintSpans(spans) {
+				if r.Level != "warning" {
+					continue
+				}
+				if !strings.Contains(r.Message, tc.attr) {
+					continue
+				}
+				if r.Message != tc.wantMessage {
+					t.Errorf("Message:\n got: %s\nwant: %s", r.Message, tc.wantMessage)
+				}
+				if r.Suggestion != tc.wantSugg {
+					t.Errorf("Suggestion:\n got: %s\nwant: %s", r.Suggestion, tc.wantSugg)
+				}
+				return
+			}
+			t.Errorf("no warning-level result found for %s", tc.attr)
+		})
+	}
+}

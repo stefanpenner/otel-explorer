@@ -28,10 +28,16 @@ func isHexString(s string) bool {
 	return len(s) > 0
 }
 
+// defaultMaxTraceBytes caps trace backend (Tempo/Jaeger) responses so a
+// hostile or compromised backend cannot OOM the process. 256MB matches a
+// large but realistic trace; the receiver/webhook paths use the same pattern.
+const defaultMaxTraceBytes = 256 * 1024 * 1024
+
 // Client fetches traces from a trace backend HTTP API.
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
+	maxBytes   int64
 }
 
 // New creates a Client for the given backend base URL.
@@ -43,6 +49,7 @@ func New(baseURL string) *Client {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		maxBytes: defaultMaxTraceBytes,
 	}
 }
 
@@ -67,13 +74,16 @@ func (c *Client) FetchTrace(traceID string) ([]sdktrace.ReadOnlySpan, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, c.maxBytes+1))
 		return nil, fmt.Errorf("fetch trace %s: HTTP %d: %s", traceID, resp.StatusCode, string(body))
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, c.maxBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read trace %s response: %w", traceID, err)
+	}
+	if int64(len(body)) > c.maxBytes {
+		return nil, fmt.Errorf("fetch trace %s: response exceeds %d bytes", traceID, c.maxBytes)
 	}
 
 	// Tempo's /api/traces returns OTLP under a top-level "batches" key (tempopb.Trace)

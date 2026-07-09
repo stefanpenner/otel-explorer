@@ -60,7 +60,7 @@ func BuildRunReport(results []analyzer.URLResult, spanRuns []analyzer.SpanRun, c
 		MaxConcurrency:    combined.MaxConcurrency,
 		SuccessRatePct:    parseRatePtr(combined.SuccessRate),
 		JobSuccessRatePct: parseRatePtr(combined.JobSuccessRate),
-		WallClockMs:       maxInt64(globalLatestMs-globalEarliestMs, 0),
+		WallClockMs:       max(globalLatestMs-globalEarliestMs, int64(0)),
 	}
 	// Derive run/job pass/fail counts from the per-run metrics.
 	for _, res := range results {
@@ -315,13 +315,6 @@ func pctText(p *float64) string {
 		return "—"
 	}
 	return strconv.FormatFloat(round1(*p), 'f', -1, 64) + "%"
-}
-
-func maxInt64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 func round1(v float64) float64 { return math.Round(v*10) / 10 }

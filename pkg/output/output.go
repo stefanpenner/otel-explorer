@@ -30,9 +30,3 @@ func boolYesNo(value bool) string {
 	return "no"
 }
 
-func maxInt64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
-}

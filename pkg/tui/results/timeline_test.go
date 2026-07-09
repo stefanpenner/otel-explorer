@@ -456,22 +456,72 @@ func TestComputeChildPositions(t *testing.T) {
 	})
 }
 
-func TestMaxInt(t *testing.T) {
+// TestComputeBarGeometry locks the shared timeline-bar geometry math extracted
+// from the 5 Render*Bar functions. If the helper drifts, all of them drift.
+func TestComputeBarGeometry(t *testing.T) {
 	t.Parallel()
 
-	cases := []struct {
-		a, b, expected int
-	}{
-		{1, 2, 2},
-		{2, 1, 2},
-		{0, 0, 0},
-		{-1, 1, 1},
-		{-5, -3, -3},
-	}
+	now := time.Now()
+	globalStart := now
+	globalEnd := now.Add(10 * time.Second)
+	width := 20
 
-	for _, tc := range cases {
-		t.Run("", func(t *testing.T) {
-			assert.Equal(t, tc.expected, maxInt(tc.a, tc.b))
-		})
-	}
+	t.Run("degenerate inputs return ok=false", func(t *testing.T) {
+		_, ok := computeBarGeometry(TreeItem{}, now, now.Add(-time.Second), width)
+		assert.False(t, ok, "end before start")
+
+		_, ok = computeBarGeometry(TreeItem{}, now, now, width)
+		assert.False(t, ok, "equal start and end")
+
+		_, ok = computeBarGeometry(TreeItem{}, globalStart, globalEnd, 0)
+		assert.False(t, ok, "zero width")
+	})
+
+	t.Run("item at start: startPos=0", func(t *testing.T) {
+		item := TreeItem{StartTime: globalStart, EndTime: globalEnd}
+		geo, ok := computeBarGeometry(item, globalStart, globalEnd, width)
+		assert.True(t, ok)
+		assert.Equal(t, 0, geo.startPos)
+		assert.False(t, geo.isZero)
+	})
+
+	t.Run("zero-duration item flagged, marker clamped to width-1", func(t *testing.T) {
+		mid := globalStart.Add(5 * time.Second)
+		item := TreeItem{StartTime: mid, EndTime: mid}
+		geo, ok := computeBarGeometry(item, globalStart, globalEnd, width)
+		assert.True(t, ok)
+		assert.True(t, geo.isZero)
+		assert.Equal(t, 10, geo.startPos) // 5s/10s * 20 = 10
+
+		// Marker beyond end clamps to last column.
+		late := globalStart.Add(100 * time.Second)
+		item2 := TreeItem{StartTime: late, EndTime: late}
+		geo2, _ := computeBarGeometry(item2, globalStart, globalEnd, width)
+		assert.Equal(t, width-1, geo2.startPos, "marker beyond window clamps to width-1")
+	})
+
+	t.Run("barLength at least 1, clamped to width", func(t *testing.T) {
+		// Tiny sliver in the middle — barLength must still be >= 1.
+		item := TreeItem{
+			StartTime: globalStart.Add(49*time.Millisecond),
+			EndTime:   globalStart.Add(51 * time.Millisecond),
+		}
+		geo, ok := computeBarGeometry(item, globalStart, globalEnd, width)
+		assert.True(t, ok)
+		assert.GreaterOrEqual(t, geo.barLength, 1)
+		assert.LessOrEqual(t, geo.startPos+geo.barLength, width)
+	})
+
+	t.Run("clamps itemStart/itemEnd to global bounds", func(t *testing.T) {
+		// Item extends past both ends → should fill the whole width.
+		item := TreeItem{
+			StartTime: globalStart.Add(-5 * time.Second),
+			EndTime:   globalEnd.Add(5 * time.Second),
+		}
+		geo, ok := computeBarGeometry(item, globalStart, globalEnd, width)
+		assert.True(t, ok)
+		assert.Equal(t, 0, geo.startPos)
+		assert.Equal(t, width, geo.startPos+geo.barLength)
+	})
 }
+

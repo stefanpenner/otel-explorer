@@ -35,6 +35,7 @@ go_test(
         "generic_test.go",
         "lint_test.go",
         "resource_test.go",
+        "rules_fuzz_test.go",
         "rules_test.go",
     ],
     embed = [":enrichment"],

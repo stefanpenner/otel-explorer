@@ -10,7 +10,7 @@ Interactive terminal tool that turns OpenTelemetry traces and CI/CD runs into na
 - `pkg/analyzer/` — trace analysis, diff, spans, trends, metrics, typical runs
 - `pkg/core/` — pipeline types and core abstractions
 - `pkg/enrichment/` — span enrichment (CI/CD, exceptions, feature flags, lint, genai, resources)
-- `pkg/export/` — output rendering (HTML, JSON, Slack, XLSX, DOCX, OTel, Perfetto)
+- `pkg/export/` — output rendering (HTML, JSON, Slack, XLSX, DOCX, OTel)
 - `pkg/ingest/` — trace ingestion (OTLP file, polling, receiver, trace API, webhook, filter)
 - `pkg/logparse/` — log parsing (Gradle, Bazel, setup-job timestamps)
 - `pkg/output/` — terminal output formatting, diff views, trends rendering
@@ -22,24 +22,28 @@ Interactive terminal tool that turns OpenTelemetry traces and CI/CD runs into na
 - `docs/samples/` — sample trace files for testing
 - `scripts/` — verification and demo scripts
 
-## Build & Run
+## Build & Run (Bazel is primary)
 
 ```bash
-go build -o /tmp/ote ./cmd/ote
-go test ./pkg/... ./cmd/...
+bazel run //:gazelle          # after Go import changes
+bazel build //:ote
+bazel run //:ote -- <args>
 ```
 
-No Makefile. Build with `go build` or `bazel build //cmd/ote:ote`.
+`go build` / `go test` are secondary (IDE / quick loop only).
+Do not finish a change until `bazel build //:ote` succeeds.
+No Makefile.
 
 ## Test & Verify
 
 ```bash
-go test ./pkg/... ./cmd/...           # unit + fuzz tests
-OTE=/tmp/ote ./scripts/verify-sources.sh  # golden source verification
+bazel build //:ote                    # required final gate (strict deps)
+bazel test //...                      # when package tests are wired
+go test ./pkg/... ./cmd/...           # fast iteration only — not sufficient alone
+bazel build //:ote && OTE=./bazel-bin/cmd/ote/ote_/ote \
+  ./scripts/verify-sources.sh         # golden source verification
 scripts/check-specs.sh                # TLA+ model checks (skips without a JVM)
 ```
-
-Known failing test: `pkg/ingest/filter` — 2 tests fail (span attrs precedence). Fix before making changes to that package.
 
 ## TLA+ Specs (specs/)
 
@@ -69,9 +73,9 @@ Rules for changes:
 - Go 1.25, module path `github.com/stefanpenner/otel-explorer`
 - TUI built with Bubble Tea (`charmbracelet/bubbles`, `bubbletea`, `lipgloss`)
 - Errors via `cockroachdb/errors`
-- Dual build: `go build` and Bazel (BUILD.bazel files throughout)
+- Dual build: Bazel primary (`BUILD.bazel` throughout); `go build` secondary only
 - Release via goreleaser (`.goreleaser.yml`)
-- 570 test functions, 26 fuzz functions — good coverage, use them
+- 624 test functions, 26 fuzz functions — good coverage, use them
 
 ## Code Conventions
 

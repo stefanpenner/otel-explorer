@@ -155,7 +155,12 @@ func NewClient(context Context, opts ...Option) *Client {
 		// downloads that take >60s would always fail. ResponseHeaderTimeout
 		// still bounds unresponsive servers; per-call context deadlines bound
 		// the rest.
-		baseTransport := http.DefaultTransport.(*http.Transport).Clone()
+		var baseTransport *http.Transport
+		if t, ok := http.DefaultTransport.(*http.Transport); ok {
+			baseTransport = t.Clone()
+		} else {
+			baseTransport = &http.Transport{}
+		}
 		baseTransport.ResponseHeaderTimeout = 60 * time.Second
 		var base http.RoundTripper = baseTransport
 
@@ -431,8 +436,12 @@ func (t *RateLimitedTransport) RoundTrip(req *http.Request) (*http.Response, err
 	if t.Stats != nil {
 		t.Stats.networkRequests.Add(1)
 	}
-	t.Semaphore <- struct{}{}
-	defer func() { <-t.Semaphore }()
+	select {
+	case t.Semaphore <- struct{}{}:
+		defer func() { <-t.Semaphore }()
+	case <-req.Context().Done():
+		return nil, req.Context().Err()
+	}
 
 	if err := t.Limiter.waitIfNeeded(req.Context()); err != nil {
 		return nil, err
@@ -789,6 +798,39 @@ func (c *Client) FetchRepository(ctx context.Context, baseURL string) (*RepoMeta
 
 const maxPages = 500
 
+// paginate fetches all pages from a GitHub list endpoint. It follows the
+// Link "rel=next" header, decoding each page into T and extracting items via
+// the extract callback. The optional onPage callback (pass nil to skip) is
+// invoked after each page with the decoded page and the running item count.
+// `name` identifies the caller in the maxPages-exceeded error.
+func paginate[T any, Item any](
+	ctx context.Context, c *Client, firstURL, accept, name string,
+	extract func(T) []Item,
+	onPage func(page T, fetchedSoFar int),
+) ([]Item, error) {
+	var all []Item
+	nextURL := firstURL
+	for page := 0; nextURL != ""; page++ {
+		if page >= maxPages {
+			return nil, fmt.Errorf("pagination limit of %d exceeded for %s", maxPages, name)
+		}
+		resp, err := fetchWithAuth(ctx, c, nextURL, accept)
+		if err != nil {
+			return nil, err
+		}
+		var data T
+		if err := decodeJSON(resp, &data); err != nil {
+			return nil, err
+		}
+		all = append(all, extract(data)...)
+		if onPage != nil {
+			onPage(data, len(all))
+		}
+		nextURL = parseNextLink(resp.Header.Get("Link"))
+	}
+	return all, nil
+}
+
 func (c *Client) FetchCommitAssociatedPRs(ctx context.Context, owner, repo, sha string) ([]PullAssociated, error) {
 	ctx, span := getTracer().Start(ctx, "FetchCommitAssociatedPRs", trace.WithAttributes(
 		attribute.String("github.owner", owner),
@@ -798,24 +840,8 @@ func (c *Client) FetchCommitAssociatedPRs(ctx context.Context, owner, repo, sha 
 	defer span.End()
 
 	endpoint := fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/%s/pulls?per_page=100", owner, repo, sha)
-	var all []PullAssociated
-	nextURL := endpoint
-	for page := 0; nextURL != ""; page++ {
-		if page >= maxPages {
-			return nil, fmt.Errorf("pagination limit of %d exceeded for FetchCommitAssociatedPRs", maxPages)
-		}
-		resp, err := fetchWithAuth(ctx, c, nextURL, "application/vnd.github+json")
-		if err != nil {
-			return nil, err
-		}
-		var prs []PullAssociated
-		if err := decodeJSON(resp, &prs); err != nil {
-			return nil, err
-		}
-		all = append(all, prs...)
-		nextURL = parseNextLink(resp.Header.Get("Link"))
-	}
-	return all, nil
+	return paginate[[]PullAssociated, PullAssociated](ctx, c, endpoint, "application/vnd.github+json", "FetchCommitAssociatedPRs",
+		func(s []PullAssociated) []PullAssociated { return s }, nil)
 }
 
 func (c *Client) FetchCommit(ctx context.Context, baseURL, sha string) (*CommitResponse, error) {
@@ -887,24 +913,8 @@ func (c *Client) FetchJobsPaginated(ctx context.Context, urlValue string) ([]Job
 	))
 	defer span.End()
 
-	var all []Job
-	nextURL := urlValue
-	for page := 0; nextURL != ""; page++ {
-		if page >= maxPages {
-			return nil, fmt.Errorf("pagination limit of %d exceeded for FetchJobsPaginated", maxPages)
-		}
-		resp, err := fetchWithAuth(ctx, c, nextURL, "")
-		if err != nil {
-			return nil, err
-		}
-		var data JobsResponse
-		if err := decodeJSON(resp, &data); err != nil {
-			return nil, err
-		}
-		all = append(all, data.Jobs...)
-		nextURL = parseNextLink(resp.Header.Get("Link"))
-	}
-	return all, nil
+	return paginate[JobsResponse, Job](ctx, c, urlValue, "", "FetchJobsPaginated",
+		func(r JobsResponse) []Job { return r.Jobs }, nil)
 }
 
 func fetchWorkflowRunsPaginated(ctx context.Context, c *Client, urlValue string, onPage func(fetched, total int)) ([]WorkflowRun, error) {
@@ -913,27 +923,15 @@ func fetchWorkflowRunsPaginated(ctx context.Context, c *Client, urlValue string,
 	))
 	defer span.End()
 
-	var all []WorkflowRun
-	nextURL := urlValue
-	for page := 0; nextURL != ""; page++ {
-		if page >= maxPages {
-			return nil, fmt.Errorf("pagination limit of %d exceeded for fetchWorkflowRunsPaginated", maxPages)
+	// Adapt the caller's (fetched, total) callback to paginate's page callback.
+	var pageCB func(WorkflowRunsResponse, int)
+	if onPage != nil {
+		pageCB = func(data WorkflowRunsResponse, fetched int) {
+			onPage(fetched, data.TotalCount)
 		}
-		resp, err := fetchWithAuth(ctx, c, nextURL, "")
-		if err != nil {
-			return nil, err
-		}
-		var data WorkflowRunsResponse
-		if err := decodeJSON(resp, &data); err != nil {
-			return nil, err
-		}
-		all = append(all, data.WorkflowRuns...)
-		if onPage != nil {
-			onPage(len(all), data.TotalCount)
-		}
-		nextURL = parseNextLink(resp.Header.Get("Link"))
 	}
-	return all, nil
+	return paginate[WorkflowRunsResponse, WorkflowRun](ctx, c, urlValue, "", "fetchWorkflowRunsPaginated",
+		func(r WorkflowRunsResponse) []WorkflowRun { return r.WorkflowRuns }, pageCB)
 }
 
 func fetchReviewsPaginated(ctx context.Context, c *Client, urlValue string) ([]Review, error) {
@@ -942,24 +940,8 @@ func fetchReviewsPaginated(ctx context.Context, c *Client, urlValue string) ([]R
 	))
 	defer span.End()
 
-	var all []Review
-	nextURL := urlValue
-	for page := 0; nextURL != ""; page++ {
-		if page >= maxPages {
-			return nil, fmt.Errorf("pagination limit of %d exceeded for fetchReviewsPaginated", maxPages)
-		}
-		resp, err := fetchWithAuth(ctx, c, nextURL, "")
-		if err != nil {
-			return nil, err
-		}
-		var data []Review
-		if err := decodeJSON(resp, &data); err != nil {
-			return nil, err
-		}
-		all = append(all, data...)
-		nextURL = parseNextLink(resp.Header.Get("Link"))
-	}
-	return all, nil
+	return paginate[[]Review, Review](ctx, c, urlValue, "", "fetchReviewsPaginated",
+		func(s []Review) []Review { return s }, nil)
 }
 
 func fetchCommentsPaginated(ctx context.Context, c *Client, urlValue string) ([]Review, error) {
@@ -968,40 +950,27 @@ func fetchCommentsPaginated(ctx context.Context, c *Client, urlValue string) ([]
 	))
 	defer span.End()
 
-	var all []Review
-	nextURL := urlValue
-	for page := 0; nextURL != ""; page++ {
-		if page >= maxPages {
-			return nil, fmt.Errorf("pagination limit of %d exceeded for fetchCommentsPaginated", maxPages)
-		}
-		resp, err := fetchWithAuth(ctx, c, nextURL, "")
-		if err != nil {
-			return nil, err
-		}
-
-		type Comment struct {
-			ID        int64    `json:"id"`
-			User      UserInfo `json:"user"`
-			Body      string   `json:"body"`
-			CreatedAt string   `json:"created_at"`
-			HTMLURL   string   `json:"html_url"`
-		}
-		var data []Comment
-		if err := decodeJSON(resp, &data); err != nil {
-			return nil, err
-		}
-		for _, c := range data {
-			all = append(all, Review{
-				ID:          c.ID,
-				User:        c.User,
-				Body:        c.Body,
-				SubmittedAt: c.CreatedAt,
-				HTMLURL:     c.HTMLURL,
-			})
-		}
-		nextURL = parseNextLink(resp.Header.Get("Link"))
+	type Comment struct {
+		ID        int64    `json:"id"`
+		User      UserInfo `json:"user"`
+		Body      string   `json:"body"`
+		CreatedAt string   `json:"created_at"`
+		HTMLURL   string   `json:"html_url"`
 	}
-	return all, nil
+	return paginate[[]Comment, Review](ctx, c, urlValue, "", "fetchCommentsPaginated",
+		func(comments []Comment) []Review {
+			reviews := make([]Review, len(comments))
+			for i, cm := range comments {
+				reviews[i] = Review{
+					ID:          cm.ID,
+					User:        cm.User,
+					Body:        cm.Body,
+					SubmittedAt: cm.CreatedAt,
+					HTMLURL:     cm.HTMLURL,
+				}
+			}
+			return reviews
+		}, nil)
 }
 
 func parseNextLink(linkHeader string) string {
@@ -1128,26 +1097,11 @@ func (c *Client) FetchCheckRunsForCommit(ctx context.Context, owner, repo, sha s
 	defer span.End()
 
 	endpoint := fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/%s/check-runs?per_page=100", owner, repo, sha)
-	var all []CheckRun
-	nextURL := endpoint
-	for page := 0; nextURL != ""; page++ {
-		if page >= maxPages {
-			return nil, fmt.Errorf("pagination limit of %d exceeded for FetchCheckRunsForCommit", maxPages)
-		}
-		resp, err := fetchWithAuth(ctx, c, nextURL, "")
-		if err != nil {
-			return nil, err
-		}
-		var result struct {
-			CheckRuns []CheckRun `json:"check_runs"`
-		}
-		if err := decodeJSON(resp, &result); err != nil {
-			return nil, err
-		}
-		all = append(all, result.CheckRuns...)
-		nextURL = parseNextLink(resp.Header.Get("Link"))
+	type checkRunsPage struct {
+		CheckRuns []CheckRun `json:"check_runs"`
 	}
-	return all, nil
+	return paginate[checkRunsPage, CheckRun](ctx, c, endpoint, "", "FetchCheckRunsForCommit",
+		func(r checkRunsPage) []CheckRun { return r.CheckRuns }, nil)
 }
 
 func (c *Client) FetchAnnotations(ctx context.Context, owner, repo string, checkRunID int64) ([]Annotation, error) {
@@ -1159,24 +1113,8 @@ func (c *Client) FetchAnnotations(ctx context.Context, owner, repo string, check
 	defer span.End()
 
 	endpoint := fmt.Sprintf("https://api.github.com/repos/%s/%s/check-runs/%d/annotations?per_page=100", owner, repo, checkRunID)
-	var all []Annotation
-	nextURL := endpoint
-	for page := 0; nextURL != ""; page++ {
-		if page >= maxPages {
-			return nil, fmt.Errorf("pagination limit of %d exceeded for FetchAnnotations", maxPages)
-		}
-		resp, err := fetchWithAuth(ctx, c, nextURL, "")
-		if err != nil {
-			return nil, err
-		}
-		var annotations []Annotation
-		if err := decodeJSON(resp, &annotations); err != nil {
-			return nil, err
-		}
-		all = append(all, annotations...)
-		nextURL = parseNextLink(resp.Header.Get("Link"))
-	}
-	return all, nil
+	return paginate[[]Annotation, Annotation](ctx, c, endpoint, "", "FetchAnnotations",
+		func(s []Annotation) []Annotation { return s }, nil)
 }
 
 func (c *Client) ListArtifacts(ctx context.Context, owner, repo string, runID int64) ([]Artifact, error) {
@@ -1188,26 +1126,11 @@ func (c *Client) ListArtifacts(ctx context.Context, owner, repo string, runID in
 	defer span.End()
 
 	endpoint := fmt.Sprintf("https://api.github.com/repos/%s/%s/actions/runs/%d/artifacts?per_page=100", owner, repo, runID)
-	var all []Artifact
-	nextURL := endpoint
-	for page := 0; nextURL != ""; page++ {
-		if page >= maxPages {
-			return nil, fmt.Errorf("pagination limit of %d exceeded for ListArtifacts", maxPages)
-		}
-		resp, err := fetchWithAuth(ctx, c, nextURL, "")
-		if err != nil {
-			return nil, err
-		}
-		var result struct {
-			Artifacts []Artifact `json:"artifacts"`
-		}
-		if err := decodeJSON(resp, &result); err != nil {
-			return nil, err
-		}
-		all = append(all, result.Artifacts...)
-		nextURL = parseNextLink(resp.Header.Get("Link"))
+	type artifactsPage struct {
+		Artifacts []Artifact `json:"artifacts"`
 	}
-	return all, nil
+	return paginate[artifactsPage, Artifact](ctx, c, endpoint, "", "ListArtifacts",
+		func(r artifactsPage) []Artifact { return r.Artifacts }, nil)
 }
 
 func (c *Client) DownloadArtifact(ctx context.Context, downloadURL string) ([]byte, error) {

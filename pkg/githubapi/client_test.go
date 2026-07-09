@@ -283,6 +283,79 @@ func TestFetchAnnotationsFollowsPagination(t *testing.T) {
 	assert.Equal(t, "second", annotations[1].Message)
 }
 
+// TestPaginate is a focused unit test for the generic pagination helper:
+// it verifies Link-header following, item extraction, and the onPage callback.
+func TestPaginate(t *testing.T) {
+	t.Parallel()
+
+	t.Run("follows Link header and extracts items", func(t *testing.T) {
+		t.Parallel()
+		page1 := `[{"id":1},{"id":2}]`
+		page2 := `[{"id":3}]`
+		nextURL := "https://api.github.com/x?page=2"
+		calls := 0
+		rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			if req.URL.String() == nextURL {
+				return jsonResponse(req, page2, nil), nil
+			}
+			h := http.Header{}
+			h.Set("Link", fmt.Sprintf(`<%s>; rel="next"`, nextURL))
+			return jsonResponse(req, page1, h), nil
+		})
+		c := NewClient(NewContext("token"), WithHTTPClient(&http.Client{Transport: rt}))
+
+		items, err := paginate[[]idItem, idItem](context.Background(), c, "https://api.github.com/x", "", "test",
+			func(s []idItem) []idItem { return s }, nil)
+		assert.NoError(t, err)
+		assert.Len(t, items, 3)
+		assert.Equal(t, int64(1), items[0].ID)
+		assert.Equal(t, int64(3), items[2].ID)
+		assert.Equal(t, 2, calls)
+	})
+
+	t.Run("onPage callback fires with page data and running count", func(t *testing.T) {
+		t.Parallel()
+		type wrapped struct {
+			Items []idItem `json:"items"`
+			Total int      `json:"total_count"`
+		}
+		rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(req, `{"items":[{"id":1}],"total_count":2}`, nil), nil
+		})
+		c := NewClient(NewContext("token"), WithHTTPClient(&http.Client{Transport: rt}))
+
+		var seenTotals []int
+		var seenCounts []int
+		_, err := paginate[wrapped, idItem](context.Background(), c, "https://api.github.com/x", "", "test",
+			func(p wrapped) []idItem { return p.Items },
+			func(p wrapped, fetchedSoFar int) {
+				seenTotals = append(seenTotals, p.Total)
+				seenCounts = append(seenCounts, fetchedSoFar)
+			})
+		assert.NoError(t, err)
+		assert.Equal(t, []int{2}, seenTotals)
+		assert.Equal(t, []int{1}, seenCounts)
+	})
+
+	t.Run("empty first page returns no items, no error", func(t *testing.T) {
+		t.Parallel()
+		rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(req, `[]`, nil), nil
+		})
+		c := NewClient(NewContext("token"), WithHTTPClient(&http.Client{Transport: rt}))
+
+		items, err := paginate[[]idItem, idItem](context.Background(), c, "https://api.github.com/x", "", "test",
+			func(s []idItem) []idItem { return s }, nil)
+		assert.NoError(t, err)
+		assert.Empty(t, items)
+	})
+}
+
+type idItem struct {
+	ID int64 `json:"id"`
+}
+
 func TestFetchCommitAssociatedPRsFollowsPagination(t *testing.T) {
 	client := newPaginatedTestClient(t,
 		`[{"number": 1, "title": "one"}]`,
@@ -350,3 +423,47 @@ func (b *drainTrackingBody) Read(p []byte) (int, error) {
 }
 
 func (b *drainTrackingBody) Close() error { return nil }
+
+// TestNewClientDoesNotPanicOnNonTransportDefault proves the boundary
+// containment rule for http.DefaultTransport: if something swaps in a
+// non-*http.Transport default, NewClient must degrade to a fresh transport
+// instead of panicking on the type assertion.
+func TestNewClientDoesNotPanicOnNonTransportDefault(t *testing.T) {
+	orig := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = orig })
+	http.DefaultTransport = roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("should not be called")
+	})
+
+	assert.NotPanics(t, func() {
+		c := NewClient(NewContext("t"), WithMaxConcurrency(1))
+		_ = c
+	})
+}
+
+// TestRoundTripSemaphoreAcquireRespectsContext proves the cancelled-request
+// boundary: when every concurrency slot is held, a request whose context is
+// already cancelled returns ctx.Err() instead of blocking for a slot.
+func TestRoundTripSemaphoreAcquireRespectsContext(t *testing.T) {
+	// Capacity 1, pre-fill so the slot is held.
+	sem := make(chan struct{}, 1)
+	sem <- struct{}{}
+
+	transport := &RateLimitedTransport{
+		Base: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			t.Fatal("Base should not be reached when context is cancelled")
+			return nil, nil
+		}),
+		Limiter:   &rateLimiter{remaining: 5000, resetTime: time.Now().Add(time.Hour)},
+		Semaphore: sem,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/test", nil)
+	assert.NoError(t, err)
+
+	resp, err := transport.RoundTrip(req)
+	assert.Nil(t, resp)
+	assert.ErrorIs(t, err, context.Canceled)
+}

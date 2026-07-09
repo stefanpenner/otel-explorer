@@ -17,6 +17,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/stefanpenner/otel-explorer/pkg/utils"
 )
 
 type jaegerResponse struct {
@@ -64,7 +66,8 @@ type jaegerLog struct {
 }
 
 // ParseJaeger reads Jaeger API JSON response and returns ReadOnlySpans.
-func ParseJaeger(r io.Reader) ([]sdktrace.ReadOnlySpan, error) {
+func ParseJaeger(r io.Reader) (spans []sdktrace.ReadOnlySpan, err error) {
+	defer utils.RecoverBoundary0(&err)
 	var resp jaegerResponse
 	if err := json.NewDecoder(r).Decode(&resp); err != nil {
 		return nil, fmt.Errorf("decode Jaeger JSON: %w", err)

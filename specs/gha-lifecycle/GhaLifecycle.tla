@@ -43,7 +43,7 @@
 (* behind its own Bug* flag so the MCMutation* configs keep proving the   *)
 (* invariants have teeth:                                                  *)
 (*   Bug                  - drops the `!isPending` guard on failed-job     *)
-(*                          counting (analyzer.go:877)                     *)
+(*                          counting (analyzer.go:903)                     *)
 (*   BugPendingRunFailed  - pending runs counted failed (old :296-300)     *)
 (*   BugDanglingLink      - retry links added unconditionally (old         *)
 (*                          :609-623 / :732-746)                           *)
@@ -58,7 +58,7 @@
 EXTENDS Naturals, FiniteSets, TLC
 
 CONSTANTS
-  Bug,                  \* TRUE disables the isPending guard at analyzer.go:877
+  Bug,                  \* TRUE disables the isPending guard at analyzer.go:903
   BugPendingRunFailed,  \* TRUE reverts run classification to two-way
   BugDanglingLink,      \* TRUE adds retry links unconditionally
   BugQueueUngated,      \* TRUE drops the !isPending gate on queue time
@@ -222,25 +222,25 @@ GhReRun ==
 -----------------------------------------------------------------------------
 (* --------------------------- ANALYZER helpers -------------------------- *)
 
-\* analyzer.go:809-811  isJobPending: status != completed || no completed_at
+\* analyzer.go:816-818  isJobPending: status != completed || no completed_at
 IsPending(jr) == jr.status /= "completed" \/ ~jr.hasCompletedAt
 
-\* analyzer.go:877  if !isPending && (concl == failure || concl == timed_out)
+\* analyzer.go:903  if !isPending && (concl == failure || concl == timed_out)
 \* Bug=TRUE drops the isPending guard (the mutation).
 CountsFailed(jr) ==
   /\ (Bug \/ ~IsPending(jr))
   /\ jr.concl \in {"failure", "timed_out"}
 
-\* analyzer.go:904-906  countsQueueTime: !isPending && conclusion gate.
+\* analyzer.go:924-926  countsQueueTime: !isPending && conclusion gate.
 \* BugQueueUngated=TRUE restores the old conclusion-only gate (Finding 3).
 CountsQueue(jr) ==
   /\ (BugQueueUngated \/ ~IsPending(jr))
   /\ jr.concl \notin {"skipped", "cancelled"}
 
-\* analyzer.go:836-838  jobs with StartedAt == "" have no timing to process
+\* analyzer.go:867  jobs with StartedAt == "" have no timing to process
 Started(jr) == jr.started
 
-\* analyzer.go:789-806 conclusionFromJobs: failure > timed_out > cancelled
+\* analyzer.go:796-811 conclusionFromJobs: failure > timed_out > cancelled
 \* > success.  BugTimedOutSuccess=TRUE restores the old derivation that
 \* ignored timed_out (Finding 4).
 DerivedConcl(S) ==
@@ -250,7 +250,7 @@ DerivedConcl(S) ==
   ELSE IF \E j \in JobIds : S[j].concl = "cancelled" THEN "cancelled"
   ELSE "success"
 
-\* analyzer.go:822-834  pending classification runs BEFORE the never-started
+\* analyzer.go:853-864  pending classification runs BEFORE the never-started
 \* early return, so unstarted (still queued) jobs are visible as pending.
 \* BugUnstartedInvisible=TRUE restores the old order (discovery note).
 PendingOf(a, S) ==
@@ -376,7 +376,7 @@ Spec == Init /\ [][Next]_vars
 (*   [code-documented] cited to a code comment/assertion/test              *)
 (*   [proposed]        author-proposed; the user owns correctness props    *)
 
-\* [code-documented] analyzer.go:876 "Only count genuine failures" - a job
+\* [code-documented] analyzer.go:903 "Only count genuine failures" - a job
 \* counted pending must never also be counted failed.
 InvPendingNeverFailed == countedPending \cap countedFailed = {}
 
@@ -397,14 +397,14 @@ InvLinkTargetsEmitted ==
   aPhase = "done" => \A l \in links : l[2] \in emitted
 
 \* [proposed - discovery hint] queue time should only be counted for jobs
-\* that completed.  Finding 3 - FIXED 2026-07-06 (analyzer.go:904-906
+\* that completed.  Finding 3 - FIXED 2026-07-06 (analyzer.go:924-926
 \* countsQueueTime gate); fails with BugQueueUngated=TRUE (MCMutation3).
 InvQueueOnlyCompletedJobs ==
   \A p \in countedQueue : aJobs[p[1]].jobs[p[2]].status = "completed"
 
 \* [proposed] a previous attempt whose jobs timed out must not get a
 \* "success" attempt span.  Finding 4 - FIXED 2026-07-06
-\* (conclusionFromJobs analyzer.go:789-806 handles timed_out, consistent
+\* (conclusionFromJobs analyzer.go:796-811 handles timed_out, consistent
 \* with FailedJobs :877); fails with BugTimedOutSuccess=TRUE (MCMutation4).
 InvTimedOutAttemptNotSuccess ==
   \A a \in emitted :
@@ -415,7 +415,7 @@ InvTimedOutAttemptNotSuccess ==
 
 \* [proposed - discovery note, FIXED 2026-07-06] every pending job in the
 \* latest fetched snapshot is visible in PendingJobs, including jobs that
-\* never started (analyzer.go:822-834 classifies before the early return).
+\* never started (analyzer.go:853-864 classifies before the early return).
 \* Fails with BugUnstartedInvisible=TRUE (MCMutation5).
 InvPendingJobsVisible ==
   aPhase = "done" =>
@@ -424,7 +424,7 @@ InvPendingJobsVisible ==
         => <<aRun.attempt, j>> \in countedPending
 
 \* [proposed, added 2026-07-06] a COMPLETED run's emitted span never
-\* carries an empty conclusion: analyzer.go:542-548 falls back to the
+\* carries an empty conclusion: analyzer.go:546-548 falls back to the
 \* jobs-derived conclusion on the empty-conclusion fault.
 \* Fails with BugNoConclFallback=TRUE (MCMutation6).
 InvCompletedRunSpanHasConclusion ==

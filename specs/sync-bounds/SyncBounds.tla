@@ -99,7 +99,7 @@ SetMinZ(S) == IF S = {} THEN 0 ELSE CHOOSE m \in S : \A x \in S : m <= x
 \* SQL: SELECT MAX(created_at) FROM runs WHERE synced=1   (store.go:299)
 SyncedSet == {r \in Runs : db[r].present /\ db[r].synced = 1}
 WM  == SetMaxZ({db[r].created : r \in SyncedSet})
-\* SQL: SELECT MIN(created_at) ... created_at>0 AND synced=1 (store.go:418)
+\* SQL: SELECT MIN(created_at) ... created_at>0 AND synced=1 (store.go:433)
 OLD == SetMinZ({db[r].created : r \in SyncedSet})
 
 \* requestStart = now - days (sync.go:55), clamped into the model domain

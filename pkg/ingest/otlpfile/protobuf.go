@@ -20,6 +20,8 @@ import (
 	v1common "go.opentelemetry.io/proto/otlp/common/v1"
 	v1 "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/stefanpenner/otel-explorer/pkg/utils"
 )
 
 // ParseProtobuf reads length-prefixed binary protobuf messages from a reader
@@ -64,7 +66,8 @@ func ParseProtobuf(r io.Reader) ([]sdktrace.ReadOnlySpan, error) {
 // ParseProtobufRequest parses a bare protobuf-encoded ExportTraceServiceRequest
 // (wire-compatible with TracesData) as sent in an OTLP/HTTP request body.
 // Unlike ParseProtobuf, the message has no length prefix.
-func ParseProtobufRequest(data []byte) ([]sdktrace.ReadOnlySpan, error) {
+func ParseProtobufRequest(data []byte) (spans []sdktrace.ReadOnlySpan, err error) {
+	defer utils.RecoverBoundary0(&err)
 	var td v1.TracesData
 	if err := proto.Unmarshal(data, &td); err != nil {
 		return nil, fmt.Errorf("unmarshaling protobuf TracesData: %w", err)

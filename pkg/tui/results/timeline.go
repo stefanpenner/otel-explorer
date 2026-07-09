@@ -85,19 +85,25 @@ func getMarkerWidth(char string) int {
 	return GetCharWidth(char)
 }
 
-// RenderTimelineBar renders a timeline bar for a tree item
-func RenderTimelineBar(item TreeItem, globalStart, globalEnd time.Time, width int, url string) string {
-	if globalEnd.Before(globalStart) || globalEnd.Equal(globalStart) || width <= 0 {
-		return strings.Repeat(" ", width)
-	}
+// barGeometry holds the computed columns for a timeline bar.
+type barGeometry struct {
+	startPos  int  // 0-based start column
+	barLength int  // number of columns for the bar (>=1)
+	isZero    bool // true → render as a 1-column marker at startPos
+}
 
+// computeBarGeometry is the shared math for all 5 timeline-bar renderers:
+// guard against degenerate windows, clamp item times to global bounds, detect
+// zero-duration items, and compute start/length with minimum-1 and width
+// clamping. Returns ok=false for degenerate inputs (caller renders blanks).
+func computeBarGeometry(item TreeItem, globalStart, globalEnd time.Time, width int) (barGeometry, bool) {
+	if globalEnd.Before(globalStart) || globalEnd.Equal(globalStart) || width <= 0 {
+		return barGeometry{}, false
+	}
 	totalDuration := globalEnd.Sub(globalStart)
 
-	// Calculate bar position
 	itemStart := item.StartTime
 	itemEnd := item.EndTime
-
-	// Clamp to global bounds
 	if itemStart.Before(globalStart) {
 		itemStart = globalStart
 	}
@@ -105,200 +111,107 @@ func RenderTimelineBar(item TreeItem, globalStart, globalEnd time.Time, width in
 		itemEnd = globalEnd
 	}
 
-	// Handle 0-duration items (show as a marker at start position)
-	isZeroDuration := itemEnd.Before(itemStart) || itemEnd.Equal(itemStart)
-	if isZeroDuration {
-		// Get character and style based on item type/status
-		markerChar, style := getBarStyle(item)
-		// For non-markers, use | as the zero-duration indicator
-		if !item.Hints.IsMarker {
-			markerChar = "|"
-		}
-
-		// Calculate position for the marker
+	if itemEnd.Before(itemStart) || itemEnd.Equal(itemStart) {
 		startOffset := itemStart.Sub(globalStart)
 		startPos := int(float64(startOffset) / float64(totalDuration) * float64(width))
-
-		return renderMarker(markerChar, style, startPos, width, url, true)
+		if startPos < 0 {
+			startPos = 0
+		}
+		if startPos > width-1 {
+			startPos = width - 1
+		}
+		return barGeometry{startPos: startPos, barLength: 1, isZero: true}, true
 	}
 
 	startOffset := itemStart.Sub(globalStart)
 	endOffset := itemEnd.Sub(globalStart)
-
 	startPos := int(float64(startOffset) / float64(totalDuration) * float64(width))
 	endPos := int(float64(endOffset) / float64(totalDuration) * float64(width))
 
-	// Ensure at least 1 character bar
 	barLength := endPos - startPos
 	if barLength < 1 {
 		barLength = 1
 	}
-
-	// Clamp startPos to valid range [0, width-1]
 	if startPos < 0 {
 		startPos = 0
 	}
 	if startPos > width-1 {
 		startPos = width - 1
 	}
-
-	// Clamp barLength to fit within remaining space
 	if startPos+barLength > width {
 		barLength = width - startPos
 	}
 	if barLength < 1 {
 		barLength = 1
 	}
+	return barGeometry{startPos: startPos, barLength: barLength, isZero: false}, true
+}
 
-	// Choose bar character and style based on status
+// RenderTimelineBar renders a timeline bar for a tree item
+func RenderTimelineBar(item TreeItem, globalStart, globalEnd time.Time, width int, url string) string {
+	geo, ok := computeBarGeometry(item, globalStart, globalEnd, width)
+	if !ok {
+		return strings.Repeat(" ", width)
+	}
+	if geo.isZero {
+		markerChar, style := getBarStyle(item)
+		if !item.Hints.IsMarker {
+			markerChar = "|"
+		}
+		return renderMarker(markerChar, style, geo.startPos, width, url, true)
+	}
+
 	barChar, style := getBarStyle(item)
-
-	// Build the bar with optional duration label
-	leftPad := strings.Repeat(" ", startPos)
-	bar := buildBarWithDuration(barChar, barLength, item, style, nil)
-	rightPad := strings.Repeat(" ", width-startPos-barLength)
-
-	// Wrap only the bar in hyperlink
+	leftPad := strings.Repeat(" ", geo.startPos)
+	bar := buildBarWithDuration(barChar, geo.barLength, item, style, nil)
+	rightPad := strings.Repeat(" ", width-geo.startPos-geo.barLength)
 	return leftPad + timelineHyperlink(url, bar) + rightPad
 }
 
 // RenderTimelineBarSelected renders a timeline bar with dimmed colors and selection background
 func RenderTimelineBarSelected(item TreeItem, globalStart, globalEnd time.Time, width int, url string) string {
-	if globalEnd.Before(globalStart) || globalEnd.Equal(globalStart) || width <= 0 {
+	geo, ok := computeBarGeometry(item, globalStart, globalEnd, width)
+	if !ok {
 		return SelectedBgStyle.Render(strings.Repeat(" ", width))
 	}
-
-	totalDuration := globalEnd.Sub(globalStart)
-
-	// Calculate bar position
-	itemStart := item.StartTime
-	itemEnd := item.EndTime
-
-	// Clamp to global bounds
-	if itemStart.Before(globalStart) {
-		itemStart = globalStart
-	}
-	if itemEnd.After(globalEnd) {
-		itemEnd = globalEnd
-	}
-
-	// Handle 0-duration items
-	isZeroDuration := itemEnd.Before(itemStart) || itemEnd.Equal(itemStart)
-	if isZeroDuration {
+	if geo.isZero {
 		markerChar, style := getBarStyleSelected(item)
 		if !item.Hints.IsMarker {
 			markerChar = "|"
 		}
-
-		startOffset := itemStart.Sub(globalStart)
-		startPos := int(float64(startOffset) / float64(totalDuration) * float64(width))
-
-		return renderMarker(markerChar, style, startPos, width, url, true)
-	}
-
-	startOffset := itemStart.Sub(globalStart)
-	endOffset := itemEnd.Sub(globalStart)
-
-	startPos := int(float64(startOffset) / float64(totalDuration) * float64(width))
-	endPos := int(float64(endOffset) / float64(totalDuration) * float64(width))
-
-	barLength := endPos - startPos
-	if barLength < 1 {
-		barLength = 1
-	}
-
-	if startPos < 0 {
-		startPos = 0
-	}
-	if startPos > width-1 {
-		startPos = width - 1
-	}
-	if startPos+barLength > width {
-		barLength = width - startPos
-	}
-	if barLength < 1 {
-		barLength = 1
+		return renderMarker(markerChar, style, geo.startPos, width, url, true)
 	}
 
 	barChar, style := getBarStyleSelected(item)
-
-	// Use a bright label style so duration text is visible on the selection background
 	labelStyle := lipgloss.NewStyle().Foreground(ColorWhite).Background(ColorSelectionBg)
 
-	// Apply selection background to padding and bar
-	leftPad := SelectedBgStyle.Render(strings.Repeat(" ", startPos))
-	bar := buildBarWithDuration(barChar, barLength, item, style, &labelStyle)
-	rightPad := SelectedBgStyle.Render(strings.Repeat(" ", width-startPos-barLength))
-
+	leftPad := SelectedBgStyle.Render(strings.Repeat(" ", geo.startPos))
+	bar := buildBarWithDuration(barChar, geo.barLength, item, style, &labelStyle)
+	rightPad := SelectedBgStyle.Render(strings.Repeat(" ", width-geo.startPos-geo.barLength))
 	return leftPad + timelineHyperlink(url, bar) + rightPad
 }
 
 // renderTimelineBarWithBg renders a timeline bar with normal colors but applies
 // bgStyle to the empty space (left/right padding) for a subtle row tint.
 func renderTimelineBarWithBg(item TreeItem, globalStart, globalEnd time.Time, width int, url string, bgStyle lipgloss.Style) string {
-	if globalEnd.Before(globalStart) || globalEnd.Equal(globalStart) || width <= 0 {
+	geo, ok := computeBarGeometry(item, globalStart, globalEnd, width)
+	if !ok {
 		return bgStyle.Render(strings.Repeat(" ", width))
 	}
-
-	totalDuration := globalEnd.Sub(globalStart)
-	itemStart := item.StartTime
-	itemEnd := item.EndTime
-
-	if itemStart.Before(globalStart) {
-		itemStart = globalStart
-	}
-	if itemEnd.After(globalEnd) {
-		itemEnd = globalEnd
-	}
-
-	isZeroDuration := itemEnd.Before(itemStart) || itemEnd.Equal(itemStart)
-	if isZeroDuration {
+	if geo.isZero {
 		markerChar, style := getBarStyle(item)
 		if !item.Hints.IsMarker {
 			markerChar = "|"
 		}
-		startOffset := itemStart.Sub(globalStart)
-		startPos := int(float64(startOffset) / float64(totalDuration) * float64(width))
-		// Render marker with bg on padding
-		if startPos < 0 {
-			startPos = 0
-		}
-		if startPos >= width {
-			startPos = width - 1
-		}
-		leftPad := bgStyle.Render(strings.Repeat(" ", startPos))
-		rightPad := bgStyle.Render(strings.Repeat(" ", width-startPos-1))
+		leftPad := bgStyle.Render(strings.Repeat(" ", geo.startPos))
+		rightPad := bgStyle.Render(strings.Repeat(" ", width-geo.startPos-1))
 		return leftPad + style.Render(markerChar) + rightPad
 	}
 
-	startOffset := itemStart.Sub(globalStart)
-	endOffset := itemEnd.Sub(globalStart)
-	startPos := int(float64(startOffset) / float64(totalDuration) * float64(width))
-	endPos := int(float64(endOffset) / float64(totalDuration) * float64(width))
-
-	barLength := endPos - startPos
-	if barLength < 1 {
-		barLength = 1
-	}
-	if startPos < 0 {
-		startPos = 0
-	}
-	if startPos > width-1 {
-		startPos = width - 1
-	}
-	if startPos+barLength > width {
-		barLength = width - startPos
-	}
-	if barLength < 1 {
-		barLength = 1
-	}
-
 	barChar, style := getBarStyle(item)
-
-	leftPad := bgStyle.Render(strings.Repeat(" ", startPos))
-	bar := strings.Repeat(barChar, barLength)
-	rightPad := bgStyle.Render(strings.Repeat(" ", width-startPos-barLength))
-
+	leftPad := bgStyle.Render(strings.Repeat(" ", geo.startPos))
+	bar := strings.Repeat(barChar, geo.barLength)
+	rightPad := bgStyle.Render(strings.Repeat(" ", width-geo.startPos-geo.barLength))
 	styledBar := style.Render(bar)
 	return leftPad + timelineHyperlink(url, styledBar) + rightPad
 }
@@ -639,125 +552,43 @@ func renderTimelineBarWithChildrenBg(item TreeItem, globalStart, globalEnd time.
 // RenderTimelineBarDimmed renders a timeline bar in gray for items after the logical end.
 // It preserves the bar shape but uses BarSkippedStyle (gray) for all elements.
 func RenderTimelineBarDimmed(item TreeItem, globalStart, globalEnd time.Time, width int) string {
-	if globalEnd.Before(globalStart) || globalEnd.Equal(globalStart) || width <= 0 {
+	geo, ok := computeBarGeometry(item, globalStart, globalEnd, width)
+	if !ok {
 		return strings.Repeat(" ", width)
 	}
-
-	totalDuration := globalEnd.Sub(globalStart)
-
-	itemStart := item.StartTime
-	itemEnd := item.EndTime
-
-	if itemStart.Before(globalStart) {
-		itemStart = globalStart
-	}
-	if itemEnd.After(globalEnd) {
-		itemEnd = globalEnd
-	}
-
-	// Handle 0-duration items
-	isZeroDuration := itemEnd.Before(itemStart) || itemEnd.Equal(itemStart)
-	if isZeroDuration {
-		startOffset := itemStart.Sub(globalStart)
-		startPos := int(float64(startOffset) / float64(totalDuration) * float64(width))
+	if geo.isZero {
 		markerChar := "|"
 		if item.Hints.IsMarker {
 			markerChar, _ = getBarStyle(item)
 		}
-		return renderMarker(markerChar, BarSkippedStyle, startPos, width, "", true)
+		return renderMarker(markerChar, BarSkippedStyle, geo.startPos, width, "", true)
 	}
 
-	startOffset := itemStart.Sub(globalStart)
-	endOffset := itemEnd.Sub(globalStart)
-
-	startPos := int(float64(startOffset) / float64(totalDuration) * float64(width))
-	endPos := int(float64(endOffset) / float64(totalDuration) * float64(width))
-
-	barLength := endPos - startPos
-	if barLength < 1 {
-		barLength = 1
-	}
-	if startPos < 0 {
-		startPos = 0
-	}
-	if startPos > width-1 {
-		startPos = width - 1
-	}
-	if startPos+barLength > width {
-		barLength = width - startPos
-	}
-	if barLength < 1 {
-		barLength = 1
-	}
-
-	// Use the normal bar character but render in gray
 	barChar, _ := getBarStyle(item)
-
-	leftPad := strings.Repeat(" ", startPos)
-	bar := strings.Repeat(barChar, barLength)
-	rightPad := strings.Repeat(" ", width-startPos-barLength)
-
+	leftPad := strings.Repeat(" ", geo.startPos)
+	bar := strings.Repeat(barChar, geo.barLength)
+	rightPad := strings.Repeat(" ", width-geo.startPos-geo.barLength)
 	return leftPad + BarSkippedStyle.Render(bar) + rightPad
 }
 
 // RenderTimelineBarDimmedSelected renders a dimmed timeline bar with selection background
 func RenderTimelineBarDimmedSelected(item TreeItem, globalStart, globalEnd time.Time, width int) string {
-	if globalEnd.Before(globalStart) || globalEnd.Equal(globalStart) || width <= 0 {
+	geo, ok := computeBarGeometry(item, globalStart, globalEnd, width)
+	if !ok {
 		return SelectedBgStyle.Render(strings.Repeat(" ", width))
 	}
-
-	totalDuration := globalEnd.Sub(globalStart)
-
-	itemStart := item.StartTime
-	itemEnd := item.EndTime
-
-	if itemStart.Before(globalStart) {
-		itemStart = globalStart
-	}
-	if itemEnd.After(globalEnd) {
-		itemEnd = globalEnd
-	}
-
-	isZeroDuration := itemEnd.Before(itemStart) || itemEnd.Equal(itemStart)
-	if isZeroDuration {
-		startOffset := itemStart.Sub(globalStart)
-		startPos := int(float64(startOffset) / float64(totalDuration) * float64(width))
+	if geo.isZero {
 		markerChar := "|"
 		if item.Hints.IsMarker {
 			markerChar, _ = getBarStyle(item)
 		}
-		return renderMarker(markerChar, BarSkippedSelectedStyle, startPos, width, "", true)
-	}
-
-	startOffset := itemStart.Sub(globalStart)
-	endOffset := itemEnd.Sub(globalStart)
-
-	startPos := int(float64(startOffset) / float64(totalDuration) * float64(width))
-	endPos := int(float64(endOffset) / float64(totalDuration) * float64(width))
-
-	barLength := endPos - startPos
-	if barLength < 1 {
-		barLength = 1
-	}
-	if startPos < 0 {
-		startPos = 0
-	}
-	if startPos > width-1 {
-		startPos = width - 1
-	}
-	if startPos+barLength > width {
-		barLength = width - startPos
-	}
-	if barLength < 1 {
-		barLength = 1
+		return renderMarker(markerChar, BarSkippedSelectedStyle, geo.startPos, width, "", true)
 	}
 
 	barChar, _ := getBarStyle(item)
-
-	leftPad := SelectedBgStyle.Render(strings.Repeat(" ", startPos))
-	bar := strings.Repeat(barChar, barLength)
-	rightPad := SelectedBgStyle.Render(strings.Repeat(" ", width-startPos-barLength))
-
+	leftPad := SelectedBgStyle.Render(strings.Repeat(" ", geo.startPos))
+	bar := strings.Repeat(barChar, geo.barLength)
+	rightPad := SelectedBgStyle.Render(strings.Repeat(" ", width-geo.startPos-geo.barLength))
 	return leftPad + BarSkippedSelectedStyle.Render(bar) + rightPad
 }
 
@@ -888,9 +719,3 @@ func overlayLogicalEndLine(timeline string, col, width int, selected bool) strin
 	return string(bytes[:beforeEnd]) + marker + string(bytes[afterStart:])
 }
 
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}

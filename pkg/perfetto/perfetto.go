@@ -260,9 +260,7 @@ func WriteTrace(w io.Writer, urlResults []analyzer.URLResult, combined analyzer.
 		}
 		if isLegacy && ev.Ts != 0 {
 			eventURLIndex := 1
-			if val, ok := ev.Args["url_index"].(int); ok {
-				eventURLIndex = val
-			} else if valFloat, ok := ev.Args["url_index"].(float64); ok {
+			if valFloat, ok := ev.Args["url_index"].(float64); ok {
 				eventURLIndex = int(valFloat)
 			}
 			eventSource := ""

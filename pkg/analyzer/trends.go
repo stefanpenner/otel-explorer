@@ -1420,10 +1420,15 @@ func calculateQueueTimeStats(runs []RunData) QueueTimeStats {
 
 	avgQueue := average(queueTimes)
 	avgRun := average(runTimes)
-	totalTime := avgQueue + avgRun
+	// When run-time data is missing entirely, the queue/total ratio is
+	// undefined (not "100%"). Report 0 so callers can distinguish "no run
+	// data" from "all time spent queued".
 	queueRatio := 0.0
-	if totalTime > 0 {
-		queueRatio = (avgQueue / totalTime) * 100
+	if len(runTimes) > 0 {
+		totalTime := avgQueue + avgRun
+		if totalTime > 0 {
+			queueRatio = (avgQueue / totalTime) * 100
+		}
 	}
 
 	return QueueTimeStats{

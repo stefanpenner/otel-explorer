@@ -1306,12 +1306,6 @@ func repoFromURL(urlValue string) string {
 	return strings.Join(parts[len(parts)-4:len(parts)-2], "/")
 }
 
-func maxInt64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
-}
 
 func isJobRequired(jobName, workflowName string, requiredContexts []string) bool {
 	if len(requiredContexts) == 0 {

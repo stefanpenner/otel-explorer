@@ -35,6 +35,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/stefanpenner/otel-explorer/pkg/utils"
 )
 
 // exportRequest is the top-level ExportTraceServiceRequest.
@@ -165,7 +167,12 @@ type protoStatusJSON struct {
 }
 
 // ParseProto reads OTLP protobuf-JSON (ExportTraceServiceRequest) and returns ReadOnlySpans.
-func ParseProto(r io.Reader) ([]sdktrace.ReadOnlySpan, error) {
+func ParseProto(r io.Reader) (spans []sdktrace.ReadOnlySpan, err error) {
+	defer utils.RecoverBoundary0(&err)
+	return parseProto(r)
+}
+
+func parseProto(r io.Reader) ([]sdktrace.ReadOnlySpan, error) {
 	var req exportRequest
 	if err := json.NewDecoder(r).Decode(&req); err != nil {
 		return nil, fmt.Errorf("decode OTLP JSON: %w", err)

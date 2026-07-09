@@ -77,3 +77,24 @@ func TestNewTrimsTrailingSlash(t *testing.T) {
 		t.Errorf("baseURL = %q, want no trailing slash", client.baseURL)
 	}
 }
+
+// TestFetchTraceRejectsOversizedBody proves the boundary cap: a hostile or
+// compromised backend that streams a body larger than the cap gets a clean
+// error, not an OOM. Regression for the unbounded io.ReadAll.
+func TestFetchTraceRejectsOversizedBody(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Stream 1KiB past the (reduced) cap.
+		w.Write(make([]byte, 1025))
+	}))
+	defer srv.Close()
+
+	client := New(srv.URL)
+	client.maxBytes = 1024 // small cap for a fast unit test
+	_, err := client.FetchTrace("0af7651916cd43dd8448eb211c80319c")
+	if err == nil {
+		t.Fatal("expected error for oversized body")
+	}
+}

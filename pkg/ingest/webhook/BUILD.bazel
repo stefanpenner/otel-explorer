@@ -5,6 +5,7 @@ go_library(
     srcs = ["webhook.go"],
     importpath = "github.com/stefanpenner/otel-explorer/pkg/ingest/webhook",
     visibility = ["//visibility:public"],
+    deps = ["//pkg/utils"],
 )
 
 go_test(

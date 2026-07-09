@@ -716,7 +716,7 @@ func TestCalculateSummaryCountsRetriedRunOnce(t *testing.T) {
 		builder.Add(tracetest.SpanStub{
 			Name: fmt.Sprintf("run-%d-attempt-%d", runID, attempt),
 			SpanContext: trace.NewSpanContext(trace.SpanContextConfig{
-				TraceID:    githubapi.NewTraceID(runID, maxInt64(attempt, 1)),
+				TraceID:    githubapi.NewTraceID(runID, max(attempt, 1)),
 				SpanID:     githubapi.NewSpanIDFromString(fmt.Sprintf("wf-%d-%d", runID, attempt)),
 				TraceFlags: trace.FlagsSampled,
 			}),

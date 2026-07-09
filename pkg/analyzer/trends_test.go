@@ -323,6 +323,22 @@ func TestCalculateQueueTimeStats(t *testing.T) {
 		assert.Greater(t, stats.QueueTimeRatio, 0.0)
 		assert.Less(t, stats.QueueTimeRatio, 100.0)
 	})
+
+	// Regression: when jobs have queue times but no durations, the ratio
+	// must NOT be reported as 100% — that's "no run data", not "runs are
+	// instant". Ratio should be 0 (unknown), same as the all-empty case.
+	t.Run("queueTimes without runTimes reports zero ratio", func(t *testing.T) {
+		runs := []RunData{
+			{Jobs: []JobData{
+				{QueueTime: 5000, Duration: 0},
+				{QueueTime: 3000, Duration: 0},
+			}},
+		}
+		stats := calculateQueueTimeStats(runs)
+		assert.Equal(t, 4.0, stats.AvgQueueTime)
+		assert.Equal(t, 0.0, stats.AvgRunTime)
+		assert.Equal(t, 0.0, stats.QueueTimeRatio, "ratio must be 0 when run data is missing, not 100")
+	})
 }
 
 func TestStatisticalFunctions(t *testing.T) {

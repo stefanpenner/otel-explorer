@@ -395,3 +395,33 @@ func GlobMatch(pattern, value string) bool {
 	}
 	return pattern == value
 }
+
+// RecoverBoundary runs fn and converts any panic into a descriptive error.
+// Use at parser entry points that consume external bytes (files, network,
+// logs, CLI args) so a malformed input or a third-party library panic
+// degrades to an error instead of crashing the process.
+//
+// Per the Hostile Input rules: "The call site recovers panics, bounds time,
+// and degrades (empty result) instead of crashing."
+func RecoverBoundary[T any](fn func() (T, error)) (result T, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("parser panic (recovered): %v", r)
+		}
+	}()
+	return fn()
+}
+
+// RecoverBoundary0 is a defer-call variant for parser entry points that return
+// their own result type alongside error. It writes a descriptive error to *err
+// on panic. Usage:
+//
+//	func ParseX(r io.Reader) (spans []Span, err error) {
+//	    defer utils.RecoverBoundary0(&err)
+//	    // ... body ...
+//	}
+func RecoverBoundary0(err *error) {
+	if r := recover(); r != nil {
+		*err = fmt.Errorf("parser panic (recovered): %v", r)
+	}
+}

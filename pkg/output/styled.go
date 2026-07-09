@@ -487,7 +487,7 @@ func combinedWallCompute(urlResults []analyzer.URLResult) (int64, int64) {
 			first = false
 		}
 	}
-	return maxInt64(0, globalEnd-globalStart), totalComputeMs
+	return max(int64(0), globalEnd-globalStart), totalComputeMs
 }
 
 // RenderTimelineToBuffer renders the OTel timeline into a buffer and returns

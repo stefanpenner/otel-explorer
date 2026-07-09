@@ -24,6 +24,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/stefanpenner/otel-explorer/pkg/utils"
 )
 
 // stdoutSpan is the JSON structure emitted by stdouttrace exporter.
@@ -99,7 +101,16 @@ func ParseFile(path string) ([]sdktrace.ReadOnlySpan, error) {
 // ("traceEvents"/"ph"), Zipkin v2 JSON ("localEndpoint"),
 // flat JSON ("ParentSpanID" with map-style attributes),
 // or stdouttrace (newline-delimited/array).
-func Parse(r io.Reader) ([]sdktrace.ReadOnlySpan, error) {
+//
+// The body runs under utils.RecoverBoundary0 so a malformed input or a panic
+// from a third-party decoder degrades to an error instead of crashing the
+// process (Hostile Input containment rule).
+func Parse(r io.Reader) (spans []sdktrace.ReadOnlySpan, err error) {
+	defer utils.RecoverBoundary0(&err)
+	return parse(r)
+}
+
+func parse(r io.Reader) ([]sdktrace.ReadOnlySpan, error) {
 	// Read all content so we can inspect it for format detection.
 	data, err := io.ReadAll(r)
 	if err != nil {
