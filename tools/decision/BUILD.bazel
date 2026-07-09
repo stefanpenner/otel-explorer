@@ -92,11 +92,13 @@ test_suite(
         ":log_groups_up_to_date",
         ":span_tree_up_to_date",
     ],
+    visibility = ["//visibility:public"],
 )
 
 test_suite(
     name = "all",
     tests = [":up_to_date"],
+    visibility = ["//visibility:public"],
 )
 
 sh_binary(
@@ -111,4 +113,5 @@ sh_binary(
         ":log_groups_gen",
         ":span_tree_gen",
     ],
+    visibility = ["//visibility:public"],
 )
