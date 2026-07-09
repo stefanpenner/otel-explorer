@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "ratelimitspec",
+    srcs = ["spec.go"],
+    importpath = "github.com/stefanpenner/otel-explorer/pkg/githubapi/ratelimitspec",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "ratelimitspec_test",
+    srcs = [
+        "conform_test.go",
+        "spec_test.go",
+    ],
+    embed = [":ratelimitspec"],
+)
