@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+# gazelle:ignore
+
+go_library(
+    name = "tla",
+    srcs = glob(["tla/*.go"]),
+    importpath = "github.com/stefanpenner/otel-explorer/tools/specgen/tla",
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "specgen_lib",
+    srcs = [
+        "codegen.go",
+        "main.go",
+        "tla_alias.go",
+    ],
+    importpath = "github.com/stefanpenner/otel-explorer/tools/specgen",
+    visibility = ["//visibility:private"],
+    deps = [
+        ":tla",
+        "//tools/cwdflag",
+    ],
+)
+
+go_binary(
+    name = "specgen",
+    embed = [":specgen_lib"],
+    visibility = ["//visibility:public"],
+)

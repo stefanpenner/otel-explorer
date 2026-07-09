@@ -1,0 +1,4 @@
+# Spec sources for decision-core codegen and TLC (scripts/check-specs.sh).
+# gazelle:ignore
+
+exports_files(glob(["**/*"]))

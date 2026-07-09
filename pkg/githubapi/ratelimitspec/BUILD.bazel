@@ -1,5 +1,7 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+exports_files(["spec.go", "spec_test.go"])
+
 go_library(
     name = "ratelimitspec",
     srcs = ["spec.go"],
