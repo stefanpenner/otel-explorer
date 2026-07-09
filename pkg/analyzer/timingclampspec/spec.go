@@ -115,6 +115,20 @@ func (s State) ClampedContained() bool {
 	return (!(s.Phase == "clamped" || s.Phase == "done") || (s.OutStart >= s.ParentStart && (!(s.ParentEnd > s.ParentStart) || (s.OutStart <= s.ParentEnd-int64(1) && s.OutEnd <= s.ParentEnd))))
 }
 
+// PurePredicate is a named pure decision gate (no state change).
+type PurePredicate struct {
+	Name  string
+	Check func(State) bool
+}
+
+// PurePredicates returns every pure operator emitted for this module.
+func PurePredicates() []PurePredicate {
+	return []PurePredicate{
+		{Name: "ClampedOrdered", Check: State.ClampedOrdered},
+		{Name: "ClampedContained", Check: State.ClampedContained},
+	}
+}
+
 // --- Trace emission for conformance checking ---
 
 // TraceEntry is a single recorded transition for conformance validation.

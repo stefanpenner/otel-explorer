@@ -118,6 +118,19 @@ func (s State) NoStaleAccepted() bool {
 	return (!(s.Accepted) || (s.IncomingAttempt >= s.StoredAttempt))
 }
 
+// PurePredicate is a named pure decision gate (no state change).
+type PurePredicate struct {
+	Name  string
+	Check func(State) bool
+}
+
+// PurePredicates returns every pure operator emitted for this module.
+func PurePredicates() []PurePredicate {
+	return []PurePredicate{
+		{Name: "NoStaleAccepted", Check: State.NoStaleAccepted},
+	}
+}
+
 // --- Trace emission for conformance checking ---
 
 // TraceEntry is a single recorded transition for conformance validation.

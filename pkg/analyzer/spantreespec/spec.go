@@ -111,6 +111,19 @@ func (s State) Inv_RunnerWins() bool {
 	return (!(s.Done && s.HaveAPI && s.HaveRunner) || (s.Kept == "runner"))
 }
 
+// PurePredicate is a named pure decision gate (no state change).
+type PurePredicate struct {
+	Name  string
+	Check func(State) bool
+}
+
+// PurePredicates returns every pure operator emitted for this module.
+func PurePredicates() []PurePredicate {
+	return []PurePredicate{
+		{Name: "Inv_RunnerWins", Check: State.Inv_RunnerWins},
+	}
+}
+
 // --- Trace emission for conformance checking ---
 
 // TraceEntry is a single recorded transition for conformance validation.

@@ -53,3 +53,18 @@ func TestBFSReachability(t *testing.T) {
 	}
 	t.Logf("explored %d reachable states", len(seen))
 }
+
+// TestPurePredicates evaluates every pure operator on Init.
+// Ensures the registry is non-empty and methods do not panic.
+func TestPurePredicates(t *testing.T) {
+	s := Init()
+	preds := PurePredicates()
+	if len(preds) == 0 {
+		t.Fatal("PurePredicates empty")
+	}
+	for _, p := range preds {
+		t.Run(p.Name, func(t *testing.T) {
+			_ = p.Check(s) // must not panic
+		})
+	}
+}

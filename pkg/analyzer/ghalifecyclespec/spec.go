@@ -107,6 +107,20 @@ func (s State) QueueOnlyNotPending() bool {
 	return (!(s.QueueCounted) || (s.HasCompletedAt))
 }
 
+// PurePredicate is a named pure decision gate (no state change).
+type PurePredicate struct {
+	Name  string
+	Check func(State) bool
+}
+
+// PurePredicates returns every pure operator emitted for this module.
+func PurePredicates() []PurePredicate {
+	return []PurePredicate{
+		{Name: "PendingNeverFailed", Check: State.PendingNeverFailed},
+		{Name: "QueueOnlyNotPending", Check: State.QueueOnlyNotPending},
+	}
+}
+
 // --- Trace emission for conformance checking ---
 
 // TraceEntry is a single recorded transition for conformance validation.
