@@ -38,35 +38,64 @@ type groupBlock struct {
 	lineNum int       // line number of the ##[group] marker
 }
 
+// canOpenGroup / canCloseGroup are the LogGroupsDecision stack gates.
+// Spec: specs/log-groups/decision Open / Close (Bug=FALSE forbids Close at 0).
+// maxDepth <= 0 means unbounded (production); the decision core uses MaxDepth=3.
+func canOpenGroup(depth, maxDepth int) bool {
+	if depth < 0 {
+		return false
+	}
+	if maxDepth <= 0 {
+		return true
+	}
+	return depth < maxDepth
+}
+
+func canCloseGroup(depth int) bool {
+	return depth > 0
+}
+
 // splitGroups partitions log lines into top-level lines and group blocks.
 // Returns (top-level lines, group blocks). Top-level lines are those outside
 // any ##[group]...##[endgroup] pair.
+//
+// Decision: canOpenGroup / canCloseGroup (LogGroupsDecision Open/Close).
+// Nested ##[group] implicitly closes the outer (flat depth 0/1 in practice);
+// stray ##[endgroup] with depth 0 is a no-op (never underflow).
 func splitGroups(lines []LogLine) ([]LogLine, []groupBlock) {
 	var topLevel []LogLine
 	var groups []groupBlock
 	var current *groupBlock
+	depth := 0
 
 	for _, l := range lines {
 		content := l.Content
 		if name, ok := strings.CutPrefix(content, "##[group]"); ok {
 			// Nested ##[group]: implicitly close the outer group at this
 			// line's time instead of silently discarding it and its lines.
-			if current != nil {
+			if canCloseGroup(depth) && current != nil {
 				current.end = l.Time
 				groups = append(groups, *current)
+				depth--
+				current = nil
 			}
-			current = &groupBlock{
-				name:    name,
-				start:   l.Time,
-				lineNum: l.LineNum,
+			if canOpenGroup(depth, 0) {
+				current = &groupBlock{
+					name:    name,
+					start:   l.Time,
+					lineNum: l.LineNum,
+				}
+				depth++
 			}
 			continue
 		}
 		if strings.HasPrefix(content, "##[endgroup]") {
-			if current != nil {
+			// Faithful Close only when depth > 0 (never CloseBug underflow).
+			if canCloseGroup(depth) && current != nil {
 				current.end = l.Time
 				groups = append(groups, *current)
 				current = nil
+				depth--
 			}
 			continue
 		}

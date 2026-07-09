@@ -18,11 +18,13 @@ go_test(
     name = "logparse_test",
     srcs = [
         "fuzz_test.go",
+        "loggroups_decision_dual_test.go",
         "logparse_test.go",
         "timestamp_spec_test.go",
     ],
     embed = [":logparse"],
     deps = [
+        "//pkg/logparse/loggroupsspec",
         "@com_github_stretchr_testify//assert",
         "@com_github_stretchr_testify//require",
     ],

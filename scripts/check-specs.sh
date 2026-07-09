@@ -236,6 +236,19 @@ else
   echo "specgen: not on PATH (skip package verify; install via ~/.ai or PATH)"
 fi
 
+# Production wires: every decision core that documents a production gate
+# must still have that symbol in non-test sources (fast stack-health check).
+echo
+echo "--- production wires ---"
+if [ -x "$REPO_ROOT/scripts/verify-decision-wires.sh" ]; then
+  if ! "$REPO_ROOT/scripts/verify-decision-wires.sh"; then
+    fail=$((fail + 1))
+  fi
+else
+  echo "scripts/verify-decision-wires.sh missing or not executable"
+  fail=$((fail + 1))
+fi
+
 echo
 echo "specs: $pass ok, $fail failed"
 [ $fail -eq 0 ]

@@ -59,8 +59,10 @@ scripts/regenerate-decision-cores.sh timing-clamp
 | timing-clamp | clampSpanToParent | `timingclampspec` | **wired** — `DoClamp` |
 | sync-bounds | stale attempt | `syncboundsspec` | **wired** — `acceptJobsAttempt` (SQL twin) |
 | gha-lifecycle | pending/fail/queue gates | `ghalifecyclespec` | **wired** — `countsFailed` / `countsQueue` |
-| log-groups | stack depth | `loggroupsspec` | gen tests only |
+| log-groups | stack depth | `loggroupsspec` | **wired** — `canOpenGroup` / `canCloseGroup` |
 | span-tree | runner-wins keep | `spantreespec` | **wired** — `dropAPIForRunnerTwin` |
+
+Wire health: `scripts/verify-decision-wires.sh` (also from `check-specs.sh`).
 
 Full TLC specs remain authoritative for multi-object interleavings.
 Decision cores pin the **pure decisions** that must not drift.
