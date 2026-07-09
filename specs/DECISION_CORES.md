@@ -54,13 +54,13 @@ scripts/regenerate-decision-cores.sh timing-clamp
 
 | Core | Models | Gen package | Production |
 |------|--------|-------------|------------|
-| tui-reload | reload gen + stale fetch discard | `tuireloadspec` | **wired** — `logFetchResultFresh` ↔ FetchAccept |
-| rate-limit | wait/recheck after sleep | `ratelimitspec` | dual + conform only |
-| timing-clamp | clampSpanToParent | `timingclampspec` | **wired** — `clampSpanToParent` → `DoClamp` |
-| sync-bounds | stale attempt | `syncboundsspec` | **wired** — `acceptJobsAttempt` (SQL atomic twin) |
-| gha-lifecycle | pending/fail/queue gates | `ghalifecyclespec` | dual only |
+| tui-reload | reload gen + stale fetch discard | `tuireloadspec` | **wired** — `logFetchResultFresh` |
+| rate-limit | wait/recheck after sleep | `ratelimitspec` | **wired** — `rateLimitWaitNeeded` |
+| timing-clamp | clampSpanToParent | `timingclampspec` | **wired** — `DoClamp` |
+| sync-bounds | stale attempt | `syncboundsspec` | **wired** — `acceptJobsAttempt` (SQL twin) |
+| gha-lifecycle | pending/fail/queue gates | `ghalifecyclespec` | **wired** — `countsFailed` / `countsQueue` |
 | log-groups | stack depth | `loggroupsspec` | gen tests only |
-| span-tree | runner-wins keep | `spantreespec` | gen tests only |
+| span-tree | runner-wins keep | `spantreespec` | **wired** — `dropAPIForRunnerTwin` |
 
 Full TLC specs remain authoritative for multi-object interleavings.
 Decision cores pin the **pure decisions** that must not drift.

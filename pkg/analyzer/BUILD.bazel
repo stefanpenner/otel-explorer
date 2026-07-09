@@ -69,6 +69,7 @@ go_test(
         "rundiff_test.go",
         "spans_runs_test.go",
         "spans_summary_test.go",
+        "spantree_decision_dual_test.go",
         "timing_clamp_spec_test.go",
         "tracediff_integration_test.go",
         "tracediff_rename_test.go",
@@ -81,6 +82,7 @@ go_test(
     embed = [":analyzer"],
     deps = [
         "//pkg/analyzer/ghalifecyclespec",
+        "//pkg/analyzer/spantreespec",
         "//pkg/analyzer/timingclampspec",
         "//pkg/enrichment",
         "//pkg/githubapi",

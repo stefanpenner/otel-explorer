@@ -56,3 +56,26 @@ func TestRateLimitDecision_DualWaitIfNeededRecheck(t *testing.T) {
 	assert.Equal(t, time.Duration(0), limiter.waitDuration(),
 		"waitIfNeeded must recheck after sleep (decision: WakeRecheckResleep)")
 }
+
+// TestRateLimitWaitNeededMatchesDecision pins the pure WaitNeeded gate
+// used by waitDuration to the decision-core StartSleep precondition.
+func TestRateLimitWaitNeededMatchesDecision(t *testing.T) {
+	t.Parallel()
+
+	s := ratelimitspec.Init()
+	// Fresh window: not WaitNeeded.
+	assert.False(t, rateLimitWaitNeeded(int(s.Remaining), s.ResetAt > 0, time.Duration(s.ResetAt-s.Clock)*time.Second))
+	assert.False(t, s.CanStartSleep())
+
+	s = s.LearnExhausted()
+	// Exhausted, reset in future (resetAt = clock+1 in LearnExhausted).
+	until := time.Duration(s.ResetAt-s.Clock) * time.Second
+	assert.True(t, s.CanStartSleep())
+	assert.True(t, rateLimitWaitNeeded(int(s.Remaining), s.ResetAt > 0, until),
+		"production WaitNeeded must match CanStartSleep precondition")
+
+	// Past reset: not needed.
+	assert.False(t, rateLimitWaitNeeded(0, true, 0))
+	assert.False(t, rateLimitWaitNeeded(0, true, -time.Second))
+	assert.False(t, rateLimitWaitNeeded(1, true, time.Hour))
+}

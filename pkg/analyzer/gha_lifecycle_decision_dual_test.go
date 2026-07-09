@@ -16,21 +16,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// countsFailed mirrors analyzer.go:903-906 (faithful, Bug=FALSE).
-func countsFailed(job githubapi.Job) bool {
-	return !isJobPending(job) &&
-		(job.Conclusion == "failure" || job.Conclusion == "timed_out")
-}
-
-// countsQueue mirrors analyzer.go:924-926 (faithful; CreatedAt abstracted
-// as always present; skipped/cancelled not in the decision-core domain).
-func countsQueue(job githubapi.Job) bool {
-	return !isJobPending(job) &&
-		job.Conclusion != "skipped" && job.Conclusion != "cancelled"
-}
-
 // TestGhaLifecycleDecisionDual_InitPendingFailure: completed-looking
 // failure with no completed_at is pending — never failed, never queued.
+// Production gates: isJobPending / countsFailed / countsQueue.
 func TestGhaLifecycleDecisionDual_InitPendingFailure(t *testing.T) {
 	t.Parallel()
 

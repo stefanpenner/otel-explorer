@@ -348,19 +348,31 @@ type rateLimiter struct {
 	resetTime time.Time
 }
 
+// rateLimitWaitNeeded is the RateLimitDecision WaitNeeded predicate:
+// remaining exhausted, reset known, and the reset is still in the future.
+// Spec: specs/rate-limit/decision WaitNeeded (client.go waitDuration > 0).
+func rateLimitWaitNeeded(remaining int, resetKnown bool, untilReset time.Duration) bool {
+	return remaining == 0 && resetKnown && untilReset > 0
+}
+
 // waitDuration computes how long the caller must wait before issuing a
 // request. It only reads state under the lock; the caller sleeps outside
 // the critical section so other goroutines are not blocked.
+// Decision: rateLimitWaitNeeded / specs/rate-limit/decision WaitNeeded.
 func (r *rateLimiter) waitDuration() time.Duration {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.remaining == 0 && !r.resetTime.IsZero() {
-		if d := time.Until(r.resetTime); d > 0 {
-			return d + time.Second
-		}
+	if r.resetTime.IsZero() {
+		return 0
 	}
-	return 0
+	d := time.Until(r.resetTime)
+	if !rateLimitWaitNeeded(r.remaining, true, d) {
+		return 0
+	}
+	// +1s slack: a woken sleeper always observes a refilled window if the
+	// header reset was accurate (rate-limit spec Tick / client.go).
+	return d + time.Second
 }
 
 func (r *rateLimiter) waitIfNeeded(ctx context.Context) error {

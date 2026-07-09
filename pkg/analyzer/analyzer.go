@@ -814,8 +814,24 @@ func conclusionFromJobs(jobs []githubapi.Job) string {
 // isJobPending reports whether a job has not yet run to completion. GitHub
 // can report a completed job with no completed_at (fault); treat it as
 // still pending — the same discipline FailedJobs counting relies on.
+// Spec: specs/gha-lifecycle/decision (~hasCompletedAt / ClassifyPending).
 func isJobPending(job githubapi.Job) bool {
 	return job.Status != "completed" || job.CompletedAt == ""
+}
+
+// countsFailed is the FailedJobs gate: not pending AND (failure|timed_out).
+// Spec: specs/gha-lifecycle/decision ClassifyFailed (Bug=FALSE).
+func countsFailed(job githubapi.Job) bool {
+	return !isJobPending(job) &&
+		(job.Conclusion == "failure" || job.Conclusion == "timed_out")
+}
+
+// countsQueue is the queue-time / Queued-span gate: not pending and not
+// skipped/cancelled. Callers also require CreatedAt present for a sample.
+// Spec: specs/gha-lifecycle/decision ClassifyQueue (Bug=FALSE).
+func countsQueue(job githubapi.Job) bool {
+	return !isJobPending(job) &&
+		job.Conclusion != "skipped" && job.Conclusion != "cancelled"
 }
 
 // clampSpanToParent forces a child span into its parent's window: start
@@ -900,7 +916,8 @@ func processJob(job githubapi.Job, jobIndex int, run githubapi.WorkflowRun, jobT
 
 	metrics.TotalJobs++
 	// Only count genuine failures — skipped/cancelled/neutral jobs are not failures.
-	if !isPending && (job.Conclusion == "failure" || job.Conclusion == "timed_out") {
+	// Decision: countsFailed / specs/gha-lifecycle/decision ClassifyFailed.
+	if countsFailed(job) {
 		metrics.FailedJobs++
 	}
 
@@ -920,8 +937,8 @@ func processJob(job githubapi.Job, jobIndex int, run githubapi.WorkflowRun, jobT
 
 	// Queue time: CreatedAt → StartedAt — only for jobs that actually ran
 	// to completion; a still-pending job's queue time is not final data.
-	countsQueueTime := job.CreatedAt != "" && !isPending &&
-		job.Conclusion != "skipped" && job.Conclusion != "cancelled"
+	// Decision: countsQueue / specs/gha-lifecycle/decision ClassifyQueue.
+	countsQueueTime := job.CreatedAt != "" && countsQueue(job)
 	if countsQueueTime {
 		if createdAt, ok := utils.ParseTime(job.CreatedAt); ok {
 			queueMs := float64(absoluteJobStart.UnixMilli() - createdAt.UnixMilli())

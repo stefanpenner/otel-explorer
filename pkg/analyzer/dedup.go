@@ -20,6 +20,9 @@ import (
 //
 // Applied once to the combined span set so every output mode (TUI, stdout,
 // markdown, perfetto, OTLP export) sees a single span per ID.
+//
+// Decision: dropAPIForRunnerTwin / specs/span-tree/decision DedupChoose
+// (when both seen, kept = "runner").
 func DedupeRunnerSpans(spans []sdktrace.ReadOnlySpan) []sdktrace.ReadOnlySpan {
 	type group struct{ api, runner int }
 	groups := make(map[string]group)
@@ -43,13 +46,21 @@ func DedupeRunnerSpans(spans []sdktrace.ReadOnlySpan) []sdktrace.ReadOnlySpan {
 	out := make([]sdktrace.ReadOnlySpan, 0, len(spans))
 	for _, s := range spans {
 		if s.SpanContext().SpanID().IsValid() {
-			if g := groups[key(s)]; g.api == 1 && g.runner == 1 && !spanIsRunner(s) {
+			g := groups[key(s)]
+			if dropAPIForRunnerTwin(g.api, g.runner, spanIsRunner(s)) {
 				continue // the runner twin supersedes this API reconstruction
 			}
 		}
 		out = append(out, s)
 	}
 	return out
+}
+
+// dropAPIForRunnerTwin is the SpanTreeDecision keep rule for the unambiguous
+// {1 API, 1 runner} twin: drop the API span so the runner survives.
+// Spec: specs/span-tree/decision DedupChoose → kept = "runner".
+func dropAPIForRunnerTwin(apiCount, runnerCount int, thisIsRunner bool) bool {
+	return apiCount == 1 && runnerCount == 1 && !thisIsRunner
 }
 
 // spanIsRunner reports whether a span was emitted natively by the GitHub Actions
