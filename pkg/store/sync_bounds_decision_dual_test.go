@@ -17,15 +17,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// acceptJobsAttempt mirrors store.go:390-400:
-//   WHERE (?=0 OR run_attempt=?)
-// Accept when incoming is unknown (0) or equals the stored attempt.
-func acceptJobsAttempt(stored, incoming int64) bool {
-	return incoming == 0 || stored == incoming
-}
-
 // TestSyncBoundsDecisionDual_OfferPaths drives Store then Offer and
-// checks accepted matches the pure guard (and NoStaleAccepted).
+// checks accepted matches acceptJobsAttempt (and NoStaleAccepted).
 func TestSyncBoundsDecisionDual_OfferPaths(t *testing.T) {
 	t.Parallel()
 

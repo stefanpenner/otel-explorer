@@ -54,10 +54,10 @@ scripts/regenerate-decision-cores.sh timing-clamp
 
 | Core | Models | Gen package | Production |
 |------|--------|-------------|------------|
-| tui-reload | reload gen + stale fetch discard | `tuireloadspec` | dual + conform only |
+| tui-reload | reload gen + stale fetch discard | `tuireloadspec` | **wired** — `logFetchResultFresh` ↔ FetchAccept |
 | rate-limit | wait/recheck after sleep | `ratelimitspec` | dual + conform only |
 | timing-clamp | clampSpanToParent | `timingclampspec` | **wired** — `clampSpanToParent` → `DoClamp` |
-| sync-bounds | stale attempt | `syncboundsspec` | dual only |
+| sync-bounds | stale attempt | `syncboundsspec` | **wired** — `acceptJobsAttempt` (SQL atomic twin) |
 | gha-lifecycle | pending/fail/queue gates | `ghalifecyclespec` | dual only |
 | log-groups | stack depth | `loggroupsspec` | gen tests only |
 | span-tree | runner-wins keep | `spantreespec` | gen tests only |

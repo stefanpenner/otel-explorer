@@ -397,11 +397,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// logFetchResultFresh is the TuiReloadDecision FetchAccept guard: the result
+// names the in-flight job and was started under the current reloadGen.
+// Spec: specs/tui-reload/decision (FetchAccept / FetchDiscard).
+// Dual: TestLogFetchResultFreshMatchesDecision.
+func logFetchResultFresh(msgJob, fetchingJob int64, msgGen, reloadGen int) bool {
+	return msgJob != 0 && msgJob == fetchingJob && msgGen == reloadGen
+}
+
 // handleLogFetchResult processes a completed inline log fetch. Stale results
 // (wrong job or old reload generation) are discarded so their spans — computed
 // from a prior span set — never attach to the current data.
 func (m Model) handleLogFetchResult(msg LogFetchResultMsg) (tea.Model, tea.Cmd) {
-	if msg.jobID == 0 || msg.jobID != m.logFetchingJobID || msg.gen != m.reloadGen {
+	if !logFetchResultFresh(msg.jobID, m.logFetchingJobID, msg.gen, m.reloadGen) {
 		return m, nil
 	}
 	fetchedJobID := m.logFetchingJobID

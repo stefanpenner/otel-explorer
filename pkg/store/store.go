@@ -368,6 +368,15 @@ func timeOf(ms int64) time.Time {
 	return time.UnixMilli(ms).UTC()
 }
 
+// acceptJobsAttempt is the pure UpsertJobs attempt gate.
+// SQL form: WHERE (?=0 OR run_attempt=?) — attempt 0 = unknown, always accept.
+// Spec: specs/sync-bounds/decision (OfferNewer accept / OfferOlder reject).
+// The SQL remains the atomic gate; this helper is the decision-layer mirror
+// used by dual tests and docs so the pure rule cannot drift silently.
+func acceptJobsAttempt(storedAttempt, incomingAttempt int64) bool {
+	return incomingAttempt == 0 || incomingAttempt == storedAttempt
+}
+
 // UpsertJobs replaces one run's jobs and marks the run's job detail as
 // fetched, without touching any other run column — safe to call with data
 // from a jobs-only fetch where the run listing fields are unknown.
@@ -376,6 +385,7 @@ func timeOf(ms int64) time.Time {
 // jobs_fetched=1 after a concurrent writer advanced run_attempt would make
 // the attempts equal, so the upsert CASE reset could never refetch and the
 // stale (or filtered-empty) detail would be served forever.
+// Decision: acceptJobsAttempt / specs/sync-bounds/decision.
 func (s *Store) UpsertJobs(owner, repo string, runID, attempt int64, jobs []analyzer.JobData) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
