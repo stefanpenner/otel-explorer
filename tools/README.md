@@ -19,4 +19,14 @@ bazel test //...
 
 `bazel test //...` includes the up-to-date suite (CI unit-test job).
 
+**Complete graph to the binary:**
+
+```
+Decision.tla → //tools/specgen → *_gen → //pkg/.../*spec → … → //:ote
+```
+
+`go_library` for each `*spec` package uses genrule outs as `srcs`
+(not the committed copies). So `bazel run //:ote` rebuilds through codegen
+when a decision `.tla` changes.
+
 See `specs/DECISION_CORES.md`.

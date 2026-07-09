@@ -92,7 +92,31 @@ scripts/check-specs.sh                      # TLC full + decision + duals + wire
 scripts/regenerate-decision-cores.sh        # → bazel run //tools/decision:update
 ```
 
-`bazel test //...` includes `//tools/decision:up_to_date` (codegen freshness).
+### Complete Bazel graph (production path)
+
+```
+specs/<core>/decision/Decision.tla
+        │
+        ▼
+//tools/specgen          (hermetic binary)
+        │
+        ▼
+//tools/decision:<core>_gen/spec.go   (genrule outs)
+        │
+        ▼
+//pkg/.../<name>spec     (go_library srcs = genrule outs)
+        │
+        ▼
+//pkg/analyzer (etc.)
+        │
+        ▼
+//:ote   ←  bazel run //:ote
+```
+
+Committed `spec.go` copies are for IDE + `up_to_date` checks only.
+**Library and binary use genrule outputs** — changing `.tla` rebuilds `ote`.
+
+`bazel test //...` includes `//tools/decision:up_to_date`.
 The `tla-specs` job still runs TLC + duals; the unit `test` job runs Bazel.
 
 Full TLC specs remain authoritative for multi-object interleavings.

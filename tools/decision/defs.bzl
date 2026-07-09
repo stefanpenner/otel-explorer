@@ -52,7 +52,9 @@ rm -rf "$$tmpdir"
             name = name,
         ),
         tools = ["//tools/specgen"],
-        visibility = ["//visibility:private"],
+        # Public so go_library in pkg/.../*spec can use outs as srcs
+        # (complete graph: Decision.tla → genrule → go_library → ote).
+        visibility = ["//visibility:public"],
     )
 
     gen_go = ":" + name + "_gen/spec.go"
