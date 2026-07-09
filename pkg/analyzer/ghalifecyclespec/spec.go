@@ -95,6 +95,23 @@ func (s State) EnabledActions() []string {
 	return out
 }
 
+// --- Pure operators (no primed vars; not actions) ---
+
+// PendingNeverFailed is the pure TLA+ operator PendingNeverFailed.
+func (s State) PendingNeverFailed() bool {
+	return !(s.CountedPending && s.CountedFailed)
+}
+
+// QueueOnlyNotPending is the pure TLA+ operator QueueOnlyNotPending.
+func (s State) QueueOnlyNotPending() bool {
+	return (!(s.QueueCounted) || (s.HasCompletedAt))
+}
+
+// BaitNeverPending is the pure TLA+ operator BaitNeverPending.
+func (s State) BaitNeverPending() bool {
+	return !(s.CountedPending)
+}
+
 // --- Trace emission for conformance checking ---
 
 // TraceEntry is a single recorded transition for conformance validation.

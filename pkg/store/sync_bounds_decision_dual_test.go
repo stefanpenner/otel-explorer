@@ -34,7 +34,8 @@ func TestSyncBoundsDecisionDual_OfferPaths(t *testing.T) {
 	assert.Equal(t, st.StoredAttempt, st.IncomingAttempt)
 	assert.True(t, acceptJobsAttempt(st.StoredAttempt, st.IncomingAttempt),
 		"OfferNewer must match UpsertJobs accept guard")
-	// NoStaleAccepted: accepted => incoming >= stored
+	// Generated pure invariant NoStaleAccepted (and compact form).
+	assert.True(t, st.NoStaleAccepted())
 	assert.GreaterOrEqual(t, st.IncomingAttempt, st.StoredAttempt)
 
 	// Store2 → OfferOlder: stale attempt must be rejected (Bug=FALSE).

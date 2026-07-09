@@ -70,9 +70,10 @@ func TestRateLimitWaitNeededMatchesDecision(t *testing.T) {
 	s = s.LearnExhausted()
 	// Exhausted, reset in future (resetAt = clock+1 in LearnExhausted).
 	until := time.Duration(s.ResetAt-s.Clock) * time.Second
+	assert.True(t, s.WaitNeeded(), "generated pure WaitNeeded after LearnExhausted")
 	assert.True(t, s.CanStartSleep())
 	assert.True(t, rateLimitWaitNeeded(int(s.Remaining), s.ResetAt > 0, until),
-		"production WaitNeeded must match CanStartSleep precondition")
+		"production rateLimitWaitNeeded must match generated WaitNeeded")
 
 	// Past reset: not needed.
 	assert.False(t, rateLimitWaitNeeded(0, true, 0))

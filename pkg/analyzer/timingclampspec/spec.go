@@ -103,6 +103,23 @@ func (s State) EnabledActions() []string {
 	return out
 }
 
+// --- Pure operators (no primed vars; not actions) ---
+
+// ClampedOrdered is the pure TLA+ operator ClampedOrdered.
+func (s State) ClampedOrdered() bool {
+	return (!(s.Phase == "clamped" || s.Phase == "done") || (s.OutStart < s.OutEnd))
+}
+
+// ClampedContained is the pure TLA+ operator ClampedContained.
+func (s State) ClampedContained() bool {
+	return (!(s.Phase == "clamped" || s.Phase == "done") || (s.OutStart >= s.ParentStart && (!(s.ParentEnd > s.ParentStart) || (s.OutStart <= s.ParentEnd-int64(1) && s.OutEnd <= s.ParentEnd))))
+}
+
+// BaitNeverDone is the pure TLA+ operator BaitNeverDone.
+func (s State) BaitNeverDone() bool {
+	return s.Phase != "done"
+}
+
 // --- Trace emission for conformance checking ---
 
 // TraceEntry is a single recorded transition for conformance validation.

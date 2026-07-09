@@ -111,6 +111,18 @@ func (s State) EnabledActions() []string {
 	return out
 }
 
+// --- Pure operators (no primed vars; not actions) ---
+
+// NoStaleAccepted is the pure TLA+ operator NoStaleAccepted.
+func (s State) NoStaleAccepted() bool {
+	return (!(s.Accepted) || (s.IncomingAttempt >= s.StoredAttempt))
+}
+
+// BaitNeverAccepted is the pure TLA+ operator BaitNeverAccepted.
+func (s State) BaitNeverAccepted() bool {
+	return !(s.Accepted)
+}
+
 // --- Trace emission for conformance checking ---
 
 // TraceEntry is a single recorded transition for conformance validation.

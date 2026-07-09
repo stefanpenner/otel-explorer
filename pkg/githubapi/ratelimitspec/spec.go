@@ -140,6 +140,23 @@ func (s State) EnabledActions() []string {
 	return out
 }
 
+// --- Pure operators (no primed vars; not actions) ---
+
+// WaitNeeded is the pure TLA+ operator WaitNeeded.
+func (s State) WaitNeeded() bool {
+	return s.Remaining == 0 && s.ResetAt > 0 && s.Clock < s.ResetAt
+}
+
+// NoSendWhileExhausted is the pure TLA+ operator NoSendWhileExhausted.
+func (s State) NoSendWhileExhausted() bool {
+	return !(s.SentWhileExhausted)
+}
+
+// BaitNeverSleep is the pure TLA+ operator BaitNeverSleep.
+func (s State) BaitNeverSleep() bool {
+	return !(s.Sleeping)
+}
+
 // --- Trace emission for conformance checking ---
 
 // TraceEntry is a single recorded transition for conformance validation.
