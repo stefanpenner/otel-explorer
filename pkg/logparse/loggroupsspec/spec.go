@@ -91,6 +91,19 @@ func (s State) Inv_DepthNonNeg() bool {
 	return s.Depth >= 0
 }
 
+// PurePredicate is a named pure decision gate (no state change).
+type PurePredicate struct {
+	Name  string
+	Check func(State) bool
+}
+
+// PurePredicates returns every pure operator emitted for this module.
+func PurePredicates() []PurePredicate {
+	return []PurePredicate{
+		{Name: "Inv_DepthNonNeg", Check: State.Inv_DepthNonNeg},
+	}
+}
+
 // --- Trace emission for conformance checking ---
 
 // TraceEntry is a single recorded transition for conformance validation.
