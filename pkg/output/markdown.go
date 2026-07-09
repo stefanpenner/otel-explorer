@@ -275,5 +275,5 @@ func computeTimelineDurations(timeline []analyzer.TimelineJob) (int64, int64) {
 			computeMs += job.EndTime - job.StartTime
 		}
 	}
-	return maxInt64(0, end-start), computeMs
+	return max(int64(0), end-start), computeMs
 }

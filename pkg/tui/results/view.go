@@ -1065,13 +1065,6 @@ func (m Model) renderFooter() string {
 	return breadcrumb + statusLine + "\n" + bottomBorder
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 // placeModalCentered renders the modal centered on a dim background
 func placeModalCentered(modal string, width, height int) string {
 	modalLines := strings.Split(modal, "\n")
@@ -1657,11 +1650,4 @@ func addScrollbarToModal(modal string, scroll, maxScroll, visibleCount, totalLin
 	}
 
 	return result.String()
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

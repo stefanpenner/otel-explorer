@@ -1674,3 +1674,44 @@ func TestProfileStartTsMsJSONNumber(t *testing.T) {
 	a.True(ok)
 	a.Equal(1000000.0, f)
 }
+
+// TestParseRecoverBoundary proves the recover boundary at each parser entry
+// point catches a panic from a hostile io.Reader (or a panicking third-party
+// decoder) and degrades to an error instead of crashing the process.
+func TestParseRecoverBoundary(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Parse recovers from panicking reader", func(t *testing.T) {
+		r := &panicReader{msg: "hostile input blowup"}
+		_, err := Parse(r)
+		if err == nil {
+			t.Fatal("expected error from panicking reader, got nil")
+		}
+		if !strings.Contains(err.Error(), "recovered") {
+			t.Fatalf("error should mention recovery, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "hostile input blowup") {
+			t.Fatalf("error should carry panic message, got: %v", err)
+		}
+	})
+
+	t.Run("ParseProto recovers from panic", func(t *testing.T) {
+		r := &panicReader{msg: "proto decoder panic"}
+		_, err := ParseProto(r)
+		if err == nil || !strings.Contains(err.Error(), "recovered") {
+			t.Fatalf("expected recovered error, got: %v", err)
+		}
+	})
+
+	t.Run("ParseJaeger recovers from panic", func(t *testing.T) {
+		r := &panicReader{msg: "jaeger decoder panic"}
+		_, err := ParseJaeger(r)
+		if err == nil || !strings.Contains(err.Error(), "recovered") {
+			t.Fatalf("expected recovered error, got: %v", err)
+		}
+	})
+}
+
+type panicReader struct{ msg string }
+
+func (r *panicReader) Read(p []byte) (int, error) { panic(r.msg) }

@@ -65,10 +65,10 @@ is `done` — no property reads live GitHub state after that point.
 | AFetchPrevFail    | analyzer.go:333 `continue` (silent skip; 698 empty-result return is the same skip class — both return false, so no link ever targets them) |
 | AProcessLatest    | analyzer.go:511-514 (jobs), 542-548 (conclusion fallback), 628-643 (gated link), 650-659 (span) |
 
-Helper predicates: `IsPending` = isJobPending analyzer.go:809-811,
+Helper predicates: `IsPending` = isJobPending analyzer.go:816-818,
 `CountsFailed` = 877 (Bug=TRUE drops the `!isPending` guard),
 `CountsQueue` = countsQueueTime 904-906 (BugQueueUngated drops `!isPending`),
-`Started` = 836-838, `DerivedConcl` = conclusionFromJobs 789-806
+`Started` = 867, `DerivedConcl` = conclusionFromJobs 796-811
 (BugTimedOutSuccess drops the timed_out arm),
 `PendingOf` = 822-834 (classified before the never-started return;
 BugUnstartedInvisible restores the old order).
@@ -78,14 +78,14 @@ BugUnstartedInvisible restores the old order).
 | Invariant                     | Source           | Citation / basis                                   | Result    |
 |-------------------------------|------------------|----------------------------------------------------|-----------|
 | TypeInvariant                 | —                | typing                                             | green     |
-| InvPendingNeverFailed         | code-documented  | comment analyzer.go:876 "Only count genuine failures" | green (fails w/ Bug=TRUE, MCMutation) |
+| InvPendingNeverFailed         | code-documented  | comment analyzer.go:903 "Only count genuine failures" | green (fails w/ Bug=TRUE, MCMutation) |
 | InvEmittedHaveConcl           | proposed         | sanity: emitted spans carry a conclusion           | green     |
 | InvPendingRunNotFailed        | proposed         | Finding 2 — **fixed 2026-07-06** (analyzer.go:295-305) | green (fails w/ BugPendingRunFailed, MCMutation2) |
 | InvLinkTargetsEmitted         | proposed         | Finding 1 — **fixed 2026-07-06** (analyzer.go:327/:629/:750) | green (fails w/ BugDanglingLink, MCMutation1) |
-| InvQueueOnlyCompletedJobs     | proposed         | Finding 3 — **fixed 2026-07-06** (analyzer.go:904-906) | green (fails w/ BugQueueUngated, MCMutation3) |
-| InvTimedOutAttemptNotSuccess  | proposed         | Finding 4 — **fixed 2026-07-06** (conclusionFromJobs :789-806) | green (fails w/ BugTimedOutSuccess, MCMutation4) |
-| InvPendingJobsVisible         | proposed         | discovery note — **fixed 2026-07-06** (analyzer.go:822-834) | green (fails w/ BugUnstartedInvisible, MCMutation5) |
-| InvCompletedRunSpanHasConclusion | proposed      | empty-conclusion fallback, part of Finding 4 fix (analyzer.go:542-548) | green (fails w/ BugNoConclFallback, MCMutation6) |
+| InvQueueOnlyCompletedJobs     | proposed         | Finding 3 — **fixed 2026-07-06** (analyzer.go:924-926) | green (fails w/ BugQueueUngated, MCMutation3) |
+| InvTimedOutAttemptNotSuccess  | proposed         | Finding 4 — **fixed 2026-07-06** (conclusionFromJobs :796-811) | green (fails w/ BugTimedOutSuccess, MCMutation4) |
+| InvPendingJobsVisible         | proposed         | discovery note — **fixed 2026-07-06** (analyzer.go:853-864) | green (fails w/ BugUnstartedInvisible, MCMutation5) |
+| InvCompletedRunSpanHasConclusion | proposed      | empty-conclusion fallback, part of Finding 4 fix (analyzer.go:546-548) | green (fails w/ BugNoConclFallback, MCMutation6) |
 | InvBaitNoRetrySpan            | bait             | must fail (proves exploration)                     | fails ✓   |
 
 The user owns correctness properties: all `proposed` invariants are
@@ -139,7 +139,7 @@ Job completes with conclusion=failure but `completed_at` missing
 (fault) → `IsPending` is TRUE; with the guard deleted (Bug=TRUE)
 the job lands in both `countedPending` and `countedFailed`:
 `countedPending = countedFailed = {<<1, j1>>}`. The `!isPending`
-guard at analyzer.go:877 is load-bearing.
+guard at analyzer.go:903 is load-bearing.
 
 ## Findings — ALL FIXED 2026-07-06 (kept as mutations)
 
@@ -160,25 +160,25 @@ guard at analyzer.go:877 is load-bearing.
 3. **Queue time counted for non-completed jobs** (now MCMutation3).
    Trace: job starts (in_progress, conclusion "") → analyzer
    processes it → queue time counted.
-   **Fix**: shared `countsQueueTime` gate (analyzer.go:904-906)
+   **Fix**: shared `countsQueueTime` gate (analyzer.go:924-926)
    adds `!isPending`, used by both the metric and the Queued-span
    emission — matching the FailedJobs discipline at :877.
 4. **Timed-out attempt reported as success** (now MCMutation4).
    Trace: attempt-1 job completes `timed_out` → re-run →
    attempt span said `success` while FailedJobs counted it failed.
-   **Fix**: shared `conclusionFromJobs` (analyzer.go:789-806),
+   **Fix**: shared `conclusionFromJobs` (analyzer.go:796-811),
    precedence failure > timed_out > cancelled > success; also used
    as the empty-conclusion fallback for the latest attempt's span
    (:542-548, MCMutation6 keeps that path's teeth).
 
 Discovery note, also fixed: never-started (still queued) jobs were
 invisible to PendingJobs (early return before classification).
-processJob now classifies pending first (analyzer.go:822-834);
+processJob now classifies pending first (analyzer.go:853-864);
 InvPendingJobsVisible / MCMutation5 pin it.
 
 ## Spec-derived simplification notes (implemented 2026-07-06)
 
-- `isJobPending` is now one helper (analyzer.go:809-811), used by
+- `isJobPending` is now one helper (analyzer.go:816-818), used by
   the pending classification, FailedJobs, and countsQueueTime.
 - `conclusionFromJobs` is the single conclusion derivation for
   previous attempts and the latest-attempt empty-conclusion

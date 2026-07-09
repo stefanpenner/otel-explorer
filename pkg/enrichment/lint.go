@@ -56,88 +56,53 @@ type SpanData struct {
 	HasEvents bool
 }
 
-// deprecatedAttr returns a warning when the span carries a deprecated
-// attribute, suggesting its replacement, or nil if the attribute is absent.
-func deprecatedAttr(span SpanData, old, replacement string) *LintResult {
-	if span.Attrs[old] == "" {
-		return nil
-	}
-	return &LintResult{
-		SpanName:   span.Name,
-		Level:      "warning",
-		Message:    fmt.Sprintf("Deprecated attribute '%s'", old),
-		Suggestion: fmt.Sprintf("Use '%s' instead", replacement),
-	}
+// attrDeprecation describes one deprecated attribute and its replacement.
+type attrDeprecation struct {
+	old          string // deprecated attribute key
+	suggestion   string // full "Use X instead ..." text
+	includeValue bool   // if true, append "(value: X)" to the message
+}
+
+// semconvDeprecations is the single source of truth for attribute
+// deprecation checks. Add a row here to teach lintSpan about a new one.
+var semconvDeprecations = []attrDeprecation{
+	{old: "http.method", suggestion: "Use 'http.request.method' instead (semconv v1.20+)", includeValue: true},
+	{old: "http.status_code", suggestion: "Use 'http.response.status_code' instead (semconv v1.20+)", includeValue: true},
+	{old: "http.url", suggestion: "Use 'url.full' instead (semconv v1.20+)"},
+	{old: "http.target", suggestion: "Use 'url.path' and 'url.query' instead (semconv v1.20+)"},
+	{old: "http.scheme", suggestion: "Use 'url.scheme' instead (semconv v1.20+)"},
+	{old: "http.host", suggestion: "Use 'server.address' and 'server.port' instead (semconv v1.20+)"},
+	{old: "db.system", suggestion: "Use 'db.system.name' instead"},
+	{old: "db.statement", suggestion: "Use 'db.query.text' instead"},
+	{old: "db.operation", suggestion: "Use 'db.operation.name' instead"},
+	{old: "db.sql.table", suggestion: "Use 'db.collection.name' instead"},
+	{old: "db.name", suggestion: "Use 'db.namespace' instead"},
+	{old: "db.connection_string", suggestion: "Use 'server.address and server.port' instead"},
+	{old: "net.peer.name", suggestion: "Use 'server.address' (client spans) or 'client.address' (server spans) instead"},
+	{old: "net.peer.port", suggestion: "Use 'server.port' (client spans) or 'client.port' (server spans) instead"},
+	{old: "messaging.destination", suggestion: "Use 'messaging.destination.name' instead (semconv v1.20+)"},
 }
 
 // lintSpan checks a single span for semconv issues.
 func lintSpan(span SpanData) []LintResult {
 	var results []LintResult
 
-	// Check for deprecated HTTP attributes
-	if span.Attrs["http.method"] != "" {
-		results = append(results, LintResult{
-			SpanName:   span.Name,
-			Level:      "warning",
-			Message:    fmt.Sprintf("Deprecated attribute 'http.method' (value: %s)", span.Attrs["http.method"]),
-			Suggestion: "Use 'http.request.method' instead (semconv v1.20+)",
-		})
-	}
-	if span.Attrs["http.status_code"] != "" {
-		results = append(results, LintResult{
-			SpanName:   span.Name,
-			Level:      "warning",
-			Message:    fmt.Sprintf("Deprecated attribute 'http.status_code' (value: %s)", span.Attrs["http.status_code"]),
-			Suggestion: "Use 'http.response.status_code' instead (semconv v1.20+)",
-		})
-	}
-	if span.Attrs["http.url"] != "" {
-		results = append(results, LintResult{
-			SpanName:   span.Name,
-			Level:      "warning",
-			Message:    "Deprecated attribute 'http.url'",
-			Suggestion: "Use 'url.full' instead (semconv v1.20+)",
-		})
-	}
-	if span.Attrs["http.target"] != "" {
-		results = append(results, LintResult{
-			SpanName:   span.Name,
-			Level:      "warning",
-			Message:    "Deprecated attribute 'http.target'",
-			Suggestion: "Use 'url.path' and 'url.query' instead (semconv v1.20+)",
-		})
-	}
-	if span.Attrs["http.scheme"] != "" {
-		results = append(results, LintResult{
-			SpanName:   span.Name,
-			Level:      "warning",
-			Message:    "Deprecated attribute 'http.scheme'",
-			Suggestion: "Use 'url.scheme' instead (semconv v1.20+)",
-		})
-	}
-	if span.Attrs["http.host"] != "" {
-		results = append(results, LintResult{
-			SpanName:   span.Name,
-			Level:      "warning",
-			Message:    "Deprecated attribute 'http.host'",
-			Suggestion: "Use 'server.address' and 'server.port' instead (semconv v1.20+)",
-		})
-	}
-
-	// Check for deprecated DB attributes (the stable database semconv renamed
-	// them — db.system → db.system.name, db.statement → db.query.text, etc.).
-	dbDeprecations := []struct{ old, replacement string }{
-		{"db.system", "db.system.name"},
-		{"db.statement", "db.query.text"},
-		{"db.operation", "db.operation.name"},
-		{"db.sql.table", "db.collection.name"},
-		{"db.name", "db.namespace"},
-		{"db.connection_string", "server.address and server.port"},
-	}
-	for _, d := range dbDeprecations {
-		if r := deprecatedAttr(span, d.old, d.replacement); r != nil {
-			results = append(results, *r)
+	// Deprecated-attribute checks (table-driven).
+	for _, d := range semconvDeprecations {
+		val := span.Attrs[d.old]
+		if val == "" {
+			continue
 		}
+		msg := fmt.Sprintf("Deprecated attribute '%s'", d.old)
+		if d.includeValue {
+			msg = fmt.Sprintf("%s (value: %s)", msg, val)
+		}
+		results = append(results, LintResult{
+			SpanName:   span.Name,
+			Level:      "warning",
+			Message:    msg,
+			Suggestion: d.suggestion,
+		})
 	}
 
 	// A query without a database system is incomplete (accept old or new name).
@@ -149,24 +114,6 @@ func lintSpan(span SpanData) []LintResult {
 			Level:      "warning",
 			Message:    "Has a DB query but missing required 'db.system.name'",
 			Suggestion: "Add 'db.system.name' attribute (e.g., 'postgresql', 'mysql', 'redis')",
-		})
-	}
-
-	// Check for deprecated net.* attributes
-	if span.Attrs["net.peer.name"] != "" {
-		results = append(results, LintResult{
-			SpanName:   span.Name,
-			Level:      "warning",
-			Message:    "Deprecated attribute 'net.peer.name'",
-			Suggestion: "Use 'server.address' (client spans) or 'client.address' (server spans) instead",
-		})
-	}
-	if span.Attrs["net.peer.port"] != "" {
-		results = append(results, LintResult{
-			SpanName:   span.Name,
-			Level:      "warning",
-			Message:    "Deprecated attribute 'net.peer.port'",
-			Suggestion: "Use 'server.port' (client spans) or 'client.port' (server spans) instead",
 		})
 	}
 
@@ -192,16 +139,6 @@ func lintSpan(span SpanData) []LintResult {
 				Suggestion: "Add 'http.route' (e.g., '/api/users/:id') for meaningful span grouping",
 			})
 		}
-	}
-
-	// Check for deprecated messaging attributes
-	if span.Attrs["messaging.destination"] != "" {
-		results = append(results, LintResult{
-			SpanName:   span.Name,
-			Level:      "warning",
-			Message:    "Deprecated attribute 'messaging.destination'",
-			Suggestion: "Use 'messaging.destination.name' instead (semconv v1.20+)",
-		})
 	}
 
 	// Check RPC spans for required attributes

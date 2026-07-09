@@ -18,7 +18,6 @@ import (
 	"github.com/stefanpenner/otel-explorer/pkg/enrichment"
 	"github.com/stefanpenner/otel-explorer/pkg/export"
 	otelexport "github.com/stefanpenner/otel-explorer/pkg/export/otel"
-	perfettoexport "github.com/stefanpenner/otel-explorer/pkg/export/perfetto"
 	"github.com/stefanpenner/otel-explorer/pkg/githubapi"
 	"github.com/stefanpenner/otel-explorer/pkg/ingest/filter"
 	"github.com/stefanpenner/otel-explorer/pkg/ingest/otlpfile"
@@ -841,17 +840,7 @@ func main() {
 		}
 
 		spans := receivedSpans
-		var globalEarliest, globalLatest int64
-		for _, s := range spans {
-			startMs := s.StartTime().UnixMilli()
-			endMs := s.EndTime().UnixMilli()
-			if globalEarliest == 0 || startMs < globalEarliest {
-				globalEarliest = startMs
-			}
-			if endMs > globalLatest {
-				globalLatest = endMs
-			}
-		}
+		globalEarliest, globalLatest := computeTimeBounds(spans)
 
 		if cfg.tuiMode {
 			globalStartTime := time.UnixMilli(globalEarliest)
@@ -961,10 +950,6 @@ func main() {
 	// 3. Setup Exporters
 	var exporters []core.Exporter
 
-	if perfettoFile != "" {
-		exporters = append(exporters, perfettoexport.NewExporter(os.Stderr, perfettoFile, cfg.openInPerfetto))
-	}
-
 	if cfg.otelStdout {
 		stdoutExporter, err := otelexport.NewStdoutExporter(os.Stdout)
 		if err != nil {
@@ -1071,17 +1056,8 @@ func main() {
 
 	// 6. Combine all spans, collapsing API/runner duplicates (runner wins)
 	spans := analyzer.DedupeRunnerSpans(append(ghaSpans, traceSpans...))
-	// Update global time bounds from trace spans
-	for _, s := range traceSpans {
-		startMs := s.StartTime().UnixMilli()
-		endMs := s.EndTime().UnixMilli()
-		if globalEarliest == 0 || startMs < globalEarliest {
-			globalEarliest = startMs
-		}
-		if endMs > globalLatest {
-			globalLatest = endMs
-		}
-	}
+	// Extend global time bounds (from Ingest) with trace spans
+	globalEarliest, globalLatest = extendTimeBounds(globalEarliest, globalLatest, traceSpans)
 
 	// Apply span filter
 	if spanFilter != nil {
@@ -1126,32 +1102,23 @@ func main() {
 		// Create reload function that clears cache and refetches data
 		reloadFunc := func(reporter tuiresults.LoadingReporter) ([]sdktrace.ReadOnlySpan, time.Time, time.Time, error) {
 			var allSpans []sdktrace.ReadOnlySpan
-			var reloadEarliest, reloadLatest int64
+		var reloadEarliest, reloadLatest int64
 
-			// Re-read trace files
-			if len(cfg.traceFiles) > 0 {
-				if reporter != nil {
-					reporter.SetPhase("Loading trace files")
-				}
-				for i, tf := range cfg.traceFiles {
-					fileSpans, err := otlpfile.ParseFile(tf)
-					if err != nil {
-						return nil, time.Time{}, time.Time{}, fmt.Errorf("failed to load trace file %s: %w", tf, err)
-					}
-					urlIdx := len(args) + i
-					allSpans = append(allSpans, tagSpansWithIndex(fileSpans, urlIdx)...)
-				}
-				for _, s := range allSpans {
-					startMs := s.StartTime().UnixMilli()
-					endMs := s.EndTime().UnixMilli()
-					if reloadEarliest == 0 || startMs < reloadEarliest {
-						reloadEarliest = startMs
-					}
-					if endMs > reloadLatest {
-						reloadLatest = endMs
-					}
-				}
+		// Re-read trace files
+		if len(cfg.traceFiles) > 0 {
+			if reporter != nil {
+				reporter.SetPhase("Loading trace files")
 			}
+			for i, tf := range cfg.traceFiles {
+				fileSpans, err := otlpfile.ParseFile(tf)
+				if err != nil {
+					return nil, time.Time{}, time.Time{}, fmt.Errorf("failed to load trace file %s: %w", tf, err)
+				}
+				urlIdx := len(args) + i
+				allSpans = append(allSpans, tagSpansWithIndex(fileSpans, urlIdx)...)
+			}
+			reloadEarliest, reloadLatest = computeTimeBounds(allSpans)
+		}
 
 			// Re-fetch from GitHub if URLs were provided
 			if len(args) > 0 {
@@ -1675,6 +1642,41 @@ func tagSpansWithIndex(spans []sdktrace.ReadOnlySpan, urlIndex int) []sdktrace.R
 		stubs[i].Attributes = append(stubs[i].Attributes, attribute.Int("github.url_index", urlIndex))
 	}
 	return stubs.Snapshots()
+}
+
+// computeTimeBounds returns the earliest start and latest end across spans
+// (Unix milliseconds). Returns (0, 0) for empty input. Uses the first span's
+// start as the initial bound so a span at Unix epoch (startMs==0) is handled
+// correctly rather than treated as an "unset" sentinel.
+func computeTimeBounds(spans []sdktrace.ReadOnlySpan) (earliest, latest int64) {
+	for i, s := range spans {
+		startMs := s.StartTime().UnixMilli()
+		endMs := s.EndTime().UnixMilli()
+		if i == 0 || startMs < earliest {
+			earliest = startMs
+		}
+		if endMs > latest {
+			latest = endMs
+		}
+	}
+	return earliest, latest
+}
+
+// extendTimeBounds merges the bounds of spans into the given earliest/latest.
+// A (0, 0) seed is treated as "unset" so the first real span seed wins; a
+// real span at Unix epoch is preserved.
+func extendTimeBounds(earliest, latest int64, spans []sdktrace.ReadOnlySpan) (int64, int64) {
+	if earliest == 0 && latest == 0 {
+		return computeTimeBounds(spans)
+	}
+	e, l := computeTimeBounds(spans)
+	if e != 0 && e < earliest {
+		earliest = e
+	}
+	if l > latest {
+		latest = l
+	}
+	return earliest, latest
 }
 
 func printUsage() {

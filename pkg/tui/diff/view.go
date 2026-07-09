@@ -258,13 +258,6 @@ func plural(n int) string {
 	return "s"
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 // padLine pads a (possibly styled) line with spaces to a visible width so a
 // selection background fills the row.
 func padLine(line string, width int) string {

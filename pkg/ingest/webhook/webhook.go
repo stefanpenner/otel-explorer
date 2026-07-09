@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+
+	"github.com/stefanpenner/otel-explorer/pkg/utils"
 )
 
 type webhookPayload struct {
@@ -30,7 +32,8 @@ const maxWebhookBytes = 10 * 1024 * 1024 // 10MB
 
 // ParseWebhook reads a GitHub Actions webhook JSON payload and returns
 // GitHub URLs to analyze. It supports workflow_run and workflow_job events.
-func ParseWebhook(r io.Reader) ([]string, error) {
+func ParseWebhook(r io.Reader) (urls []string, err error) {
+	defer utils.RecoverBoundary0(&err)
 	data, err := io.ReadAll(io.LimitReader(r, maxWebhookBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read webhook payload: %w", err)

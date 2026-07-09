@@ -49,7 +49,12 @@ func LoadRules(path string) (*RuleEnricher, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading rules file: %w", err)
 	}
+	return LoadRulesFromBytes(data)
+}
 
+// LoadRulesFromBytes parses enrichment rules from JSON bytes. Separated from
+// LoadRules so it can be fuzz-tested without touching the filesystem.
+func LoadRulesFromBytes(data []byte) (*RuleEnricher, error) {
 	var config struct {
 		Enrichers []Rule `json:"enrichers"`
 	}

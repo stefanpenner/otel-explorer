@@ -14,6 +14,7 @@ go_library(
     importpath = "github.com/stefanpenner/otel-explorer/pkg/ingest/otlpfile",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/utils",
         "@com_github_klauspost_compress//zstd",
         "@io_opentelemetry_go_otel//attribute",
         "@io_opentelemetry_go_otel//codes",
