@@ -66,10 +66,18 @@ Wire health: `scripts/verify-decision-wires.sh` (also from `check-specs.sh`).
 
 Checks:
 - Decision.tla present for each core
-- Generated `pkg/.../*spec/spec.go`
+- Generated `pkg/.../*spec/spec.go` with `PurePredicates()` registry
 - Production pure-gate symbols in non-test sources
-- Dual test files present
+- Dual test files present (semantic duals + registry smoke)
 - Optional: `SPECGEN_CHECK_REGEN=1` → regenerate + no-diff
+
+Generated pure API (per `*spec` package):
+
+```go
+func (s State) WaitNeeded() bool          // example pure gate
+func PurePredicates() []PurePredicate     // enumerate all pure gates
+// TestPurePredicates — generated smoke on Init
+```
 
 ```bash
 scripts/verify-decision-wires.sh

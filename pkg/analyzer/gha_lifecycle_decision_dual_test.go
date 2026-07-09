@@ -192,3 +192,18 @@ func TestGhaLifecycleDecisionDual_Table(t *testing.T) {
 		})
 	}
 }
+
+func TestGhaLifecyclePurePredicatesRegistry(t *testing.T) {
+	t.Parallel()
+	preds := ghalifecyclespec.PurePredicates()
+	require.NotEmpty(t, preds)
+	s := ghalifecyclespec.Init()
+	var saw bool
+	for _, p := range preds {
+		_ = p.Check(s)
+		if p.Name == "PendingNeverFailed" {
+			saw = true
+		}
+	}
+	assert.True(t, saw)
+}

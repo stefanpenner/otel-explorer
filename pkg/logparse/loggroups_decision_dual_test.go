@@ -59,3 +59,18 @@ func TestSplitGroupsStrayEndgroupNoUnderflow(t *testing.T) {
 	require.Len(t, groups, 1)
 	assert.Equal(t, "Tail", groups[0].name)
 }
+
+func TestLogGroupsPurePredicatesRegistry(t *testing.T) {
+	t.Parallel()
+	preds := loggroupsspec.PurePredicates()
+	require.NotEmpty(t, preds)
+	s := loggroupsspec.Init()
+	var saw bool
+	for _, p := range preds {
+		_ = p.Check(s)
+		if p.Name == "Inv_DepthNonNeg" {
+			saw = true
+		}
+	}
+	assert.True(t, saw)
+}

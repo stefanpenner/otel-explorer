@@ -46,3 +46,18 @@ func TestLogFetchResultFreshMatchesDecision(t *testing.T) {
 	assert.False(t, logFetchResultFresh(1, 2, 0, 0))
 	assert.False(t, logFetchResultFresh(0, 1, 0, 0))
 }
+
+func TestTuiReloadPurePredicatesRegistry(t *testing.T) {
+	t.Parallel()
+	preds := tuireloadspec.PurePredicates()
+	require.NotEmpty(t, preds)
+	s := tuireloadspec.Init()
+	var saw bool
+	for _, p := range preds {
+		_ = p.Check(s)
+		if p.Name == "NoStaleAccepted" {
+			saw = true
+		}
+	}
+	assert.True(t, saw)
+}
