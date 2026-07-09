@@ -36,6 +36,17 @@ gen_pkgs=(
   "pkg/analyzer/spantreespec/spec.go"
 )
 
+# Dual tests that pin production gates to generated Can*/actions.
+dual_tests=(
+  "pkg/tui/results/tuireload_decision_dual_test.go"
+  "pkg/githubapi/rate_limit_decision_dual_test.go"
+  "pkg/analyzer/clamp_decision_dual_test.go"
+  "pkg/store/sync_bounds_decision_dual_test.go"
+  "pkg/analyzer/gha_lifecycle_decision_dual_test.go"
+  "pkg/logparse/loggroups_decision_dual_test.go"
+  "pkg/analyzer/spantree_decision_dual_test.go"
+)
+
 # True if $sym appears in a non-test, non-*spec production .go under $dir.
 # Uses find+grep so CI does not need ripgrep.
 has_prod_symbol() {
@@ -81,6 +92,35 @@ for row in "${wires[@]}"; do
     fail=1
   fi
 done
+
+echo "--- dual tests ---"
+for t in "${dual_tests[@]}"; do
+  if [ -f "$t" ]; then
+    echo "  ok $t"
+  else
+    echo "  FAIL missing dual test $t"
+    fail=1
+  fi
+done
+
+# Optional: regen no-diff when SPECGEN_CHECK_REGEN=1 and specgen on PATH.
+# Catches Decision.tla drift against committed *spec packages.
+if [ "${SPECGEN_CHECK_REGEN:-}" = "1" ] && command -v specgen >/dev/null 2>&1; then
+  echo "--- regen no-diff (SPECGEN_CHECK_REGEN=1) ---"
+  if ! "$REPO_ROOT/scripts/regenerate-decision-cores.sh" >/tmp/regen-decision-cores.log 2>&1; then
+    echo "  FAIL regenerate-decision-cores.sh"
+    tail -20 /tmp/regen-decision-cores.log
+    fail=1
+  elif ! git -C "$REPO_ROOT" diff --quiet -- 'pkg/**/*spec/spec.go' 'pkg/**/*spec/spec_test.go' 2>/dev/null; then
+    echo "  FAIL generated packages drift after regenerate:"
+    git -C "$REPO_ROOT" diff --stat -- 'pkg/**/*spec/' || true
+    fail=1
+    # Restore tree so a failed check does not leave dirty sources.
+    git -C "$REPO_ROOT" checkout -- 'pkg/**/*spec/' 2>/dev/null || true
+  else
+    echo "  ok no drift"
+  fi
+fi
 
 if [ "$fail" -ne 0 ]; then
   echo "verify-decision-wires: FAILED"

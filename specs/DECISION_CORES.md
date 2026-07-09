@@ -64,6 +64,19 @@ scripts/regenerate-decision-cores.sh timing-clamp
 
 Wire health: `scripts/verify-decision-wires.sh` (also from `check-specs.sh`).
 
+Checks:
+- Decision.tla present for each core
+- Generated `pkg/.../*spec/spec.go`
+- Production pure-gate symbols in non-test sources
+- Dual test files present
+- Optional: `SPECGEN_CHECK_REGEN=1` → regenerate + no-diff
+
+```bash
+scripts/verify-decision-wires.sh
+SPECGEN_CHECK_REGEN=1 scripts/verify-decision-wires.sh   # needs specgen on PATH
+scripts/regenerate-decision-cores.sh                     # after Decision.tla edits
+```
+
 Full TLC specs remain authoritative for multi-object interleavings.
 Decision cores pin the **pure decisions** that must not drift.
 
