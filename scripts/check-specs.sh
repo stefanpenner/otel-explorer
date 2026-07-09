@@ -190,50 +190,53 @@ for name in "${specs[@]}"; do
   run_mc_configs "$name/decision" "$ddir" "Decision.tla"
 done
 
-# Optional: if specgen on PATH, verify generated packages exist for known cores.
-# Does not auto-regenerate (avoids overwriting intentional bindings). Document
-# regenerate commands in each specs/*/decision/README.md.
+# Generated decision modules are committed — verify they exist and pass
+# go tests whenever `go` is available (CI has go; local may not have
+# specgen). Regenerating still requires specgen on PATH intentionally.
 echo
-echo "--- specgen packages ---"
-if command -v specgen >/dev/null 2>&1; then
-  # name → pkg path (relative to REPO_ROOT)
-  declare -a SPEC_PKGS=(
-    "tui-reload:pkg/tui/results/tuireloadspec"
-    "rate-limit:pkg/githubapi/ratelimitspec"
-    "timing-clamp:pkg/analyzer/timingclampspec"
-    "sync-bounds:pkg/store/syncboundsspec"
-    "gha-lifecycle:pkg/analyzer/ghalifecyclespec"
-    "log-groups:pkg/logparse/loggroupsspec"
-    "span-tree:pkg/analyzer/spantreespec"
-  )
-  for entry in "${SPEC_PKGS[@]}"; do
-    sname="${entry%%:*}"
-    pkg="${entry#*:}"
-    # Only check cores we were asked to run and that have a Decision.tla
-    skip=1
-    for n in "${specs[@]}"; do
-      if [ "$n" = "$sname" ]; then skip=0; break; fi
-    done
-    [ "$skip" -eq 0 ] || continue
-    [ -f "$SPECS_DIR/$sname/decision/Decision.tla" ] || continue
+echo "--- decision packages (committed *spec) ---"
+declare -a SPEC_PKGS=(
+  "tui-reload:pkg/tui/results/tuireloadspec"
+  "rate-limit:pkg/githubapi/ratelimitspec"
+  "timing-clamp:pkg/analyzer/timingclampspec"
+  "sync-bounds:pkg/store/syncboundsspec"
+  "gha-lifecycle:pkg/analyzer/ghalifecyclespec"
+  "log-groups:pkg/logparse/loggroupsspec"
+  "span-tree:pkg/analyzer/spantreespec"
+)
+for entry in "${SPEC_PKGS[@]}"; do
+  sname="${entry%%:*}"
+  pkg="${entry#*:}"
+  # Only check cores we were asked to run and that have a Decision.tla
+  skip=1
+  for n in "${specs[@]}"; do
+    if [ "$n" = "$sname" ]; then skip=0; break; fi
+  done
+  [ "$skip" -eq 0 ] || continue
+  [ -f "$SPECS_DIR/$sname/decision/Decision.tla" ] || continue
 
-    if [ -f "$REPO_ROOT/$pkg/spec.go" ] && [ -f "$REPO_ROOT/$pkg/spec_test.go" ]; then
-      printf '%-22s %-40s %s\n' "$sname" "$pkg" 'ok'
-      # Optional go test of the generated package (fast BFS).
-      if command -v go >/dev/null 2>&1; then
-        if ! (cd "$REPO_ROOT" && go test "./$pkg/" -count=1 >/dev/null 2>&1); then
-          printf '%-22s %-40s %s\n' "$sname" "go test ./$pkg/" 'FAIL ✗'
-          fail=$((fail + 1))
-        fi
+  if [ -f "$REPO_ROOT/$pkg/spec.go" ] && [ -f "$REPO_ROOT/$pkg/spec_test.go" ]; then
+    printf '%-22s %-40s %s\n' "$sname" "$pkg" 'present'
+    # Always run generated package tests when go is available (BFS +
+    # TestPurePredicates). Does not require specgen on PATH.
+    if command -v go >/dev/null 2>&1; then
+      if (cd "$REPO_ROOT" && go test "./$pkg/" -count=1 >/dev/null 2>&1); then
+        printf '%-22s %-40s %s\n' "$sname" "go test ./$pkg/" 'ok'
+      else
+        printf '%-22s %-40s %s\n' "$sname" "go test ./$pkg/" 'FAIL ✗'
+        fail=$((fail + 1))
       fi
     else
-      printf '%-22s %-40s %s\n' "$sname" "$pkg" 'MISSING ✗'
-      echo "    | regenerate via specs/$sname/decision/README.md (specgen on PATH)"
-      fail=$((fail + 1))
+      printf '%-22s %-40s %s\n' "$sname" "go test" 'skip (no go)'
     fi
-  done
-else
-  echo "specgen: not on PATH (skip package verify; install via ~/.ai or PATH)"
+  else
+    printf '%-22s %-40s %s\n' "$sname" "$pkg" 'MISSING ✗'
+    echo "    | regenerate: scripts/regenerate-decision-cores.sh $sname"
+    fail=$((fail + 1))
+  fi
+done
+if ! command -v specgen >/dev/null 2>&1; then
+  echo "(specgen not on PATH — packages not re-codegen'd; committed *spec still tested)"
 fi
 
 # Production wires: every decision core that documents a production gate

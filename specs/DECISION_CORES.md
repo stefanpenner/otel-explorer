@@ -83,7 +83,11 @@ func PurePredicates() []PurePredicate     // enumerate all pure gates
 scripts/verify-decision-wires.sh
 SPECGEN_CHECK_REGEN=1 scripts/verify-decision-wires.sh   # needs specgen on PATH
 scripts/regenerate-decision-cores.sh                     # after Decision.tla edits
+scripts/check-specs.sh                                   # TLC + go test all *spec (go, not specgen)
 ```
+
+CI (`tla-specs` job) always runs committed `go test ./pkg/.../*spec` when `go`
+is available — does **not** require `specgen` on PATH. Regen stays intentional.
 
 Full TLC specs remain authoritative for multi-object interleavings.
 Decision cores pin the **pure decisions** that must not drift.
