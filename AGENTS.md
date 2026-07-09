@@ -48,14 +48,21 @@ scripts/check-specs.sh                # TLA+ model checks (skips without a JVM)
 ## TLA+ Specs (specs/)
 
 Model-checked specs for the concurrency/state-machine subsystems.
-See `specs/README.md` (conventions) and `specs/FINDINGS.md` (campaign results).
+See `specs/README.md`, `specs/DECISION_CORES.md`, and `specs/FINDINGS.md`.
 CI runs them via the `tla-specs` job (`scripts/check-specs.sh`).
+
+Two layers:
+
+1. **Full TLC specs** (`specs/<name>/<Spec>.tla`) — design model-checkers
+   (records/quantifiers OK). Bait + mutation configs required.
+2. **Decision cores** (`specs/<name>/decision/`) — scalar SMs for
+   `specgen` → `pkg/.../<name>spec/`. Never hand-edit generated code.
+   Dual/conform tests pin load-bearing guards to production helpers.
 
 Rules for changes:
 
-- Touching a modeled subsystem? Update its spec to match, rerun
-  `scripts/check-specs.sh <spec>`. The spec models the code —
-  drift makes it worthless.
+- Touching a modeled subsystem? Update full spec **and** decision core
+  (if present), rerun `scripts/check-specs.sh <spec>`, re-`specgen`.
 - Modeled subsystems → spec dir:
   store sync/watermark → `sync-bounds`; TUI reload/log-fetch → `tui-reload`;
   githubapi limiter/retry → `rate-limit`; analyzer run/job lifecycle →
@@ -64,6 +71,8 @@ Rules for changes:
 - New concurrent/stateful design (queues, retries, invalidation,
   cancellation, "stale"/"race"/"in-flight" anywhere in the design)?
   Spec FIRST — an incoherent design should die in the spec, not in code.
+  Prefer a decision core + `specgen` for pure guards; keep full TLC for
+  multi-object interleavings.
 - Never weaken a spec or property to silence a violation — report it.
 - Regression tests derived from TLC witness traces are named
   `Test<Spec>Spec_*` — keep that convention so the spec↔test link stays visible.

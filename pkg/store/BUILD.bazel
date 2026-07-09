@@ -20,6 +20,7 @@ go_test(
     srcs = [
         "roundtrip_fuzz_test.go",
         "store_test.go",
+        "sync_bounds_decision_dual_test.go",
         "sync_test.go",
         "upsert_merge_fuzz_test.go",
     ],
@@ -27,6 +28,7 @@ go_test(
     deps = [
         "//pkg/analyzer",
         "//pkg/githubapi",
+        "//pkg/store/syncboundsspec",
         "@com_github_stretchr_testify//assert",
         "@com_github_stretchr_testify//require",
     ],
