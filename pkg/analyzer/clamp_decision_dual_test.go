@@ -1,10 +1,12 @@
 package analyzer
 
-// Dual check: clampSpanToParent (handwritten) vs DoClamp from the
-// TimingClampDecision core (specgen → timingclampspec).
+// Dual check: production clampSpanToParent (thin wrapper around DoClamp)
+// still matches applying DoClamp on a fresh timingclampspec.State.
+// Catches wrapper drift if someone re-inlines the formula.
 //
 // Spec: specs/timing-clamp/decision/Decision.tla
 // Gen:  pkg/analyzer/timingclampspec (never hand-edit)
+// Production: analyzer.clampSpanToParent → State.DoClamp()
 
 import (
 	"testing"

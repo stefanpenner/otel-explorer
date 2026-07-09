@@ -27,6 +27,7 @@ go_library(
     importpath = "github.com/stefanpenner/otel-explorer/pkg/analyzer",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/analyzer/timingclampspec",
         "//pkg/enrichment",
         "//pkg/githubapi",
         "//pkg/ingest/otlpfile",
