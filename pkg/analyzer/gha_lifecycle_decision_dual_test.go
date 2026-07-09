@@ -43,8 +43,9 @@ func TestGhaLifecycleDecisionDual_InitPendingFailure(t *testing.T) {
 	st = st.ClassifyPending()
 	assert.True(t, st.CountedPending)
 	assert.False(t, st.CountedFailed)
-	// PendingNeverFailed
+	// PendingNeverFailed (hand check + generated pure)
 	assert.False(t, st.CountedPending && st.CountedFailed)
+	assert.True(t, st.PendingNeverFailed())
 }
 
 // TestGhaLifecycleDecisionDual_CompletedFailure: after Reset, a completed

@@ -23,6 +23,7 @@ func TestDropAPIForRunnerTwinMatchesDecision(t *testing.T) {
 	require.True(t, s.CanDedupChoose())
 	s = s.DedupChoose()
 	assert.Equal(t, "runner", s.Kept)
+	assert.True(t, s.Inv_RunnerWins(), "generated pure Inv_RunnerWins after DedupChoose")
 	assert.True(t, dropAPIForRunnerTwin(1, 1, false),
 		"API side of twin must drop")
 	assert.False(t, dropAPIForRunnerTwin(1, 1, true),

@@ -152,11 +152,6 @@ func (s State) NoSendWhileExhausted() bool {
 	return !(s.SentWhileExhausted)
 }
 
-// BaitNeverSleep is the pure TLA+ operator BaitNeverSleep.
-func (s State) BaitNeverSleep() bool {
-	return !(s.Sleeping)
-}
-
 // --- Trace emission for conformance checking ---
 
 // TraceEntry is a single recorded transition for conformance validation.

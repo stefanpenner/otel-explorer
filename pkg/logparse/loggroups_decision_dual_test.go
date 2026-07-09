@@ -21,6 +21,7 @@ func TestGroupStackGatesMatchDecision(t *testing.T) {
 	assert.Equal(t, int64(0), s.Depth)
 	assert.True(t, s.CanOpen())
 	assert.False(t, s.CanClose())
+	assert.True(t, s.Inv_DepthNonNeg(), "generated pure Inv_DepthNonNeg at depth 0")
 	assert.True(t, canOpenGroup(0, 3))
 	assert.False(t, canCloseGroup(0), "CloseBug forbidden: no underflow")
 

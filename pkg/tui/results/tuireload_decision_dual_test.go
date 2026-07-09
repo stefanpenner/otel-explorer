@@ -37,6 +37,10 @@ func TestLogFetchResultFreshMatchesDecision(t *testing.T) {
 	assert.True(t, s.CanFetchDiscard())
 	assert.False(t, logFetchResultFresh(s.FetchJob, s.FetchJob, int(s.FetchGen), int(s.ReloadGen)),
 		"production gate must match CanFetchDiscard after reload gen bump")
+	// Faithful path never accepts stale: FetchDiscard leaves StaleAccepted false.
+	require.True(t, s.CanFetchDiscard())
+	s = s.FetchDiscard()
+	assert.True(t, s.NoStaleAccepted(), "generated pure NoStaleAccepted after FetchDiscard")
 
 	// Wrong job never accepted.
 	assert.False(t, logFetchResultFresh(1, 2, 0, 0))

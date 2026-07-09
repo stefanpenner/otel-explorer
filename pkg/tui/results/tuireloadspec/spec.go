@@ -146,11 +146,6 @@ func (s State) NoStaleAccepted() bool {
 	return !(s.StaleAccepted)
 }
 
-// BaitNeverFetch is the pure TLA+ operator BaitNeverFetch.
-func (s State) BaitNeverFetch() bool {
-	return s.FetchJob == 0
-}
-
 // --- Trace emission for conformance checking ---
 
 // TraceEntry is a single recorded transition for conformance validation.
