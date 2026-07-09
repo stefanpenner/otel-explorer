@@ -252,6 +252,33 @@ else
   fail=$((fail + 1))
 fi
 
+# Dual tests pin production gates to generated Can*/pure preds. Run a
+# filtered suite when go is available so the tla-specs job (not only the
+# unit-test job) exercises the stack bridge.
+echo
+echo "--- dual tests (production ↔ decision) ---"
+if command -v go >/dev/null 2>&1; then
+  # Broad but safe filter: dual files use these name patterns.
+  dual_run='Decision|PurePredicates|Dual|GroupStack|LogFetchResultFresh|DropAPI|ClampDecision|RateLimit|SyncBounds'
+  declare -a DUAL_PKGS=(
+    "pkg/analyzer"
+    "pkg/githubapi"
+    "pkg/store"
+    "pkg/logparse"
+    "pkg/tui/results"
+  )
+  for dpkg in "${DUAL_PKGS[@]}"; do
+    if (cd "$REPO_ROOT" && go test "./$dpkg/" -run "$dual_run" -count=1 >/dev/null 2>&1); then
+      printf '%-22s %-40s %s\n' "dual" "./$dpkg/" 'ok'
+    else
+      printf '%-22s %-40s %s\n' "dual" "./$dpkg/" 'FAIL ✗'
+      fail=$((fail + 1))
+    fi
+  done
+else
+  echo "go not on PATH — skip dual package tests"
+fi
+
 echo
 echo "specs: $pass ok, $fail failed"
 [ $fail -eq 0 ]

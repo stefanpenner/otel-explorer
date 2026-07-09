@@ -80,10 +80,11 @@ func PurePredicates() []PurePredicate     // enumerate all pure gates
 ```
 
 ```bash
+scripts/decision-stack-status.sh                         # inventory table
 scripts/verify-decision-wires.sh
 SPECGEN_CHECK_REGEN=1 scripts/verify-decision-wires.sh   # needs specgen on PATH
 scripts/regenerate-decision-cores.sh                     # after Decision.tla edits
-scripts/check-specs.sh                                   # TLC + go test all *spec (go, not specgen)
+scripts/check-specs.sh                                   # TLC + *spec + duals + wires
 ```
 
 CI (`tla-specs` job) always runs committed `go test ./pkg/.../*spec` when `go`
