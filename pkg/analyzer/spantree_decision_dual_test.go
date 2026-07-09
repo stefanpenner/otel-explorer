@@ -35,3 +35,18 @@ func TestDropAPIForRunnerTwinMatchesDecision(t *testing.T) {
 	assert.False(t, dropAPIForRunnerTwin(2, 1, false))
 	assert.False(t, dropAPIForRunnerTwin(1, 2, false))
 }
+
+func TestSpanTreePurePredicatesRegistry(t *testing.T) {
+	t.Parallel()
+	preds := spantreespec.PurePredicates()
+	require.NotEmpty(t, preds)
+	s := spantreespec.Init()
+	var saw bool
+	for _, p := range preds {
+		_ = p.Check(s)
+		if p.Name == "Inv_RunnerWins" {
+			saw = true
+		}
+	}
+	assert.True(t, saw)
+}

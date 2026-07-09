@@ -76,6 +76,11 @@ echo "--- generated packages ---"
 for p in "${gen_pkgs[@]}"; do
   if [ -f "$p" ]; then
     echo "  ok $p"
+    # PurePredicates registry is required for dual/CI enumeration.
+    if ! grep -F -q 'func PurePredicates()' "$p" 2>/dev/null; then
+      echo "  FAIL $p missing PurePredicates() registry"
+      fail=1
+    fi
   else
     echo "  FAIL missing $p"
     fail=1
