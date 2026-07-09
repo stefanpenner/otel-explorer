@@ -71,15 +71,11 @@ regen_one() {
   fi
 
   echo "specgen $name → $out"
-  # Preserve handwritten files (conform_test.go, BUILD.bazel) — only overwrite
-  # generated sources by writing to a temp dir and copying spec.go/spec_test.go.
-  local tmp
-  tmp="$(mktemp -d)"
-  # shellcheck disable=SC2086
-  specgen -o "$tmp" -p "$pkg" "${consts[@]}" "$tla"
+  # Write straight into the package dir so the Regenerate: header records the
+  # stable -o path (not a temp dir). Only spec.go / spec_test.go are written;
+  # handwritten BUILD.bazel and conform_test.go are left alone.
   mkdir -p "$out"
-  cp "$tmp/spec.go" "$tmp/spec_test.go" "$out/"
-  rm -rf "$tmp"
+  specgen -o "$out" -p "$pkg" "${consts[@]}" "$tla"
   echo "  ok $out/spec.go"
 }
 

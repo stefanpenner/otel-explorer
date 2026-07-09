@@ -2,7 +2,7 @@
 # verify-decision-wires.sh — assert production symbols exist for every
 # decision core that claims a production wire in specs/DECISION_CORES.md.
 #
-# Does not run TLC/specgen. Fast stack-health check for CI and agents.
+# Portable: uses find + grep (no ripgrep). Safe for GitHub Actions.
 # Exit 1 if a documented wire is missing from the tree.
 #
 # Usage: scripts/verify-decision-wires.sh
@@ -12,7 +12,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# core_name | package path | required symbol (grep -F)
+# core_name | package path | required symbol
 # Keep in sync with specs/DECISION_CORES.md production column.
 wires=(
   "tui-reload|pkg/tui/results|logFetchResultFresh"
@@ -26,7 +26,6 @@ wires=(
   "log-groups|pkg/logparse|canCloseGroup"
 )
 
-# Generated packages must exist for every decision core.
 gen_pkgs=(
   "pkg/tui/results/tuireloadspec/spec.go"
   "pkg/githubapi/ratelimitspec/spec.go"
@@ -36,6 +35,23 @@ gen_pkgs=(
   "pkg/logparse/loggroupsspec/spec.go"
   "pkg/analyzer/spantreespec/spec.go"
 )
+
+# True if $sym appears in a non-test, non-*spec production .go under $dir.
+# Uses find+grep so CI does not need ripgrep.
+has_prod_symbol() {
+  local dir="$1" sym="$2"
+  local f
+  while IFS= read -r -d '' f; do
+    # Skip generated *spec packages (…/foospec/spec.go).
+    case "$f" in
+      *spec/*) continue ;;
+    esac
+    if grep -F -q -- "$sym" "$f" 2>/dev/null; then
+      return 0
+    fi
+  done < <(find "$dir" -type f -name '*.go' ! -name '*_test.go' -print0 2>/dev/null)
+  return 1
+}
 
 fail=0
 
@@ -58,7 +74,7 @@ done
 echo "--- production wires ---"
 for row in "${wires[@]}"; do
   IFS='|' read -r core dir sym <<<"$row"
-  if rg -F -q --glob '*.go' --glob '!*_test.go' --glob '!**/*spec/**' "$sym" "$dir" 2>/dev/null; then
+  if has_prod_symbol "$dir" "$sym"; then
     echo "  ok $core → $sym"
   else
     echo "  FAIL $core: $sym not in $dir production sources"
