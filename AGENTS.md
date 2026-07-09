@@ -59,9 +59,13 @@ Two layers:
    hermetic `//tools/specgen` into `pkg/.../*spec/`. Never hand-edit
    generated `spec.go` / `spec_test.go`.
 
+**Agent default:** load `specs/GATES.md` → `specs/<core>/GATES.md` only.  
+Open full `.tla` only for race redesign. Cite **symbols**, not line numbers.
+
 ```bash
 bazel test //tools/decision:up_to_date   # codegen freshness (in bazel test //...)
 bazel run  //tools/decision:update       # regenerate committed *spec from .tla
+scripts/decision-stack-status.sh
 ```
 
 Rules for changes:

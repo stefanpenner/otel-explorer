@@ -1,5 +1,8 @@
 # Decision cores (specgen bridge)
 
+**Agent entrypoint for code changes:** [GATES.md](GATES.md)  
+(per-core: `specs/<name>/GATES.md` — not the full TLC model).
+
 The full TLC specs under `specs/*/` use records, multi-object interleavings,
 and other shapes that stay outside the **pure decision-module** core of
 `specgen`. They remain the **design model-checkers**.
