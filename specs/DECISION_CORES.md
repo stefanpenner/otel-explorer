@@ -90,12 +90,18 @@ func PurePredicates() []PurePredicate     // enumerate all pure gates
 (`~/.ai` tool — not yet wired into this repo’s Bazel `//tools/decision` pipeline).
 
 ```bash
+# one core
 specgen -lang rust -const MaxDepth=3 -const Bug=FALSE \
   -o ./out specs/log-groups/decision/Decision.tla   # → out/spec.rs
+
+# all cores (optional rustc -D warnings)
+scripts/gen-decision-rust.sh
+scripts/gen-decision-rust.sh --check
 ```
 
-Idiomatic Rust: `snake_case`, `can_open` / `open(self)`, `Copy`/`Clone`, `PURE_PREDICATES`.
-Go remains the production path for ote; both languages share the same Decision.tla SSOT.
+Idiomatic Rust: `snake_case`, `can_open` / `open(self)`, `apply_action`,
+`Copy`/`Clone`, `PURE_PREDICATES`.  
+Go remains the production path for ote; both share the same Decision.tla SSOT.
 
 ```bash
 # Hermetic Bazel pipeline (preferred — used by CI via bazel test //...)
