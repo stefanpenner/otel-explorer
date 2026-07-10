@@ -9,4 +9,4 @@ Load this for code changes. Full TLC for pipeline faults: `TimingClamp.tla`.
 
 **SSOT:** production calls generated `DoClamp` (not a hand formula).
 
-**Check:** `bazel test //pkg/analyzer:analyzer_test --test_filter=Clamp|Pure`
+**Check:** `scripts/decision-check.sh`

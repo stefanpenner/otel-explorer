@@ -18,6 +18,7 @@ go_library(
     deps = [
         "//pkg/analyzer",
         "//pkg/enrichment",
+        "//pkg/tui/results/tuireloadspec",
         "//pkg/utils",
         "@com_github_charmbracelet_bubbles//key",
         "@com_github_charmbracelet_bubbles//spinner",

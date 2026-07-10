@@ -11,4 +11,4 @@ Load this for code changes. Full TLC only for multi-goroutine races: `RateLimit.
 **SSOT:** production `rateLimitWaitNeeded` calls generated `WaitNeeded`.  
 **Rule:** after sleep, recheck; do not fire blind while still exhausted.
 
-**Check:** `bazel test //pkg/githubapi:githubapi_test --test_filter=RateLimit|Pure`
+**Check:** `scripts/decision-check.sh`

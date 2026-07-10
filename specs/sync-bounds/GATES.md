@@ -9,4 +9,4 @@ Load this for code changes. Full TLC for multi-run sync: `SyncBounds.tla`.
 
 **Rule:** accept if `incoming==0` (unknown) or `incoming==stored`. SQL is atomic twin.
 
-**Check:** `bazel test //pkg/store:store_test --test_filter=SyncBounds|Pure`
+**Check:** `scripts/decision-check.sh`
