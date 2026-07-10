@@ -12,4 +12,5 @@ Load this for code changes. Full TLC for timestamps/gaps: `LogGroups.tla`.
 Production `splitGroups` uses unbounded (maxDepth=0).  
 **Rule:** never underflow depth (stray endgroup is no-op).
 
+**Rust peer:** `gates::can_open_group` / `can_close_group` → `log_groups` module.  
 **Check:** `scripts/decision-check.sh`

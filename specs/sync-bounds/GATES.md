@@ -10,4 +10,5 @@ Load this for code changes. Full TLC for multi-run sync: `SyncBounds.tla`.
 **SSOT:** production `acceptJobsAttempt` calls generated `AcceptAllowed`.  
 **Rule:** accept if `incoming==0` (unknown) or `incoming==stored`. SQL is atomic twin.
 
+**Rust peer:** `gates::accept_jobs_attempt` → `sync_bounds` module.  
 **Check:** `scripts/decision-check.sh`

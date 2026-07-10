@@ -10,4 +10,5 @@ Load this for code changes. Full TLC for pipeline/cycles: `SpanTree.tla`.
 **SSOT:** twin shape runs generated `DedupChoose`; drop API when `kept=="runner"`.  
 **Rule:** when group is exactly {1 API, 1 runner}, drop the API span.
 
+**Rust peer:** `gates::drop_api_for_runner_twin` → `span_tree` module.  
 **Check:** `scripts/decision-check.sh`

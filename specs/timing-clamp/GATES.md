@@ -9,4 +9,5 @@ Load this for code changes. Full TLC for pipeline faults: `TimingClamp.tla`.
 
 **SSOT:** production calls generated `DoClamp` (not a hand formula).
 
+**Rust peer:** `gates::clamp_span_to_parent` → `timing_clamp` module.  
 **Check:** `scripts/decision-check.sh`

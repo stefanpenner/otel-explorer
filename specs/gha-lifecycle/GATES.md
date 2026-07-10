@@ -13,4 +13,5 @@ Load this for code changes. Full TLC for multi-attempt runs: `GhaLifecycle.tla`.
 Skip/cancel filter stays in production (outside decision domain).  
 **Rule:** pending never failed; queue only non-pending (and not skipped/cancelled).
 
+**Rust peer:** `gates::is_job_pending` / `counts_failed` / `counts_queue` → `gha_lifecycle`.  
 **Check:** `scripts/decision-check.sh`
