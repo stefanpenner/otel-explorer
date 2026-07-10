@@ -2043,9 +2043,13 @@ func (cg *CodeGen) exprToGo(e tla.Expr, locals map[string]string, recv string) s
 			}
 			return fmt.Sprintf("%s != %s", lhs, rhs)
 		case "/\\":
-			return fmt.Sprintf("%s && %s", lhs, rhs)
+			// Always parenthesize: Go && binds tighter than ||, but TLA
+			// conjunction/disjunction are left-nested without shared prec.
+			// Bare "a || b && c || d" reassociates and breaks faithful guards
+			// (e.g. ClassifyFailed: (Bug\/has) /\ (fail\/timeout) /\ ~counted).
+			return fmt.Sprintf("(%s && %s)", lhs, rhs)
 		case "\\/":
-			return fmt.Sprintf("%s || %s", lhs, rhs)
+			return fmt.Sprintf("(%s || %s)", lhs, rhs)
 		case "=>":
 			// TLA+ implication P => Q is !P \/ Q. Guarding a quantifier with a
 			// CONSTANT flag (Guarded => \A ...) compiles to (!flag || forAll(...)).
@@ -2869,9 +2873,13 @@ func (cg *CodeGen) guardToGo(e Expr, recv string) string {
 			}
 			return fmt.Sprintf("%s != %s", lhs, rhs)
 		case "/\\":
-			return fmt.Sprintf("%s && %s", lhs, rhs)
+			// Always parenthesize: Go && binds tighter than ||, but TLA
+			// conjunction/disjunction are left-nested without shared prec.
+			// Bare "a || b && c || d" reassociates and breaks faithful guards
+			// (e.g. ClassifyFailed: (Bug\/has) /\ (fail\/timeout) /\ ~counted).
+			return fmt.Sprintf("(%s && %s)", lhs, rhs)
 		case "\\/":
-			return fmt.Sprintf("%s || %s", lhs, rhs)
+			return fmt.Sprintf("(%s || %s)", lhs, rhs)
 		case "+":
 			return fmt.Sprintf("%s + %s", lhs, rhs)
 		case "-":

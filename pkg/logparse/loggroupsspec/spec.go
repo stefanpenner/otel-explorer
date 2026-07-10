@@ -22,7 +22,7 @@ func Init() State {
 
 // CanOpen is the guard for the Open action.
 func (s State) CanOpen() bool {
-	return s.Depth >= 0 && s.Depth < 3
+	return (s.Depth >= 0 && s.Depth < 3)
 }
 
 // Open applies the Open action, returning a new state.
@@ -46,7 +46,7 @@ func (s State) Close() State {
 
 // CanCloseBug is the guard for the CloseBug action.
 func (s State) CanCloseBug() bool {
-	return false && s.Depth == 0
+	return (false && s.Depth == 0)
 }
 
 // CloseBug applies the CloseBug action, returning a new state.

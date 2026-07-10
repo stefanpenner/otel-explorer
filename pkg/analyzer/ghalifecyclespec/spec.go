@@ -30,7 +30,7 @@ func Init() State {
 
 // CanClassifyPending is the guard for the ClassifyPending action.
 func (s State) CanClassifyPending() bool {
-	return !(s.HasCompletedAt) && !(s.CountedPending)
+	return (!(s.HasCompletedAt) && !(s.CountedPending))
 }
 
 // ClassifyPending applies the ClassifyPending action, returning a new state.
@@ -41,7 +41,7 @@ func (s State) ClassifyPending() State {
 
 // CanClassifyFailed is the guard for the ClassifyFailed action.
 func (s State) CanClassifyFailed() bool {
-	return false || s.HasCompletedAt && s.Conclusion == "failure" || s.Conclusion == "timed_out" && !(s.CountedFailed)
+	return (((false || s.HasCompletedAt) && (s.Conclusion == "failure" || s.Conclusion == "timed_out")) && !(s.CountedFailed))
 }
 
 // ClassifyFailed applies the ClassifyFailed action, returning a new state.
@@ -52,7 +52,7 @@ func (s State) ClassifyFailed() State {
 
 // CanClassifyQueue is the guard for the ClassifyQueue action.
 func (s State) CanClassifyQueue() bool {
-	return false || s.HasCompletedAt && !(s.QueueCounted)
+	return ((false || s.HasCompletedAt) && !(s.QueueCounted))
 }
 
 // ClassifyQueue applies the ClassifyQueue action, returning a new state.

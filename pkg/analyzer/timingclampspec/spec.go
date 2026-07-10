@@ -48,7 +48,7 @@ func (s State) SetHostile() State {
 
 // CanDoClamp is the guard for the DoClamp action.
 func (s State) CanDoClamp() bool {
-	return s.Phase == "init" && !(false)
+	return (s.Phase == "init" && !(false))
 }
 
 // DoClamp applies the DoClamp action, returning a new state.
@@ -62,7 +62,7 @@ func (s State) DoClamp() State {
 
 // CanBugPassthrough is the guard for the BugPassthrough action.
 func (s State) CanBugPassthrough() bool {
-	return s.Phase == "init" && false
+	return (s.Phase == "init" && false)
 }
 
 // BugPassthrough applies the BugPassthrough action, returning a new state.
