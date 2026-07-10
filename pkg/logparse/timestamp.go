@@ -7,6 +7,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/stefanpenner/otel-explorer/pkg/logparse/loggroupsspec"
 )
 
 // TimestampParser is a generic fallback parser that creates spans based on
@@ -41,6 +43,8 @@ type groupBlock struct {
 // canOpenGroup / canCloseGroup are the LogGroupsDecision stack gates.
 // Spec: specs/log-groups/decision Open / Close (Bug=FALSE forbids Close at 0).
 // maxDepth <= 0 means unbounded (production); the decision core uses MaxDepth=3.
+// canCloseGroup is SSOT via generated CanClose; canOpenGroup stays parametric
+// because production allows unbounded maxDepth (generated CanOpen hardcodes 3).
 func canOpenGroup(depth, maxDepth int) bool {
 	if depth < 0 {
 		return false
@@ -52,7 +56,7 @@ func canOpenGroup(depth, maxDepth int) bool {
 }
 
 func canCloseGroup(depth int) bool {
-	return depth > 0
+	return loggroupsspec.State{Depth: int64(depth)}.CanClose()
 }
 
 // splitGroups partitions log lines into top-level lines and group blocks.
