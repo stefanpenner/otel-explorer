@@ -55,22 +55,24 @@ scripts/regenerate-decision-cores.sh timing-clamp
 
 ## Cores and production wiring
 
-| Core | Models | Gen package | Production |
-|------|--------|-------------|------------|
-| tui-reload | reload gen + stale fetch discard | `tuireloadspec` | **wired** — `logFetchResultFresh` |
-| rate-limit | wait/recheck after sleep | `ratelimitspec` | **wired** — `rateLimitWaitNeeded` |
-| timing-clamp | clampSpanToParent | `timingclampspec` | **wired** — `DoClamp` |
-| sync-bounds | stale attempt | `syncboundsspec` | **wired** — `acceptJobsAttempt` (SQL twin) |
-| gha-lifecycle | pending/fail/queue gates | `ghalifecyclespec` | **wired** — `countsFailed` / `countsQueue` |
-| log-groups | stack depth | `loggroupsspec` | **wired** — `canOpenGroup` / `canCloseGroup` |
-| span-tree | runner-wins keep | `spantreespec` | **wired** — `dropAPIForRunnerTwin` |
+| Core | Models | Gen package | Production → generated SSOT |
+|------|--------|-------------|-----------------------------|
+| tui-reload | reload gen + stale fetch discard | `tuireloadspec` | `logFetchResultFresh` → `CanFetchAccept` |
+| rate-limit | wait/recheck after sleep | `ratelimitspec` | `rateLimitWaitNeeded` → `WaitNeeded` |
+| timing-clamp | clampSpanToParent | `timingclampspec` | `clampSpanToParent` → `DoClamp` |
+| sync-bounds | stale attempt | `syncboundsspec` | `acceptJobsAttempt` → `AcceptAllowed` (SQL twin) |
+| gha-lifecycle | pending/fail/queue gates | `ghalifecyclespec` | `isJobPending` / `countsFailed` / `countsQueue` → `CanClassify*` |
+| log-groups | stack depth | `loggroupsspec` | `canCloseGroup` → `CanClose`; open → `CanOpen` @ MaxDepth=3 |
+| span-tree | runner-wins keep | `spantreespec` | `dropAPIForRunnerTwin` → `DedupChoose` |
 
-Wire health: `scripts/verify-decision-wires.sh` (also from `check-specs.sh`).
+Day-to-day map: [GATES.md](GATES.md).  
+Wire health: `scripts/decision-check.sh` (includes `verify-decision-wires.sh`).
 
 Checks:
 - Decision.tla present for each core
 - Generated `pkg/.../*spec/spec.go` with `PurePredicates()` registry
 - Production pure-gate symbols in non-test sources
+- Production packages **import** the gen `*spec` module (SSOT, not re-inlined formula)
 - Dual test files present (production ↔ decision semantics)
 - Pure registry dual-stub is **generated** (`TestPurePredicates` in `*spec`)
 - Optional: `SPECGEN_CHECK_REGEN=1` → regenerate + no-diff
@@ -90,9 +92,9 @@ bazel test  //tools/decision:up_to_date     # fail if *spec stale vs Decision.tl
 bazel run   //tools/decision:update         # rewrite committed *spec from .tla
 bazel build //tools/specgen                 # hermetic codegen binary
 
-# Inventory / TLC / duals
+# Lean gate (agents) / inventory / full TLC
+scripts/decision-check.sh                   # wires + decision-tagged tests
 scripts/decision-stack-status.sh
-scripts/verify-decision-wires.sh
 scripts/check-specs.sh                      # TLC full + decision + duals + wires
 scripts/regenerate-decision-cores.sh        # → bazel run //tools/decision:update
 ```
