@@ -11,4 +11,5 @@ Load this for code changes. Full TLC only for multi-goroutine races: `RateLimit.
 **SSOT:** production `rateLimitWaitNeeded` calls generated `WaitNeeded`.  
 **Rule:** after sleep, recheck; do not fire blind while still exhausted.
 
+**Rust peer:** `gates::rate_limit_wait_needed` → `rate_limit` module.  
 **Check:** `scripts/decision-check.sh`

@@ -15,11 +15,11 @@
 #
 # Toolchain:
 #   Prefer `tlc` on PATH (dotai CLI). Else fall back to java -cp tla2tools.jar.
-#   Order: SSOT wires + *spec duals first (fast), TLC last (slow).
+#   Order: SSOT wires + *spec duals + Rust peer first (fast), TLC last (slow).
 #   Does not re-codegen by default — use //tools/decision:update.
 #
-# Without TLC toolchain: still runs wires/duals; skips model-check (exit 0 if
-# those pass). Green TLC at these bounds = strong bug hunt, not proof.
+# Without TLC toolchain: still runs wires/duals/Rust parity; skips model-check
+# (exit 0 if those pass). Green TLC at these bounds = strong bug hunt, not proof.
 #
 # Usage: scripts/check-specs.sh [spec-name ...]   # default: all specs
 
@@ -229,6 +229,29 @@ if command -v go >/dev/null 2>&1; then
   done
 else
   echo "go not on PATH — skip dual package tests"
+fi
+
+# Rust peer (same Decision.tla SSOT): name parity + duals when tools present.
+echo
+echo "--- rust peer (Go↔Rust parity + cargo duals) ---"
+if [ -x "$REPO_ROOT/scripts/gen-decision-rust.sh" ]; then
+  if ! "$REPO_ROOT/scripts/gen-decision-rust.sh" --parity-committed; then
+    fail=$((fail + 1))
+  fi
+else
+  echo "scripts/gen-decision-rust.sh missing — skip parity"
+  fail=$((fail + 1))
+fi
+if command -v cargo >/dev/null 2>&1; then
+  if ! env CC=cc RUSTFLAGS='-C linker=/usr/bin/cc' \
+    cargo test -p decision_cores --quiet; then
+    echo "cargo test -p decision_cores FAIL ✗"
+    fail=$((fail + 1))
+  else
+    echo "cargo test -p decision_cores ok"
+  fi
+else
+  echo "cargo not on PATH — skip rust duals"
 fi
 
 if [ "$SKIP_TLC" -eq 1 ]; then
