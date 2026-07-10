@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # decision-stack-status.sh — human-readable inventory of the decision-core stack.
 #
-# Prints one row per subsystem: TLC full, decision core, generated package,
-# pure preds, production gates. No TLC/JVM required.
+# One row per core: full TLC, decision core, gen package, prod→gen SSOT,
+# production symbols. No TLC/JVM required.
 #
 # Usage: scripts/decision-stack-status.sh
 
@@ -11,27 +11,37 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# core|gen_pkg|prod_symbols (comma-separated)
+# core|gen_pkg|prod_symbols|ssot_gen_symbol
+# Keep SSOT column in sync with specs/GATES.md.
 rows=(
-  "tui-reload|pkg/tui/results/tuireloadspec|logFetchResultFresh"
-  "rate-limit|pkg/githubapi/ratelimitspec|rateLimitWaitNeeded"
-  "timing-clamp|pkg/analyzer/timingclampspec|DoClamp(via timingclampspec)"
-  "sync-bounds|pkg/store/syncboundsspec|acceptJobsAttempt"
-  "gha-lifecycle|pkg/analyzer/ghalifecyclespec|isJobPending,countsFailed,countsQueue"
-  "log-groups|pkg/logparse/loggroupsspec|canOpenGroup,canCloseGroup"
-  "span-tree|pkg/analyzer/spantreespec|dropAPIForRunnerTwin"
+  "tui-reload|pkg/tui/results/tuireloadspec|logFetchResultFresh|CanFetchAccept"
+  "rate-limit|pkg/githubapi/ratelimitspec|rateLimitWaitNeeded|WaitNeeded"
+  "timing-clamp|pkg/analyzer/timingclampspec|clampSpanToParent|DoClamp"
+  "sync-bounds|pkg/store/syncboundsspec|acceptJobsAttempt|AcceptAllowed"
+  "gha-lifecycle|pkg/analyzer/ghalifecyclespec|isJobPending,counts*|CanClassify*"
+  "log-groups|pkg/logparse/loggroupsspec|canOpen/Close|CanOpen/CanClose"
+  "span-tree|pkg/analyzer/spantreespec|dropAPIForRunnerTwin|DedupChoose"
 )
 
-printf '%-14s %-6s %-8s %-10s %-28s %s\n' \
-  "CORE" "FULL" "DECISION" "GEN" "PURE_PREDS" "PRODUCTION"
-printf '%-14s %-6s %-8s %-10s %-28s %s\n' \
-  "----" "----" "--------" "---" "----------" "----------"
+# prod package dir for import check (prefix of gen_pkg without *spec name)
+prod_dir_for() {
+  local gen="$1"
+  # pkg/foo/barspec → pkg/foo ; pkg/a/b/cspec → pkg/a/b
+  echo "${gen%/*}"
+}
+
+printf '%-14s %-4s %-4s %-4s %-6s %-18s %s\n' \
+  "CORE" "FULL" "DEC" "GEN" "IMPORT" "SSOT" "PRODUCTION"
+printf '%-14s %-4s %-4s %-4s %-6s %-18s %s\n' \
+  "----" "----" "---" "---" "------" "----" "----------"
 
 for row in "${rows[@]}"; do
   core="${row%%|*}"
   rest="${row#*|}"
   gen="${rest%%|*}"
-  prod="${rest#*|}"
+  rest="${rest#*|}"
+  prod="${rest%%|*}"
+  ssot="${rest#*|}"
 
   full="no"
   if find "specs/$core" -maxdepth 1 -name '*.tla' 2>/dev/null | grep -q .; then
@@ -44,19 +54,26 @@ for row in "${rows[@]}"; do
   genok="no"
   [ -f "$gen/spec.go" ] && genok="yes"
 
-  preds="-"
-  if [ -f "$gen/spec.go" ]; then
-    preds=$(grep -oE 'Name: "[A-Za-z0-9_]+"' "$gen/spec.go" 2>/dev/null \
-      | sed 's/Name: "//;s/"$//' \
-      | tr '\n' ',' \
-      | sed 's/,$//')
-    [ -n "$preds" ] || preds="(none)"
-  fi
+  # SSOT import: non-test production sources under parent package use *spec name
+  import="no"
+  pdir="$(prod_dir_for "$gen")"
+  pkgbase="$(basename "$gen")"
+  while IFS= read -r -d '' f; do
+    case "$f" in
+      *spec/*) continue ;;
+    esac
+    if grep -F -q -- "$pkgbase" "$f" 2>/dev/null; then
+      import="yes"
+      break
+    fi
+  done < <(find "$pdir" -type f -name '*.go' ! -name '*_test.go' -print0 2>/dev/null)
 
-  printf '%-14s %-6s %-8s %-10s %-28s %s\n' \
-    "$core" "$full" "$decision" "$genok" "${preds:0:28}" "$prod"
+  printf '%-14s %-4s %-4s %-4s %-6s %-18s %s\n' \
+    "$core" "$full" "$decision" "$genok" "$import" "$ssot" "$prod"
 done
 
 echo
-echo "Legend: FULL=specs/<core>/*.tla  DECISION=decision/Decision.tla  GEN=committed *spec"
+echo "Legend: FULL=full TLC  DEC=decision/  GEN=committed *spec"
+echo "        IMPORT=prod package imports *spec (SSOT, not re-inlined)"
+echo "        SSOT=generated symbol production should call"
 echo "Verify: scripts/decision-check.sh · scripts/check-specs.sh"
