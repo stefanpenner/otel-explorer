@@ -71,7 +71,8 @@ Checks:
 - Decision.tla present for each core
 - Generated `pkg/.../*spec/spec.go` with `PurePredicates()` registry
 - Production pure-gate symbols in non-test sources
-- Dual test files present (semantic duals + registry smoke)
+- Dual test files present (production ↔ decision semantics)
+- Pure registry dual-stub is **generated** (`TestPurePredicates` in `*spec`)
 - Optional: `SPECGEN_CHECK_REGEN=1` → regenerate + no-diff
 
 Generated pure API (per `*spec` package):
@@ -79,7 +80,8 @@ Generated pure API (per `*spec` package):
 ```go
 func (s State) WaitNeeded() bool          // example pure gate
 func PurePredicates() []PurePredicate     // enumerate all pure gates
-// TestPurePredicates — generated smoke on Init
+// TestPurePredicates — generated dual-stub: exact names + no panic on Init
+// (do not re-list PurePredicates in production dual tests)
 ```
 
 ```bash

@@ -81,19 +81,3 @@ func TestRateLimitWaitNeededMatchesDecision(t *testing.T) {
 	assert.False(t, rateLimitWaitNeeded(1, true, time.Hour))
 }
 
-// TestRateLimitPurePredicatesRegistry ensures the generated registry lists
-// WaitNeeded and is safe to enumerate (stack dual/CI pattern).
-func TestRateLimitPurePredicatesRegistry(t *testing.T) {
-	t.Parallel()
-	preds := ratelimitspec.PurePredicates()
-	require.NotEmpty(t, preds)
-	var sawWait bool
-	s := ratelimitspec.Init()
-	for _, p := range preds {
-		_ = p.Check(s)
-		if p.Name == "WaitNeeded" {
-			sawWait = true
-		}
-	}
-	assert.True(t, sawWait, "WaitNeeded must appear in PurePredicates")
-}

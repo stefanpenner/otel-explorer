@@ -542,24 +542,45 @@ func (cg *CodeGen) GenerateTests() string {
 	return b.String()
 }
 
-// writeTestPurePredicates smoke-tests every PurePredicates() entry on Init
-// (must not panic). Duals still own semantic correctness.
+// writeTestPurePredicates is the generated dual-stub for pure gates:
+// exact name set from Decision.tla + no-panic on Init.
+// Production duals only need semantic prod↔decision checks (not registry smoke).
 func (cg *CodeGen) writeTestPurePredicates(b *strings.Builder) {
-	if len(cg.purePredicates()) == 0 {
+	preds := cg.purePredicates()
+	if len(preds) == 0 {
 		return
 	}
-	b.WriteString(`// TestPurePredicates evaluates every pure operator on Init.
-// Ensures the registry is non-empty and methods do not panic.
+	b.WriteString(`// TestPurePredicates is the generated pure-gate dual stub.
+// Names come from Decision.tla (SSOT); dual package tests cover production wiring.
 func TestPurePredicates(t *testing.T) {
+	want := []string{
+`)
+	for _, p := range preds {
+		fmt.Fprintf(b, "\t\t%q,\n", p.name)
+	}
+	b.WriteString(`	}
 	s := Init()
 	preds := PurePredicates()
-	if len(preds) == 0 {
-		t.Fatal("PurePredicates empty")
+	if len(preds) != len(want) {
+		t.Fatalf("PurePredicates len=%d want %d", len(preds), len(want))
 	}
+	got := make(map[string]bool, len(preds))
 	for _, p := range preds {
+		if p.Name == "" {
+			t.Fatal("empty PurePredicate.Name")
+		}
+		if got[p.Name] {
+			t.Fatalf("duplicate pure name %q", p.Name)
+		}
+		got[p.Name] = true
 		t.Run(p.Name, func(t *testing.T) {
 			_ = p.Check(s) // must not panic
 		})
+	}
+	for _, name := range want {
+		if !got[name] {
+			t.Fatalf("missing pure %q in PurePredicates()", name)
+		}
 	}
 }
 

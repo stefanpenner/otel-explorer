@@ -54,17 +54,34 @@ func TestBFSReachability(t *testing.T) {
 	t.Logf("explored %d reachable states", len(seen))
 }
 
-// TestPurePredicates evaluates every pure operator on Init.
-// Ensures the registry is non-empty and methods do not panic.
+// TestPurePredicates is the generated pure-gate dual stub.
+// Names come from Decision.tla (SSOT); dual package tests cover production wiring.
 func TestPurePredicates(t *testing.T) {
+	want := []string{
+		"PendingNeverFailed",
+		"QueueOnlyNotPending",
+	}
 	s := Init()
 	preds := PurePredicates()
-	if len(preds) == 0 {
-		t.Fatal("PurePredicates empty")
+	if len(preds) != len(want) {
+		t.Fatalf("PurePredicates len=%d want %d", len(preds), len(want))
 	}
+	got := make(map[string]bool, len(preds))
 	for _, p := range preds {
+		if p.Name == "" {
+			t.Fatal("empty PurePredicate.Name")
+		}
+		if got[p.Name] {
+			t.Fatalf("duplicate pure name %q", p.Name)
+		}
+		got[p.Name] = true
 		t.Run(p.Name, func(t *testing.T) {
 			_ = p.Check(s) // must not panic
 		})
+	}
+	for _, name := range want {
+		if !got[name] {
+			t.Fatalf("missing pure %q in PurePredicates()", name)
+		}
 	}
 }
