@@ -13,17 +13,30 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 # core_name | package path | required symbol
-# Keep in sync with specs/DECISION_CORES.md production column.
+# Keep in sync with specs/DECISION_CORES.md + specs/GATES.md.
 wires=(
   "tui-reload|pkg/tui/results|logFetchResultFresh"
   "rate-limit|pkg/githubapi|rateLimitWaitNeeded"
   "timing-clamp|pkg/analyzer|timingclampspec"
   "sync-bounds|pkg/store|acceptJobsAttempt"
+  "gha-lifecycle|pkg/analyzer|isJobPending"
   "gha-lifecycle|pkg/analyzer|countsFailed"
   "gha-lifecycle|pkg/analyzer|countsQueue"
   "span-tree|pkg/analyzer|dropAPIForRunnerTwin"
   "log-groups|pkg/logparse|canOpenGroup"
   "log-groups|pkg/logparse|canCloseGroup"
+)
+
+# Production package dir | gen package name that must appear in non-test imports.
+# Ensures SSOT (prod calls *spec) rather than a re-inlined formula under the same symbol.
+ssot_imports=(
+  "pkg/tui/results|tuireloadspec"
+  "pkg/githubapi|ratelimitspec"
+  "pkg/analyzer|timingclampspec"
+  "pkg/analyzer|ghalifecyclespec"
+  "pkg/analyzer|spantreespec"
+  "pkg/store|syncboundsspec"
+  "pkg/logparse|loggroupsspec"
 )
 
 gen_pkgs=(
@@ -94,6 +107,27 @@ for row in "${wires[@]}"; do
     echo "  ok $core → $sym"
   else
     echo "  FAIL $core: $sym not in $dir production sources"
+    fail=1
+  fi
+done
+
+echo "--- prod → gen SSOT imports ---"
+for row in "${ssot_imports[@]}"; do
+  IFS='|' read -r dir pkg <<<"$row"
+  found=0
+  while IFS= read -r -d '' f; do
+    case "$f" in
+      *spec/*) continue ;;
+    esac
+    if grep -F -q -- "$pkg" "$f" 2>/dev/null; then
+      found=1
+      break
+    fi
+  done < <(find "$dir" -type f -name '*.go' ! -name '*_test.go' -print0 2>/dev/null)
+  if [ "$found" -eq 1 ]; then
+    echo "  ok $dir imports $pkg"
+  else
+    echo "  FAIL $dir: missing import/use of $pkg (re-inlined formula?)"
     fail=1
   fi
 done
