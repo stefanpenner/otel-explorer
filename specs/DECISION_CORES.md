@@ -97,7 +97,10 @@ bazel test //tools/decision:up_to_date   # includes *_rs_up_to_date
 # thin gates + duals (Rust)
 cargo test -p decision_cores
 
-# optional JIT parity / rustc (needs PATH specgen)
+# hermetic name SSOT (no JIT; also run by decision-check)
+scripts/gen-decision-rust.sh --parity-committed
+
+# optional JIT regen + rustc + parity vs JIT out (needs PATH specgen)
 scripts/gen-decision-rust.sh --check --parity
 ```
 
@@ -105,9 +108,10 @@ Idiomatic Rust: `snake_case`, `can_open` / `open(self)`, `apply_action`,
 `PURE_PREDICATES`, thin `gates::*` wrappers.  
 Go remains ote production; both share Decision.tla SSOT.
 
-**New cores:** only when a new concurrent/stale/race decision appears — add
-`Decision.tla` + `decision_core(...)` (Go dest + `src_rs`) + duals; do not
-expand into multi-object record codegen.
+**New cores:** only when a real concurrent/stale/race decision appears —
+see policy box in [GATES.md](GATES.md). Add `Decision.tla` +
+`decision_core(...)` (Go dest + `src_rs`) + duals; do not expand into
+multi-object record codegen; no Rust in `ote` until a real consumer.
 
 ```bash
 # Hermetic Bazel pipeline (preferred — used by CI via bazel test //...)

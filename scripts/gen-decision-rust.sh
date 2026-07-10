@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # gen-decision-rust.sh — emit Rust decision modules from Decision.tla (PATH A).
 #
-# Uses JIT `specgen -lang rust` on PATH (dotai tool). Does NOT replace the
-# hermetic Go Bazel pipeline (//tools/decision:update). Same .tla SSOT.
+# JIT path uses `specgen -lang rust` on PATH (dotai tool). Does NOT replace the
+# hermetic Bazel pipeline (//tools/decision:update). Same .tla SSOT.
 #
 # Usage:
-#   scripts/gen-decision-rust.sh              # all cores → gen/rust/<core>/
-#   scripts/gen-decision-rust.sh log-groups   # one core
-#   scripts/gen-decision-rust.sh --check      # rustc -D warnings each (if rustc)
-#   scripts/gen-decision-rust.sh --parity     # Go↔Rust action + pure name SSOT
+#   scripts/gen-decision-rust.sh                 # all cores → gen/rust/<core>/
+#   scripts/gen-decision-rust.sh log-groups      # one core
+#   scripts/gen-decision-rust.sh --check         # rustc -D warnings each (if rustc)
+#   scripts/gen-decision-rust.sh --parity        # after gen: Go↔JIT Rust names
+#   scripts/gen-decision-rust.sh --parity-committed
+#       # hermetic: Go *spec ↔ crates/decision_cores (no JIT; used by decision-check)
 #   scripts/gen-decision-rust.sh --check --parity
 #
-# Requires: specgen with -lang rust (see ~/.ai/tools/specgen).
+# Requires: specgen for gen / --check / --parity (not for --parity-committed alone).
 
 set -euo pipefail
 
@@ -21,35 +23,32 @@ cd "$REPO_ROOT"
 OUT_ROOT="${RUST_DECISION_OUT:-gen/rust}"
 CHECK=0
 PARITY=0
+PARITY_COMMITTED=0
 CORES=()
 
 for arg in "$@"; do
   case "$arg" in
     --check) CHECK=1 ;;
     --parity) PARITY=1 ;;
+    --parity-committed) PARITY_COMMITTED=1 ;;
     -h|--help)
-      sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) CORES+=("$arg") ;;
   esac
 done
 
-if ! command -v specgen >/dev/null 2>&1; then
-  echo "error: specgen not on PATH (install ~/.ai tools: bazel run //:install)" >&2
-  exit 1
-fi
-
-# core_dir|go_pkg|const flags (space-separated Name=Value)
+# core_dir|go_pkg|const flags|rust_module (snake, no .rs)
 # Keep in sync with tools/decision/BUILD.bazel decision_core consts.
 rows=(
-  "tui-reload|pkg/tui/results/tuireloadspec|MaxGen=2 MaxJobs=2 Bug=FALSE"
-  "rate-limit|pkg/githubapi/ratelimitspec|MaxRem=2 MaxClock=3 Bug=FALSE"
-  "timing-clamp|pkg/analyzer/timingclampspec|Tmax=4 Bug=FALSE"
-  "sync-bounds|pkg/store/syncboundsspec|Bug=FALSE"
-  "gha-lifecycle|pkg/analyzer/ghalifecyclespec|Bug=FALSE"
-  "log-groups|pkg/logparse/loggroupsspec|MaxDepth=3 Bug=FALSE"
-  "span-tree|pkg/analyzer/spantreespec|Bug=FALSE"
+  "tui-reload|pkg/tui/results/tuireloadspec|MaxGen=2 MaxJobs=2 Bug=FALSE|tui_reload"
+  "rate-limit|pkg/githubapi/ratelimitspec|MaxRem=2 MaxClock=3 Bug=FALSE|rate_limit"
+  "timing-clamp|pkg/analyzer/timingclampspec|Tmax=4 Bug=FALSE|timing_clamp"
+  "sync-bounds|pkg/store/syncboundsspec|Bug=FALSE|sync_bounds"
+  "gha-lifecycle|pkg/analyzer/ghalifecyclespec|Bug=FALSE|gha_lifecycle"
+  "log-groups|pkg/logparse/loggroupsspec|MaxDepth=3 Bug=FALSE|log_groups"
+  "span-tree|pkg/analyzer/spantreespec|Bug=FALSE|span_tree"
 )
 
 want_core() {
@@ -106,12 +105,96 @@ rust_pures() {
     || true
 }
 
+# Compare Go *spec action/pure names to a Rust module (JIT or committed).
+check_parity() {
+  local core="$1"
+  local go_file="$2"
+  local rs_file="$3"
+  local label="${4:-}"
+
+  if [ ! -f "$go_file" ]; then
+    echo "  FAIL parity: missing $go_file"
+    return 1
+  fi
+  if [ ! -f "$rs_file" ]; then
+    echo "  FAIL parity: missing $rs_file"
+    return 1
+  fi
+
+  local go_act_snake rs_act go_pu rs_pu n local_fail=0
+  go_act_snake=$(
+    go_actions "$go_file" | while read -r a; do
+      [ -n "$a" ] && to_snake "$a"
+    done | sort -u
+  )
+  rs_act=$(rust_actions "$rs_file")
+  if [ "$go_act_snake" != "$rs_act" ]; then
+    echo "  FAIL action parity${label:+ ($label)}"
+    echo "    go→snake: $(echo "$go_act_snake" | tr '\n' ' ')"
+    echo "    rust:     $(echo "$rs_act" | tr '\n' ' ')"
+    local_fail=1
+  else
+    echo "  actions ok ($(echo "$rs_act" | grep -c . || true))${label:+ [$label]}"
+  fi
+
+  go_pu=$(go_pures "$go_file")
+  rs_pu=$(rust_pures "$rs_file")
+  if [ "$go_pu" != "$rs_pu" ]; then
+    echo "  FAIL pure parity${label:+ ($label)}"
+    echo "    go:   $(echo "$go_pu" | tr '\n' ' ')"
+    echo "    rust: $(echo "$rs_pu" | tr '\n' ' ')"
+    local_fail=1
+  else
+    n=$(echo "$go_pu" | grep -c . || true)
+    echo "  pures ok ($n)${label:+ [$label]}"
+  fi
+  return "$local_fail"
+}
+
 fail=0
+
+# --- Hermetic path: committed Go *spec ↔ crates/decision_cores (no JIT) ---
+if [ "$PARITY_COMMITTED" -eq 1 ]; then
+  echo "=== Go↔Rust parity (committed) ==="
+  for row in "${rows[@]}"; do
+    core="${row%%|*}"
+    rest="${row#*|}"
+    gopkg="${rest%%|*}"
+    rest2="${rest#*|}"
+    # rest2 = consts|rs_mod
+    rsmod="${rest2##*|}"
+    want_core "$core" || continue
+
+    echo "--- $core ---"
+    if ! check_parity "$core" "$gopkg/spec.go" \
+      "crates/decision_cores/src/${rsmod}.rs" "committed"; then
+      fail=1
+    fi
+  done
+  echo
+  if [ "$fail" -ne 0 ]; then
+    echo "gen-decision-rust --parity-committed: FAIL"
+    exit 1
+  fi
+  # Without JIT flags, stop here (no specgen required).
+  if [ "$CHECK" -eq 0 ] && [ "$PARITY" -eq 0 ]; then
+    echo "gen-decision-rust --parity-committed: OK"
+    exit 0
+  fi
+fi
+
+# --- JIT path needs specgen ---
+if ! command -v specgen >/dev/null 2>&1; then
+  echo "error: specgen not on PATH (install ~/.ai tools: bazel run //:install)" >&2
+  exit 1
+fi
+
 for row in "${rows[@]}"; do
   core="${row%%|*}"
   rest="${row#*|}"
   gopkg="${rest%%|*}"
-  consts="${rest#*|}"
+  rest2="${rest#*|}"
+  consts="${rest2%|*}"
   want_core "$core" || continue
 
   tla="specs/$core/decision/Decision.tla"
@@ -153,39 +236,8 @@ for row in "${rows[@]}"; do
   fi
 
   if [ "$PARITY" -eq 1 ]; then
-    go_file="$gopkg/spec.go"
-    rs_file="$out/spec.rs"
-    if [ ! -f "$go_file" ]; then
-      echo "  FAIL parity: missing $go_file"
+    if ! check_parity "$core" "$gopkg/spec.go" "$out/spec.rs" "jit"; then
       fail=1
-      continue
-    fi
-    # Actions: map Go CanOpen → open, compare to Rust can_open → open
-    go_act_snake=$(
-      go_actions "$go_file" | while read -r a; do
-        [ -n "$a" ] && to_snake "$a"
-      done | sort -u
-    )
-    rs_act=$(rust_actions "$rs_file")
-    if [ "$go_act_snake" != "$rs_act" ]; then
-      echo "  FAIL action parity"
-      echo "    go→snake: $(echo "$go_act_snake" | tr '\n' ' ')"
-      echo "    rust:     $(echo "$rs_act" | tr '\n' ' ')"
-      fail=1
-    else
-      echo "  actions ok ($(echo "$rs_act" | wc -w | tr -d ' '))"
-    fi
-    # Pures: TLA names must match (Bait* excluded in both langs)
-    go_pu=$(go_pures "$go_file")
-    rs_pu=$(rust_pures "$rs_file")
-    if [ "$go_pu" != "$rs_pu" ]; then
-      echo "  FAIL pure parity"
-      echo "    go:   $(echo "$go_pu" | tr '\n' ' ')"
-      echo "    rust: $(echo "$rs_pu" | tr '\n' ' ')"
-      fail=1
-    else
-      n=$(echo "$go_pu" | grep -c . || true)
-      echo "  pures ok ($n)"
     fi
   fi
 done
