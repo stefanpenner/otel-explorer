@@ -11,5 +11,6 @@ exports_files([
     "src/lib.rs",
     "src/gates.rs",
     "tests/log_groups_dual.rs",
+    "tests/gates_dual.rs",
     "Cargo.toml",
 ])

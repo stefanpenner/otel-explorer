@@ -4,9 +4,11 @@
 **Race redesign:** full TLC in `specs/<core>/*.tla`.  
 **Regen:** `bazel run //tools/decision:update`  
 **Lean check:** `scripts/decision-check.sh`  
-(`--with-tlc` or `<core>` for TLC; full suite: `scripts/check-specs.sh`)  
+(wires + decision tags + `cargo test -p decision_cores` when cargo present)  
+**Full TLC:** `scripts/check-specs.sh` (`--with-tlc` / core names on decision-check)  
 **Cites:** production / decision / pure **symbols** only — never `file.go:line`
-(lines rot; GATES + duals are the map).
+(lines rot; GATES + duals are the map).  
+**Rust peer:** `crates/decision_cores` (same Decision.tla; `gates::*` wrappers).
 
 | Core | GATES | Production package | Prod→gen SSOT |
 |------|-------|--------------------|---------------|

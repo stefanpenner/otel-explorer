@@ -62,6 +62,12 @@ jobs:
     - name: Run tests
       run: bazel test //... --profile="$RUNNER_TEMP/bazel-test-profile.json"
 
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Rust decision cores
+      run: env CC=cc RUSTFLAGS='-C linker=/usr/bin/cc' cargo test -p decision_cores
+
     - name: Build
       run: bazel build //cmd/... --profile="$RUNNER_TEMP/bazel-build-profile.json"
 
