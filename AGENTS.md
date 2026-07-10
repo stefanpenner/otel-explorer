@@ -42,52 +42,29 @@ bazel test //...                      # when package tests are wired
 go test ./pkg/... ./cmd/...           # fast iteration only — not sufficient alone
 bazel build //:ote && OTE=./bazel-bin/cmd/ote/ote_/ote \
   ./scripts/verify-sources.sh         # golden source verification
-scripts/check-specs.sh                # TLA+ model checks (skips without a JVM)
+scripts/decision-check.sh             # lean TLA gate (wires + decision tags)
+scripts/check-specs.sh                # full TLC (skips without a JVM)
 ```
 
 ## TLA+ Specs (specs/)
 
-Model-checked specs for the concurrency/state-machine subsystems.
-See `specs/README.md`, `specs/DECISION_CORES.md`, and `specs/FINDINGS.md`.
-CI runs them via the `tla-specs` job (`scripts/check-specs.sh`).
-
-Two layers:
-
-1. **Full TLC specs** (`specs/<name>/<Spec>.tla`) — design model-checkers
-   (records/quantifiers OK). Bait + mutation configs required.
-2. **Decision cores** (`specs/<name>/decision/`) — scalar SMs codegen'd by
-   hermetic `//tools/specgen` into `pkg/.../*spec/`. Never hand-edit
-   generated `spec.go` / `spec_test.go`.
-
-**Agent default:** load `specs/GATES.md` → `specs/<core>/GATES.md` only.  
-Open full `.tla` only for race redesign. Cite **symbols**, not line numbers.
+**Day-to-day SSOT:** `specs/GATES.md` → `specs/<core>/GATES.md` only.  
+Full TLC / decision layout / findings: `specs/README.md`, `DECISION_CORES.md`, `FINDINGS.md`.  
+CI: `tla-specs` job runs `scripts/check-specs.sh`.
 
 ```bash
-scripts/decision-check.sh                # lean: wires + decision-tagged tests
-scripts/decision-check.sh --with-tlc     # also TLC cores (or pass core names)
-bazel test //tools/decision:up_to_date   # codegen freshness (in bazel test //...)
-bazel run  //tools/decision:update       # regenerate committed *spec from .tla
-scripts/decision-stack-status.sh
+scripts/decision-check.sh              # lean: wires + decision-tagged tests
+bazel run  //tools/decision:update     # Decision.tla → committed *spec
+bazel test //tools/decision:up_to_date # codegen freshness
 ```
 
-Rules for changes:
+Rules (short):
 
-- Touching a modeled subsystem? Update full spec **and** decision core
-  (if present), rerun `scripts/check-specs.sh <spec>`, then
-  `bazel run //tools/decision:update`.
-- Modeled subsystems → spec dir:
-  store sync/watermark → `sync-bounds`; TUI reload/log-fetch → `tui-reload`;
-  githubapi limiter/retry → `rate-limit`; analyzer run/job lifecycle →
-  `gha-lifecycle`; analyzer time clamping → `timing-clamp`;
-  tree/dedup → `span-tree`; logparse groups → `log-groups`.
-- New concurrent/stateful design (queues, retries, invalidation,
-  cancellation, "stale"/"race"/"in-flight" anywhere in the design)?
-  Spec FIRST — an incoherent design should die in the spec, not in code.
-  Prefer a decision core + `specgen` for pure guards; keep full TLC for
-  multi-object interleavings.
-- Never weaken a spec or property to silence a violation — report it.
-- Regression tests derived from TLC witness traces are named
-  `Test<Spec>Spec_*` — keep that convention so the spec↔test link stays visible.
+- Code change in a modeled area → load that core's **GATES**, cite **symbols**
+  (not `file.go:line`). Prefer decision cores; full TLC only for race redesign.
+- Never hand-edit generated `*spec/spec.go`. Never weaken a spec to silence a fail.
+- New queues/retries/stale/races? Spec first (decision core + `specgen` for pure
+  guards). After `.tla` change: `decision:update` then `decision-check.sh`.
 
 ## Architecture Notes
 

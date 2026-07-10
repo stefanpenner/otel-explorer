@@ -1,6 +1,7 @@
 # TLA+ Specs
 
-Model-checked specs for otel-explorer's state machines.
+**Agent day-to-day:** [GATES.md](GATES.md) (not this file, not full TLC).  
+Model-checked design specs for otel-explorer's state machines.
 Findings + fix list: [FINDINGS.md](FINDINGS.md).
 
 | Spec | Models | Key result |
@@ -51,6 +52,7 @@ Workflow: `tlc` → `specgen` → dual tests → optional `conform` on Trace NDJ
 ## Running
 
 ```
+scripts/decision-check.sh              # lean: wires + decision tags (agents)
 scripts/check-specs.sh                 # full + decision cores + package check
 scripts/check-specs.sh span-tree       # one subsystem (full + decision if present)
 ```
