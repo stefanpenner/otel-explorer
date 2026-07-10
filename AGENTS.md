@@ -54,8 +54,9 @@ CI: `tla-specs` job runs `scripts/check-specs.sh`.
 
 ```bash
 scripts/decision-check.sh              # lean: wires + decision-tagged tests
-bazel run  //tools/decision:update     # Decision.tla → committed *spec
-bazel test //tools/decision:up_to_date # codegen freshness
+bazel run  //tools/decision:update     # Decision.tla → Go *spec + Rust modules
+bazel test //tools/decision:up_to_date # Go + Rust codegen freshness
+cargo test -p decision_cores           # Rust gates + duals
 ```
 
 Rules (short):

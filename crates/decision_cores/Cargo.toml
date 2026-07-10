@@ -1,0 +1,10 @@
+[package]
+name = "decision_cores"
+version = "0.1.0"
+edition = "2021"
+description = "TLA+ decision cores (Rust) — generated from specs/*/decision/Decision.tla"
+license = "MIT"
+publish = false
+
+[lib]
+path = "src/lib.rs"

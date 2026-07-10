@@ -1,0 +1,5 @@
+# Prefer system linker so cargo isn't broken by hermetic_cc/zig from Bazel env.
+[target.aarch64-apple-darwin]
+linker = "cc"
+[target.x86_64-apple-darwin]
+linker = "cc"

@@ -6,3 +6,4 @@ bazel-*
 /sample-eval
 /ote
 gen/
+/target

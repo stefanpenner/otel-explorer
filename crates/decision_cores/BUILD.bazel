@@ -1,0 +1,15 @@
+# gazelle:ignore
+# Committed Rust decision modules (generated). Up-to-date via //tools/decision:*_rs_up_to_date.
+exports_files([
+    "src/tui_reload.rs",
+    "src/rate_limit.rs",
+    "src/timing_clamp.rs",
+    "src/sync_bounds.rs",
+    "src/gha_lifecycle.rs",
+    "src/log_groups.rs",
+    "src/span_tree.rs",
+    "src/lib.rs",
+    "src/gates.rs",
+    "tests/log_groups_dual.rs",
+    "Cargo.toml",
+])

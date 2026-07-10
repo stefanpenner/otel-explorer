@@ -13,6 +13,7 @@ go_library(
     name = "specgen_lib",
     srcs = [
         "codegen.go",
+        "codegen_rust.go",
         "main.go",
         "tla_alias.go",
     ],

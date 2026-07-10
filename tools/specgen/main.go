@@ -1,4 +1,4 @@
-// specgen — generate a Go decision module from a TLA+ spec.
+// specgen — generate a decision module from a TLA+ spec (Go default; Rust PATH A).
 //
 // The generated module mirrors the spec's state machine as pure functions:
 // State struct, Init(), Can<Action>() guards, <Action>() transitions,
@@ -28,14 +28,15 @@ import (
 	"github.com/stefanpenner/otel-explorer/tools/specgen/tla"
 )
 
-const usage = `specgen — generate a Go decision module from a TLA+ spec
+const usage = `specgen — generate a decision module from a TLA+ spec
 
 Usage:
   specgen [flags] <spec.tla>
 
 Flags:
   -o, --output <dir>    output directory (default: <spec>_gen)
-  -p, --package <name>  Go package name (default: <spec>spec)
+  -p, --package <name>  Go package / Rust module hint (default: <spec>spec)
+  -lang go|rust         target language (default: go; rust = PATH A scalars)
   -const Name=Value     bind a CONSTANT to a literal before codegen
                         (repeatable). TRUE/FALSE -> bool, else an integer
                         if parseable, else a string. A CONSTANT referenced
@@ -67,14 +68,16 @@ func main() {
 	var (
 		outputDir string
 		pkgName   string
+		lang      string
 		help      bool
 		consts    constFlags
 	)
 	fs := flag.NewFlagSet("specgen", flag.ExitOnError)
 	fs.StringVar(&outputDir, "o", "", "output directory")
 	fs.StringVar(&outputDir, "output", "", "output directory")
-	fs.StringVar(&pkgName, "p", "", "Go package name")
-	fs.StringVar(&pkgName, "package", "", "Go package name")
+	fs.StringVar(&pkgName, "p", "", "Go package / Rust module hint")
+	fs.StringVar(&pkgName, "package", "", "Go package / Rust module hint")
+	fs.StringVar(&lang, "lang", "go", "target language: go|rust")
 	fs.Var(&consts, "const", "bind a CONSTANT to a literal (Name=Value, repeatable)")
 	fs.BoolVar(&help, "h", false, "show help")
 	fs.BoolVar(&help, "help", false, "show help")
@@ -95,7 +98,7 @@ func main() {
 	}
 
 	specPath := fs.Arg(0)
-	if err := run(specPath, outputDir, pkgName, bindings, []string(consts)); err != nil {
+	if err := run(specPath, outputDir, pkgName, bindings, []string(consts), lang); err != nil {
 		fmt.Fprintf(os.Stderr, "specgen: %v\n", err)
 		os.Exit(1)
 	}
@@ -153,7 +156,18 @@ func findSkipped(spec *Spec, name string) string {
 	return ""
 }
 
-func run(specPath, outputDir, pkgName string, constBindings map[string]tla.Expr, constFlags []string) error {
+// run generates a decision module. Optional langOpt is "go" (default) or "rust".
+func run(specPath, outputDir, pkgName string, constBindings map[string]tla.Expr, constFlags []string, langOpt ...string) error {
+	lang := "go"
+	if len(langOpt) > 0 && strings.TrimSpace(langOpt[0]) != "" {
+		lang = strings.ToLower(strings.TrimSpace(langOpt[0]))
+	}
+	switch lang {
+	case "go", "rust":
+	default:
+		return fmt.Errorf("-lang %q: want go or rust", lang)
+	}
+
 	src, err := os.ReadFile(specPath)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", specPath, err)
@@ -243,6 +257,18 @@ func run(specPath, outputDir, pkgName string, constBindings map[string]tla.Expr,
 
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
+	}
+
+	if lang == "rust" {
+		if err := cg.supportsRust(); err != nil {
+			return err
+		}
+		specFile := filepath.Join(outputDir, "spec.rs")
+		if err := os.WriteFile(specFile, []byte(cg.GenerateRust()), 0644); err != nil {
+			return fmt.Errorf("write spec.rs: %w", err)
+		}
+		fmt.Printf("generated %s\n", specFile)
+		return nil
 	}
 
 	specFile := filepath.Join(outputDir, "spec.go")
