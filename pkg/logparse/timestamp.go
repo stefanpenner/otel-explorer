@@ -42,15 +42,18 @@ type groupBlock struct {
 
 // canOpenGroup / canCloseGroup are the LogGroupsDecision stack gates.
 // Spec: specs/log-groups/decision Open / Close (Bug=FALSE forbids Close at 0).
-// maxDepth <= 0 means unbounded (production); the decision core uses MaxDepth=3.
-// canCloseGroup is SSOT via generated CanClose; canOpenGroup stays parametric
-// because production allows unbounded maxDepth (generated CanOpen hardcodes 3).
+// maxDepth <= 0 means unbounded (production splitGroups); MaxDepth=3 uses
+// generated CanOpen. canCloseGroup always SSOT via generated CanClose.
 func canOpenGroup(depth, maxDepth int) bool {
 	if depth < 0 {
 		return false
 	}
 	if maxDepth <= 0 {
-		return true
+		return true // unbounded production (splitGroups)
+	}
+	// Decision MaxDepth=3: SSOT via generated CanOpen; other bounds stay parametric.
+	if maxDepth == 3 {
+		return loggroupsspec.State{Depth: int64(depth)}.CanOpen()
 	}
 	return depth < maxDepth
 }
