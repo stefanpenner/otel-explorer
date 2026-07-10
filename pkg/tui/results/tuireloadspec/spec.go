@@ -30,7 +30,7 @@ func Init() State {
 
 // CanPressReload is the guard for the PressReload action.
 func (s State) CanPressReload() bool {
-	return false || !(s.IsLoading) && s.ReloadGen < 2
+	return ((false || !(s.IsLoading)) && s.ReloadGen < 2)
 }
 
 // PressReload applies the PressReload action, returning a new state.
@@ -41,7 +41,7 @@ func (s State) PressReload() State {
 
 // CanReloadDone is the guard for the ReloadDone action.
 func (s State) CanReloadDone() bool {
-	return s.IsLoading && s.ReloadGen < 2
+	return (s.IsLoading && s.ReloadGen < 2)
 }
 
 // ReloadDone applies the ReloadDone action, returning a new state.
@@ -54,7 +54,7 @@ func (s State) ReloadDone() State {
 
 // CanPressFetch1 is the guard for the PressFetch1 action.
 func (s State) CanPressFetch1() bool {
-	return !(s.IsLoading) && s.FetchJob == 0
+	return (!(s.IsLoading) && s.FetchJob == 0)
 }
 
 // PressFetch1 applies the PressFetch1 action, returning a new state.
@@ -67,7 +67,7 @@ func (s State) PressFetch1() State {
 
 // CanPressFetch2 is the guard for the PressFetch2 action.
 func (s State) CanPressFetch2() bool {
-	return !(s.IsLoading) && s.FetchJob == 0
+	return (!(s.IsLoading) && s.FetchJob == 0)
 }
 
 // PressFetch2 applies the PressFetch2 action, returning a new state.
@@ -80,7 +80,7 @@ func (s State) PressFetch2() State {
 
 // CanFetchAccept is the guard for the FetchAccept action.
 func (s State) CanFetchAccept() bool {
-	return s.FetchJob != 0 && s.FetchGen == s.ReloadGen
+	return (s.FetchJob != 0 && s.FetchGen == s.ReloadGen)
 }
 
 // FetchAccept applies the FetchAccept action, returning a new state.
@@ -91,7 +91,7 @@ func (s State) FetchAccept() State {
 
 // CanFetchDiscard is the guard for the FetchDiscard action.
 func (s State) CanFetchDiscard() bool {
-	return s.FetchJob != 0 && s.FetchGen != s.ReloadGen
+	return (s.FetchJob != 0 && s.FetchGen != s.ReloadGen)
 }
 
 // FetchDiscard applies the FetchDiscard action, returning a new state.
@@ -102,7 +102,7 @@ func (s State) FetchDiscard() State {
 
 // CanFetchStaleBug is the guard for the FetchStaleBug action.
 func (s State) CanFetchStaleBug() bool {
-	return false && s.FetchJob != 0 && s.FetchGen != s.ReloadGen
+	return ((false && s.FetchJob != 0) && s.FetchGen != s.ReloadGen)
 }
 
 // FetchStaleBug applies the FetchStaleBug action, returning a new state.

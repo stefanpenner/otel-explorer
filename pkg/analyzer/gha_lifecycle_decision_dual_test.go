@@ -129,6 +129,12 @@ func TestGhaLifecycleDecisionDual_Table(t *testing.T) {
 			wantPending: true, wantFailed: false, wantQueue: false,
 		},
 		{
+			// Specgen bool-paren fix: pending timed_out must not CanClassifyFailed.
+			name: "completed timed_out no ts (pending)",
+			status: "completed", completedAt: "", conclusion: "timed_out",
+			wantPending: true, wantFailed: false, wantQueue: false,
+		},
+		{
 			name: "completed failure with ts",
 			status: "completed", completedAt: "2026-01-01T00:00:00Z", conclusion: "failure",
 			wantPending: false, wantFailed: true, wantQueue: true,

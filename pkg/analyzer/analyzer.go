@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/stefanpenner/otel-explorer/pkg/analyzer/ghalifecyclespec"
 	"github.com/stefanpenner/otel-explorer/pkg/analyzer/timingclampspec"
 	"github.com/stefanpenner/otel-explorer/pkg/githubapi"
 	"github.com/stefanpenner/otel-explorer/pkg/utils"
@@ -820,18 +821,26 @@ func isJobPending(job githubapi.Job) bool {
 }
 
 // countsFailed is the FailedJobs gate: not pending AND (failure|timed_out).
-// Spec: specs/gha-lifecycle/decision ClassifyFailed (Bug=FALSE).
+// Spec: specs/gha-lifecycle/decision ClassifyFailed → CanClassifyFailed.
+// SSOT: production calls the generated guard (hasCompletedAt = !pending).
 func countsFailed(job githubapi.Job) bool {
-	return !isJobPending(job) &&
-		(job.Conclusion == "failure" || job.Conclusion == "timed_out")
+	return ghalifecyclespec.State{
+		HasCompletedAt: !isJobPending(job),
+		Conclusion:     job.Conclusion,
+	}.CanClassifyFailed()
 }
 
 // countsQueue is the queue-time / Queued-span gate: not pending and not
 // skipped/cancelled. Callers also require CreatedAt present for a sample.
-// Spec: specs/gha-lifecycle/decision ClassifyQueue (Bug=FALSE).
+// Spec: specs/gha-lifecycle/decision ClassifyQueue (pending half via CanClassifyQueue).
+// Conclusion filter stays here (decision core does not model skip/cancel).
 func countsQueue(job githubapi.Job) bool {
-	return !isJobPending(job) &&
-		job.Conclusion != "skipped" && job.Conclusion != "cancelled"
+	if job.Conclusion == "skipped" || job.Conclusion == "cancelled" {
+		return false
+	}
+	return ghalifecyclespec.State{
+		HasCompletedAt: !isJobPending(job),
+	}.CanClassifyQueue()
 }
 
 // clampSpanToParent forces a child span into its parent's window: start

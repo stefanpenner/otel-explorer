@@ -28,7 +28,7 @@ func Init() State {
 
 // CanSeeAPI is the guard for the SeeAPI action.
 func (s State) CanSeeAPI() bool {
-	return !(s.Done) && !(s.HaveAPI)
+	return (!(s.Done) && !(s.HaveAPI))
 }
 
 // SeeAPI applies the SeeAPI action, returning a new state.
@@ -39,7 +39,7 @@ func (s State) SeeAPI() State {
 
 // CanSeeRunner is the guard for the SeeRunner action.
 func (s State) CanSeeRunner() bool {
-	return !(s.Done) && !(s.HaveRunner)
+	return (!(s.Done) && !(s.HaveRunner))
 }
 
 // SeeRunner applies the SeeRunner action, returning a new state.
@@ -50,20 +50,20 @@ func (s State) SeeRunner() State {
 
 // CanDedupChoose is the guard for the DedupChoose action.
 func (s State) CanDedupChoose() bool {
-	return !(s.Done) && specgenIf(s.HaveAPI, true, s.HaveRunner)
+	return (!(s.Done) && specgenIf(s.HaveAPI, true, s.HaveRunner))
 }
 
 // DedupChoose applies the DedupChoose action, returning a new state.
 func (s State) DedupChoose() State {
 	pre := s
 	s.Done = true
-	s.Kept = specgenIf(pre.HaveAPI && pre.HaveRunner, "runner", specgenIf(pre.HaveRunner, "runner", "api"))
+	s.Kept = specgenIf((pre.HaveAPI && pre.HaveRunner), "runner", specgenIf(pre.HaveRunner, "runner", "api"))
 	return s
 }
 
 // CanDedupBug is the guard for the DedupBug action.
 func (s State) CanDedupBug() bool {
-	return false && !(s.Done) && s.HaveAPI && s.HaveRunner
+	return (((false && !(s.Done)) && s.HaveAPI) && s.HaveRunner)
 }
 
 // DedupBug applies the DedupBug action, returning a new state.
@@ -108,7 +108,7 @@ func (s State) EnabledActions() []string {
 
 // Inv_RunnerWins is the pure TLA+ operator Inv_RunnerWins.
 func (s State) Inv_RunnerWins() bool {
-	return (!(s.Done && s.HaveAPI && s.HaveRunner) || (s.Kept == "runner"))
+	return (!((s.Done && s.HaveAPI) && s.HaveRunner) || (s.Kept == "runner"))
 }
 
 // PurePredicate is a named pure decision gate (no state change).

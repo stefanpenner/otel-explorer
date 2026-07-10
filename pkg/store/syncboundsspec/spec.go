@@ -28,7 +28,7 @@ func Init() State {
 
 // CanStore1 is the guard for the Store1 action.
 func (s State) CanStore1() bool {
-	return s.Phase == "empty" || s.Phase == "stored"
+	return (s.Phase == "empty" || s.Phase == "stored")
 }
 
 // Store1 applies the Store1 action, returning a new state.
@@ -40,7 +40,7 @@ func (s State) Store1() State {
 
 // CanStore2 is the guard for the Store2 action.
 func (s State) CanStore2() bool {
-	return s.Phase == "empty" || s.Phase == "stored"
+	return (s.Phase == "empty" || s.Phase == "stored")
 }
 
 // Store2 applies the Store2 action, returning a new state.
@@ -52,7 +52,7 @@ func (s State) Store2() State {
 
 // CanStore3 is the guard for the Store3 action.
 func (s State) CanStore3() bool {
-	return s.Phase == "empty" || s.Phase == "stored"
+	return (s.Phase == "empty" || s.Phase == "stored")
 }
 
 // Store3 applies the Store3 action, returning a new state.
@@ -64,7 +64,7 @@ func (s State) Store3() State {
 
 // CanOfferNewer is the guard for the OfferNewer action.
 func (s State) CanOfferNewer() bool {
-	return s.Phase == "stored" && s.StoredAttempt > 0
+	return (s.Phase == "stored" && s.StoredAttempt > 0)
 }
 
 // OfferNewer applies the OfferNewer action, returning a new state.
@@ -78,7 +78,7 @@ func (s State) OfferNewer() State {
 
 // CanOfferOlder is the guard for the OfferOlder action.
 func (s State) CanOfferOlder() bool {
-	return s.Phase == "stored" && s.StoredAttempt > 1
+	return (s.Phase == "stored" && s.StoredAttempt > 1)
 }
 
 // OfferOlder applies the OfferOlder action, returning a new state.
@@ -120,7 +120,7 @@ func (s State) NoStaleAccepted() bool {
 
 // AcceptAllowed is the pure TLA+ operator AcceptAllowed.
 func (s State) AcceptAllowed() bool {
-	return s.IncomingAttempt == 0 || s.IncomingAttempt == s.StoredAttempt
+	return (s.IncomingAttempt == 0 || s.IncomingAttempt == s.StoredAttempt)
 }
 
 // PurePredicate is a named pure decision gate (no state change).

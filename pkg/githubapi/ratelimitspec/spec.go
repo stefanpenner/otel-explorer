@@ -30,7 +30,7 @@ func Init() State {
 
 // CanLearnExhausted is the guard for the LearnExhausted action.
 func (s State) CanLearnExhausted() bool {
-	return s.Remaining > 0 && s.Clock < 3
+	return (s.Remaining > 0 && s.Clock < 3)
 }
 
 // LearnExhausted applies the LearnExhausted action, returning a new state.
@@ -43,7 +43,7 @@ func (s State) LearnExhausted() State {
 
 // CanStartSleep is the guard for the StartSleep action.
 func (s State) CanStartSleep() bool {
-	return s.Remaining == 0 && !(s.Sleeping) && s.Clock < s.ResetAt && s.ResetAt > 0
+	return (((s.Remaining == 0 && !(s.Sleeping)) && s.Clock < s.ResetAt) && s.ResetAt > 0)
 }
 
 // StartSleep applies the StartSleep action, returning a new state.
@@ -54,7 +54,7 @@ func (s State) StartSleep() State {
 
 // CanWakeRecheckSend is the guard for the WakeRecheckSend action.
 func (s State) CanWakeRecheckSend() bool {
-	return s.Sleeping && !(s.Remaining == 0 && s.ResetAt > 0 && s.Clock < s.ResetAt)
+	return (s.Sleeping && !((s.Remaining == 0 && s.ResetAt > 0) && s.Clock < s.ResetAt))
 }
 
 // WakeRecheckSend applies the WakeRecheckSend action, returning a new state.
@@ -66,7 +66,7 @@ func (s State) WakeRecheckSend() State {
 
 // CanWakeRecheckResleep is the guard for the WakeRecheckResleep action.
 func (s State) CanWakeRecheckResleep() bool {
-	return !(false) && s.Sleeping && s.Remaining == 0 && s.ResetAt > 0 && s.Clock < s.ResetAt
+	return ((((!(false) && s.Sleeping) && s.Remaining == 0) && s.ResetAt > 0) && s.Clock < s.ResetAt)
 }
 
 // WakeRecheckResleep applies the WakeRecheckResleep action, returning a new state.
@@ -76,15 +76,15 @@ func (s State) WakeRecheckResleep() State {
 
 // CanWakeBugSend is the guard for the WakeBugSend action.
 func (s State) CanWakeBugSend() bool {
-	return false && s.Sleeping
+	return (false && s.Sleeping)
 }
 
 // WakeBugSend applies the WakeBugSend action, returning a new state.
 func (s State) WakeBugSend() State {
 	pre := s
 	s.Sleeping = false
-	s.SentWhileExhausted = pre.Remaining == int64(0) && pre.ResetAt > int64(0) && pre.Clock < pre.ResetAt
-	s.Remaining = specgenIf(pre.Remaining == 0 && pre.ResetAt > 0 && pre.Clock < pre.ResetAt, pre.Remaining, 2)
+	s.SentWhileExhausted = ((pre.Remaining == int64(0) && pre.ResetAt > int64(0)) && pre.Clock < pre.ResetAt)
+	s.Remaining = specgenIf(((pre.Remaining == 0 && pre.ResetAt > 0) && pre.Clock < pre.ResetAt), pre.Remaining, 2)
 	return s
 }
 
@@ -97,13 +97,13 @@ func (s State) CanTick() bool {
 func (s State) Tick() State {
 	pre := s
 	s.Clock = pre.Clock + 1
-	s.Remaining = specgenIf(pre.Remaining == 0 && pre.ResetAt > 0 && pre.Clock+1 >= pre.ResetAt, 2, pre.Remaining)
+	s.Remaining = specgenIf(((pre.Remaining == 0 && pre.ResetAt > 0) && pre.Clock+1 >= pre.ResetAt), 2, pre.Remaining)
 	return s
 }
 
 // CanSendOk is the guard for the SendOk action.
 func (s State) CanSendOk() bool {
-	return s.Remaining > 0 && !(s.Sleeping)
+	return (s.Remaining > 0 && !(s.Sleeping))
 }
 
 // SendOk applies the SendOk action, returning a new state.
@@ -144,7 +144,7 @@ func (s State) EnabledActions() []string {
 
 // WaitNeeded is the pure TLA+ operator WaitNeeded.
 func (s State) WaitNeeded() bool {
-	return s.Remaining == 0 && s.ResetAt > 0 && s.Clock < s.ResetAt
+	return ((s.Remaining == 0 && s.ResetAt > 0) && s.Clock < s.ResetAt)
 }
 
 // NoSendWhileExhausted is the pure TLA+ operator NoSendWhileExhausted.
