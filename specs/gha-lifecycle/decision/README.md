@@ -19,9 +19,9 @@ Pin the pure classification guards:
 
 | Action | Code |
 |--------|------|
-| `ClassifyPending` | `isJobPending` → `PendingJobs` (analyzer.go:855-864) |
-| `ClassifyFailed` | `!isPending && (failure \|\| timed_out)` (analyzer.go:903-906) |
-| `ClassifyQueue` | `countsQueueTime` gate (analyzer.go:924-926) |
+| `ClassifyPending` | `isJobPending` → `PendingJobs` |
+| `ClassifyFailed` | `countsFailed` (`!isPending && failure\|timed_out`) |
+| `ClassifyQueue` | `countsQueue` / `countsQueueTime` |
 | `Reset` | clear counts; advance scenario to completed failure/timeout/success |
 
 `IsPending` here is `~hasCompletedAt` — models the completed-but-no-timestamp

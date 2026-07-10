@@ -43,7 +43,7 @@ VARIABLES
 
 vars == <<remaining, sleeping, clock, resetAt, sentWhileExhausted>>
 
-\* Client-side waitDuration() > 0 (client.go:349-359): remaining exhausted,
+\* Client-side waitDuration > 0 / rateLimitWaitNeeded: remaining exhausted,
 \* reset known (non-zero), reset still in the future.
 WaitNeeded == remaining = 0 /\ resetAt > 0 /\ clock < resetAt
 
@@ -66,8 +66,8 @@ Init ==
 (* ACTIONS *)
 
 (* A delivered response reports the primary limit exhausted with a future
-   reset (updateFromHeaders, client.go:401-418). Models learning remaining=0
-   from headers while still holding some local remaining count. *)
+   reset (updateFromHeaders). Models learning remaining=0 from headers
+   while still holding some local remaining count. *)
 LearnExhausted ==
   /\ remaining > 0
   /\ clock < MaxClock
@@ -75,8 +75,7 @@ LearnExhausted ==
   /\ resetAt' = clock + 1
   /\ UNCHANGED <<sleeping, clock, sentWhileExhausted>>
 
-(* waitIfNeeded sees WaitNeeded, sleeps outside the lock
-   (client.go:361-379). *)
+(* waitIfNeeded sees WaitNeeded / rateLimitWaitNeeded, sleeps outside lock. *)
 StartSleep ==
   /\ remaining = 0
   /\ ~sleeping
@@ -86,7 +85,7 @@ StartSleep ==
   /\ UNCHANGED <<remaining, clock, resetAt, sentWhileExhausted>>
 
 (* Faithful recheck: sleep timer / loop iteration finds WaitNeeded still
-   true → stay sleeping (client.go:361-379 for-loop continues).
+   true → stay sleeping (waitIfNeeded for-loop continues).
    Disabled under Bug so the mutation path is forced through WakeBugSend. *)
 WakeRecheckResleep ==
   /\ ~Bug

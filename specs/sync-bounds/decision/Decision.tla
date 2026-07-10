@@ -8,7 +8,7 @@
 (* Full design model: specs/sync-bounds/SyncBounds.tla (multi-run sync).  *)
 (* This core pins the pure "stale attempt cannot stomp newer" decision:    *)
 (*                                                                         *)
-(*   store.go:390-400 UpsertJobs                                           *)
+(* Production: acceptJobsAttempt + UpsertJobs                              *)
 (*     UPDATE runs SET jobs_fetched=1                                      *)
 (*     WHERE attempt is 0 OR run_attempt matches incoming                  *)
 (*   accept only when incoming is 0 (unknown) or equals stored.            *)
@@ -38,7 +38,7 @@ Init ==
   /\ accepted = FALSE
 
 \* Store1/2/3 set (or bump) the stored run_attempt.
-\* Mirrors UpsertRuns writing run_attempt (store.go:167). Separate named
+\* Mirrors UpsertRuns writing run_attempt. Separate named
 \* actions (no quantifier) so specgen stays on the simple dispatcher path.
 Store1 ==
   /\ (phase = "empty" \/ phase = "stored")
@@ -70,7 +70,7 @@ OfferNewer ==
   /\ UNCHANGED storedAttempt
 
 \* Offer a jobs write for an OLDER attempt (stale in-flight worker).
-\* Faithful (Bug=FALSE): rejected - store.go:390-400 rows-affected = 0.
+\* Faithful (Bug=FALSE): rejected — acceptJobsAttempt false / rows=0.
 \* Mutation (Bug=TRUE): accepted - pre-fix unconditional jobs_fetched=1.
 OfferOlder ==
   /\ phase = "stored"

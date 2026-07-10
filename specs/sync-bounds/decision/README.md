@@ -1,7 +1,7 @@
 # SyncBoundsDecision — UpsertJobs attempt-guard decision core
 
 Scalar state machine for **one** stale-vs-current attempt decision in
-`UpsertJobs` (`pkg/store/store.go:390-400`). Specgen-compatible subset.
+`UpsertJobs` / `acceptJobsAttempt`. Specgen-compatible subset.
 
 Full multi-run design model: `../SyncBounds.tla`.
 
@@ -19,7 +19,7 @@ Pin the pure guard so production code cannot drift:
 
 | Action | Code |
 |--------|------|
-| `Store1` / `Store2` / `Store3` | `UpsertRuns` writes `run_attempt` (store.go:167) |
+| `Store1` / `Store2` / `Store3` | `UpsertRuns` writes `run_attempt` |
 | `OfferNewer` | `UpsertJobs` with `attempt == run_attempt` → accept |
 | `OfferOlder` | `UpsertJobs` with stale attempt → discard (Bug=TRUE: stomp) |
 

@@ -17,7 +17,7 @@ Maps to:
 | Action | Code |
 |--------|------|
 | `LearnExhausted` | `updateFromHeaders` → remaining=0, future reset |
-| `StartSleep` | `waitIfNeeded` + `sleepContext` (client.go:361-379) |
+| `StartSleep` | `rateLimitWaitNeeded` / `waitIfNeeded` + `sleepContext` |
 | `WakeRecheckSend` | loop recheck: `waitDuration()==0` → return |
 | `WakeRecheckResleep` | loop recheck: still waiting → sleep again |
 | `WakeBugSend` | pre-fix fire-without-recheck (`Bug=TRUE`) |
@@ -35,7 +35,7 @@ Maps to:
 | `sentWhileExhausted` | monitor: bug-path wake while `WaitNeeded` |
 
 `WaitNeeded == remaining=0 /\ resetAt>0 /\ clock<resetAt`
-mirrors `waitDuration() > 0` (client.go:349-359).
+mirrors `waitDuration > 0` / production `rateLimitWaitNeeded`.
 
 ## Correct sequence (recheck)
 

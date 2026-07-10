@@ -19,13 +19,13 @@ This core pins the pure decisions production code must obey:
   6. FetchStaleBug: Bug path that wrongly accepts a stale result
      (staleAccepted' = TRUE) — mutation target for NoStaleAccepted.
 
-Maps to pkg/tui/results:
-  PressReload   → model.go key r + doReload (isLoading guard)
+Maps to pkg/tui/results symbols:
+  PressReload   → doReload (isLoading key guard)
   ReloadDone    → ReloadResultMsg success (reloadGen++, clear expected job)
-  PressFetchN   → fetchLogsForCurrentItem (stamps gen at logfetch.go:61)
-  FetchAccept   → LogFetchResultMsg when msg.gen == m.reloadGen
-  FetchDiscard  → LogFetchResultMsg discard (model.go:365-372)
-  FetchStaleBug → pre-fix code that attributed any result (Bug2 era)
+  PressFetchN   → fetchLogsForCurrentItem (stamps gen)
+  FetchAccept   → logFetchResultFresh true → apply
+  FetchDiscard  → logFetchResultFresh false → discard
+  FetchStaleBug → pre-fix accept-any (Bug2 era)
 
 Scalar-only: no records, no quantifiers in actions, no sequences.
 ***************************************************************************)
@@ -48,8 +48,8 @@ Init ==
   /\ fetchGen = 0
   /\ staleAccepted = FALSE
 
-\* User presses r. Faithful: keys dropped while isLoading (model.go:473-479).
-\* Bug=TRUE removes that guard. Gen bumps on ReloadDone (model.go:410).
+\* User presses r. Faithful: keys dropped while isLoading.
+\* Bug=TRUE removes that guard. Gen bumps on ReloadDone.
 PressReload ==
   /\ (Bug \/ ~isLoading)
   /\ reloadGen < MaxGen

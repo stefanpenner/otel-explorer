@@ -4,7 +4,9 @@
 **Race redesign:** full TLC in `specs/<core>/*.tla`.  
 **Regen:** `bazel run //tools/decision:update`  
 **Lean check:** `scripts/decision-check.sh`  
-(`--with-tlc` or `<core>` for TLC; full suite: `scripts/check-specs.sh`)
+(`--with-tlc` or `<core>` for TLC; full suite: `scripts/check-specs.sh`)  
+**Cites:** production / decision / pure **symbols** only — never `file.go:line`
+(lines rot; GATES + duals are the map).
 
 | Core | GATES | Production package |
 |------|-------|--------------------|

@@ -17,13 +17,13 @@ This core is **specgen-clean**: int + bool only.
 
 | Action | Guard | Effect | Code |
 |--------|-------|--------|------|
-| `Open` | `depth >= 0 /\ depth < MaxDepth` | `depth+1` | `timestamp.go:51-63` open group |
-| `Close` | `depth > 0` | `depth-1` | `timestamp.go:65-72` endgroup when open |
+| `Open` | `depth >= 0 /\ depth < MaxDepth` | `depth+1` | `canOpenGroup` |
+| `Close` | `depth > 0` | `depth-1` | `canCloseGroup` |
 | `CloseBug` | `Bug /\ depth = 0` | `depth-1` (underflow) | mutation: endgroup at empty stack |
 | `Terminating` | — | stutter | terminal/idle |
 
-Production ignores stray endgroup when no current group
-(`timestamp.go:66-71`). That is `~CloseBug` / `Inv_DepthNonNeg`.
+Production ignores stray endgroup when no open group
+(`canCloseGroup` false). That is `~CloseBug` / `Inv_DepthNonNeg`.
 
 ## Invariants
 

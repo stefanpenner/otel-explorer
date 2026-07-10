@@ -4,7 +4,7 @@ package githubapi
 //
 // Spec: specs/rate-limit/decision/Decision.tla (FINDING 13 wake recheck)
 // Generated: pkg/githubapi/ratelimitspec (never hand-edit)
-// Production: waitIfNeeded loop client.go:361-379
+// Production: rateLimitWaitNeeded / waitIfNeeded recheck loop
 
 import (
 	"context"

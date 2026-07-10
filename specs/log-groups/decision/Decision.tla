@@ -60,8 +60,8 @@ Spec == Init /\ [][Next]_vars
 
 -----------------------------------------------------------------------------
 \* [code-documented] Group stack never underflows when Bug is off.
-\* Maps to splitGroups ignoring stray ##[endgroup] when current is nil
-\* (timestamp.go:65-72). CloseBug only enabled under Bug.
+\* Maps to canCloseGroup / splitGroups ignoring stray ##[endgroup].
+\* CloseBug only enabled under Bug.
 Inv_DepthNonNeg == depth >= 0
 
 \* BAIT: claims depth never leaves 0. Open reaches depth 1 — MUST FAIL.

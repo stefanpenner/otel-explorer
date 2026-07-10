@@ -1,7 +1,7 @@
 # TimingClampDecision — clampSpanToParent decision core
 
-Scalar state machine for **one** application of `clampSpanToParent`
-(`pkg/analyzer/analyzer.go:826`). Specgen-compatible subset only.
+Scalar state machine for **one** application of `clampSpanToParent` /
+`DoClamp`. Specgen-compatible subset only.
 
 - File: `Decision.tla` (SANY module name = filename)
 - Logical name: TimingClampDecision

@@ -16,11 +16,11 @@ Maps to:
 
 | Action | Code |
 |--------|------|
-| `PressReload` | `model.go` key `r` + `doReload`; isLoading guard |
-| `ReloadDone` | `ReloadResultMsg` success: `reloadGen++` (`model.go:410`) |
-| `PressFetch1/2` | `fetchLogsForCurrentItem` stamps `gen` (`logfetch.go:61`) |
-| `FetchAccept` | `LogFetchResultMsg` when `msg.gen == m.reloadGen` |
-| `FetchDiscard` | discard path `model.go:365-372` |
+| `PressReload` | `doReload`; isLoading key guard |
+| `ReloadDone` | `ReloadResultMsg` success: `reloadGen++` |
+| `PressFetch1/2` | `fetchLogsForCurrentItem` stamps `gen` |
+| `FetchAccept` | `logFetchResultFresh` true → apply |
+| `FetchDiscard` | `logFetchResultFresh` false → discard |
 | `FetchStaleBug` | mutation: pre-fix "accept any result" (Bug=TRUE) |
 
 ## State (scalars)
@@ -79,9 +79,9 @@ conform \
 
 See `pkg/tui/results/tuireloadspec/conform_test.go`.
 
-## Dual-test note (model.go)
+## Dual-test note
 
-Real discard rule (`model.go:365-372`):
+Real discard rule (`logFetchResultFresh`):
 
 ```go
 if msg.jobID == 0 || msg.jobID != m.logFetchingJobID || msg.gen != m.reloadGen {

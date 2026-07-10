@@ -22,7 +22,7 @@ This core is **specgen-clean**: bool + string only.
 |--------|-------|--------|------|
 | `SeeAPI` | `~done /\ ~haveAPI` | `haveAPI=TRUE` | observe API span in group |
 | `SeeRunner` | `~done /\ ~haveRunner` | `haveRunner=TRUE` | observe runner span in group |
-| `DedupChoose` | `~done /\ (haveAPI \/ haveRunner)` | both → `kept="runner"` | `dedup.go:46-48` runner wins |
+| `DedupChoose` | `~done /\ (haveAPI \/ haveRunner)` | both → `kept="runner"` | `dropAPIForRunnerTwin` |
 | `DedupBug` | `Bug /\ both` | `kept="api"` | mutation: wrong keep |
 | `Terminating` | `done` | stutter | post-dedup |
 

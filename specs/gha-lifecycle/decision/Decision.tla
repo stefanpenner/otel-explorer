@@ -9,10 +9,10 @@
 (* This core pins the pure isPending / FailedJobs / countsQueueTime        *)
 (* guards so they cannot drift from the generated Go module.               *)
 (*                                                                         *)
-(* analyzer.go:                                                            *)
-(*   isJobPending     : status != completed OR CompletedAt empty  (:816)   *)
-(*   FailedJobs       : not pending AND (failure OR timed_out)    (:904)   *)
-(*   countsQueueTime  : not pending AND not skipped/cancelled     (:924)   *)
+(* Production symbols (pkg/analyzer):                                      *)
+(*   isJobPending     : status != completed OR CompletedAt empty           *)
+(*   countsFailed     : not pending AND (failure OR timed_out)             *)
+(*   countsQueue      : not pending AND not skipped/cancelled              *)
 (*                                                                         *)
 (* Abstraction: status is folded into hasCompletedAt for the interesting   *)
 (* fault (completed with empty completed_at is still pending). Pending     *)
@@ -46,7 +46,7 @@ Init ==
   /\ countedFailed = FALSE
   /\ queueCounted = FALSE
 
-\* ClassifyPending - analyzer.go:855-864.
+\* ClassifyPending — production isJobPending.
 \* Only pending jobs land in PendingJobs.
 \* Pending = ~hasCompletedAt (isJobPending with status=completed assumed).
 ClassifyPending ==
@@ -55,7 +55,7 @@ ClassifyPending ==
   /\ countedPending' = TRUE
   /\ UNCHANGED <<hasCompletedAt, conclusion, countedFailed, queueCounted>>
 
-\* ClassifyFailed - analyzer.go:903-906.
+\* ClassifyFailed — production countsFailed.
 \* Faithful: not pending AND (failure OR timed_out).
 \* Bug=TRUE drops the not-pending guard (MCMutation of full GhaLifecycle).
 ClassifyFailed ==
@@ -65,7 +65,7 @@ ClassifyFailed ==
   /\ countedFailed' = TRUE
   /\ UNCHANGED <<hasCompletedAt, conclusion, countedPending, queueCounted>>
 
-\* ClassifyQueue - analyzer.go:924-926 countsQueueTime.
+\* ClassifyQueue — production countsQueue (countsQueueTime).
 \* Faithful: not pending (and not skipped/cancelled - those conclusions are
 \* outside this core's domain, so the conclusion gate is always open here).
 \* Bug=TRUE drops the not-pending guard (same tooth as BugQueueUngated).
