@@ -65,6 +65,9 @@ jobs:
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
 
+    - name: Go↔Rust decision name parity
+      run: scripts/gen-decision-rust.sh --parity-committed
+
     - name: Rust decision cores
       run: env CC=cc RUSTFLAGS='-C linker=/usr/bin/cc' cargo test -p decision_cores
 
