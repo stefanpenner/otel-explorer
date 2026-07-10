@@ -17,4 +17,5 @@ go_test(
     name = "ghalifecyclespec_test",
     srcs = ["//tools/decision:gha_lifecycle_gen/spec_test.go"],
     embed = [":ghalifecyclespec"],
+    tags = ["decision"],
 )

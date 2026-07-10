@@ -17,4 +17,5 @@ go_test(
     name = "loggroupsspec_test",
     srcs = ["//tools/decision:log_groups_gen/spec_test.go"],
     embed = [":loggroupsspec"],
+    tags = ["decision"],
 )

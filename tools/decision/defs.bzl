@@ -75,4 +75,5 @@ rm -rf "$$tmpdir"
             src_test,
         ],
         size = "small",
+        tags = ["decision"],
     )

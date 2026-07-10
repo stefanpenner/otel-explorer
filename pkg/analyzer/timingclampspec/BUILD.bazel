@@ -25,4 +25,5 @@ go_test(
     name = "timingclampspec_test",
     srcs = ["//tools/decision:timing_clamp_gen/spec_test.go"],
     embed = [":timingclampspec"],
+    tags = ["decision"],
 )

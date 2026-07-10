@@ -17,4 +17,5 @@ go_test(
     name = "syncboundsspec_test",
     srcs = ["//tools/decision:sync_bounds_gen/spec_test.go"],
     embed = [":syncboundsspec"],
+    tags = ["decision"],
 )
