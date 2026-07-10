@@ -94,14 +94,15 @@ func PurePredicates() []PurePredicate     // enumerate all pure gates
 specgen -lang rust -const MaxDepth=3 -const Bug=FALSE \
   -o ./out specs/log-groups/decision/Decision.tla   # → out/spec.rs
 
-# all cores (optional rustc -D warnings)
+# all cores (optional rustc + Go↔Rust name SSOT)
 scripts/gen-decision-rust.sh
-scripts/gen-decision-rust.sh --check
+scripts/gen-decision-rust.sh --check --parity
 ```
 
 Idiomatic Rust: `snake_case`, `can_open` / `open(self)`, `apply_action`,
 `Copy`/`Clone`, `PURE_PREDICATES`.  
-Go remains the production path for ote; both share the same Decision.tla SSOT.
+`--parity` asserts Go `Can*` / pure names match Rust (same Decision.tla SSOT).  
+Go remains the production path for ote.
 
 ```bash
 # Hermetic Bazel pipeline (preferred — used by CI via bazel test //...)
