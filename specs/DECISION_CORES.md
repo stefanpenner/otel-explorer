@@ -86,23 +86,28 @@ func PurePredicates() []PurePredicate     // enumerate all pure gates
 // (do not re-list PurePredicates in production dual tests)
 ```
 
-**Rust (peer language):** PATH A scalar cores via canonical JIT `specgen -lang rust`
-(`~/.ai` tool — not yet wired into this repo’s Bazel `//tools/decision` pipeline).
+**Rust (peer language):** same Decision.tla → hermetic `//tools/specgen -lang rust`
+and committed under `crates/decision_cores/src/*.rs`.
 
 ```bash
-# one core
-specgen -lang rust -const MaxDepth=3 -const Bug=FALSE \
-  -o ./out specs/log-groups/decision/Decision.tla   # → out/spec.rs
+# regen Go *spec + Rust modules (canonical)
+bazel run //tools/decision:update
+bazel test //tools/decision:up_to_date   # includes *_rs_up_to_date
 
-# all cores (optional rustc + Go↔Rust name SSOT)
-scripts/gen-decision-rust.sh
+# thin gates + duals (Rust)
+cargo test -p decision_cores
+
+# optional JIT parity / rustc (needs PATH specgen)
 scripts/gen-decision-rust.sh --check --parity
 ```
 
 Idiomatic Rust: `snake_case`, `can_open` / `open(self)`, `apply_action`,
-`Copy`/`Clone`, `PURE_PREDICATES`.  
-`--parity` asserts Go `Can*` / pure names match Rust (same Decision.tla SSOT).  
-Go remains the production path for ote.
+`PURE_PREDICATES`, thin `gates::*` wrappers.  
+Go remains ote production; both share Decision.tla SSOT.
+
+**New cores:** only when a new concurrent/stale/race decision appears — add
+`Decision.tla` + `decision_core(...)` (Go dest + `src_rs`) + duals; do not
+expand into multi-object record codegen.
 
 ```bash
 # Hermetic Bazel pipeline (preferred — used by CI via bazel test //...)

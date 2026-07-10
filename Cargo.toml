@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/decision_cores"]
+resolver = "2"
