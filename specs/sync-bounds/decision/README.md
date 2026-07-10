@@ -22,6 +22,7 @@ Pin the pure guard so production code cannot drift:
 | `Store1` / `Store2` / `Store3` | `UpsertRuns` writes `run_attempt` |
 | `OfferNewer` | `UpsertJobs` with `attempt == run_attempt` → accept |
 | `OfferOlder` | `UpsertJobs` with stale attempt → discard (Bug=TRUE: stomp) |
+| pure `AcceptAllowed` | production `acceptJobsAttempt` (SSOT) |
 
 ## Correct sequence (no stomp)
 

@@ -56,6 +56,7 @@ func TestBFSReachability(t *testing.T) {
 func TestPurePredicates(t *testing.T) {
 	want := []string{
 		"NoStaleAccepted",
+		"AcceptAllowed",
 	}
 	s := Init()
 	preds := PurePredicates()

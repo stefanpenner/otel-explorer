@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/stefanpenner/otel-explorer/pkg/analyzer"
+	"github.com/stefanpenner/otel-explorer/pkg/store/syncboundsspec"
 	_ "modernc.org/sqlite"
 )
 
@@ -370,11 +371,13 @@ func timeOf(ms int64) time.Time {
 
 // acceptJobsAttempt is the pure UpsertJobs attempt gate.
 // SQL form: WHERE (?=0 OR run_attempt=?) — attempt 0 = unknown, always accept.
-// Spec: specs/sync-bounds/decision (OfferNewer accept / OfferOlder reject).
-// The SQL remains the atomic gate; this helper is the decision-layer mirror
-// used by dual tests and docs so the pure rule cannot drift silently.
+// Spec: specs/sync-bounds/decision AcceptAllowed → syncboundsspec.AcceptAllowed.
+// SSOT: production calls the generated pure; SQL remains the atomic twin.
 func acceptJobsAttempt(storedAttempt, incomingAttempt int64) bool {
-	return incomingAttempt == 0 || incomingAttempt == storedAttempt
+	return syncboundsspec.State{
+		StoredAttempt:   storedAttempt,
+		IncomingAttempt: incomingAttempt,
+	}.AcceptAllowed()
 }
 
 // UpsertJobs replaces one run's jobs and marks the run's job detail as
