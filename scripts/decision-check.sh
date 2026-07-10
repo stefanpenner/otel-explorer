@@ -4,13 +4,14 @@
 # Fast path after gate/symbol edits:
 #   1. Production wire symbols still exist
 #   2. Bazel tests tagged decision (*spec duals + Go/Rust up_to_date)
-#   3. Rust decision_cores duals when cargo is on PATH
-#   4. Optional: TLC for named cores (full + decision for that core)
+#   3. Go↔Rust action/pure name parity (committed *spec ↔ crates)
+#   4. Rust decision_cores duals when cargo is on PATH
+#   5. Optional: TLC for named cores (full + decision for that core)
 #
 # Full design TLC for everything: scripts/check-specs.sh
 #
 # Usage:
-#   scripts/decision-check.sh              # wires + bazel decision tags + cargo
+#   scripts/decision-check.sh              # wires + bazel + parity + cargo
 #   scripts/decision-check.sh --with-tlc   # also TLC every core with decision/
 #   scripts/decision-check.sh <core> ...   # TLC only those cores (implies TLC)
 
@@ -46,6 +47,12 @@ fi
 echo
 echo "=== bazel --test_tag_filters=decision ==="
 if ! bazel test //... --test_tag_filters=decision --test_output=errors; then
+  fail=1
+fi
+
+echo
+echo "=== Go↔Rust parity (committed) ==="
+if ! "$REPO_ROOT/scripts/gen-decision-rust.sh" --parity-committed; then
   fail=1
 fi
 
