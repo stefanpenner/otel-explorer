@@ -1,12 +1,63 @@
 //! Thin production-style gates over generated decision modules.
 //! Call generated pure/actions — do not re-inline formulas.
 
+use crate::gha_lifecycle;
 use crate::log_groups;
 use crate::rate_limit;
 use crate::span_tree;
 use crate::sync_bounds;
 use crate::timing_clamp;
 use crate::tui_reload;
+
+/// Encode GitHub "completed with timestamp" (Go `status==completed && completedAt!=""`).
+fn gha_has_completed_at(status: &str, completed_at: &str) -> bool {
+    status == "completed" && !completed_at.is_empty()
+}
+
+/// gha-lifecycle: job still pending (→ `can_classify_pending`).
+/// Matches Go `isJobPending`.
+pub fn is_job_pending(status: &str, completed_at: &str) -> bool {
+    gha_lifecycle::State {
+        has_completed_at: gha_has_completed_at(status, completed_at),
+        conclusion: String::from("failure"),
+        counted_pending: false,
+        counted_failed: false,
+        queue_counted: false,
+    }
+    .can_classify_pending()
+}
+
+/// gha-lifecycle: count as failed (→ `can_classify_failed`).
+/// Matches Go `countsFailed` (not pending AND failure|timed_out).
+pub fn counts_failed(status: &str, completed_at: &str, conclusion: &str) -> bool {
+    // Go: HasCompletedAt: !isJobPending(job)
+    let has = !is_job_pending(status, completed_at);
+    gha_lifecycle::State {
+        has_completed_at: has,
+        conclusion: String::from(conclusion),
+        counted_pending: false,
+        counted_failed: false,
+        queue_counted: false,
+    }
+    .can_classify_failed()
+}
+
+/// gha-lifecycle: count for queue sample (→ `can_classify_queue`).
+/// Matches Go `countsQueue` (skip/cancel stay outside the decision core).
+pub fn counts_queue(status: &str, completed_at: &str, conclusion: &str) -> bool {
+    if conclusion == "skipped" || conclusion == "cancelled" {
+        return false;
+    }
+    let has = !is_job_pending(status, completed_at);
+    gha_lifecycle::State {
+        has_completed_at: has,
+        conclusion: String::from(conclusion),
+        counted_pending: false,
+        counted_failed: false,
+        queue_counted: false,
+    }
+    .can_classify_queue()
+}
 
 /// log-groups: may close stack (→ `log_groups::State::can_close`).
 pub fn can_close_group(depth: i64) -> bool {

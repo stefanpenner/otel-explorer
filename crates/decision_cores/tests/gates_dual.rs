@@ -4,6 +4,39 @@
 use decision_cores::gates;
 
 #[test]
+fn gha_lifecycle_table() {
+    // Mirror pkg/analyzer/gha_lifecycle_decision_dual_test.go table.
+    let cases: &[(&str, &str, &str, bool, bool, bool)] = &[
+        // status, completed_at, conclusion, pending, failed, queue
+        ("completed", "", "failure", true, false, false),
+        ("completed", "", "timed_out", true, false, false),
+        ("completed", "2026-01-01T00:00:00Z", "failure", false, true, true),
+        ("completed", "2026-01-01T00:00:00Z", "timed_out", false, true, true),
+        ("completed", "2026-01-01T00:00:00Z", "success", false, false, true),
+        ("in_progress", "", "", true, false, false),
+        ("completed", "2026-01-01T00:00:00Z", "skipped", false, false, false),
+        ("completed", "2026-01-01T00:00:00Z", "cancelled", false, false, false),
+    ];
+    for (status, completed_at, conclusion, want_p, want_f, want_q) in cases {
+        assert_eq!(
+            gates::is_job_pending(status, completed_at),
+            *want_p,
+            "pending {status:?} {completed_at:?}"
+        );
+        assert_eq!(
+            gates::counts_failed(status, completed_at, conclusion),
+            *want_f,
+            "failed {status:?} {conclusion:?}"
+        );
+        assert_eq!(
+            gates::counts_queue(status, completed_at, conclusion),
+            *want_q,
+            "queue {status:?} {conclusion:?}"
+        );
+    }
+}
+
+#[test]
 fn rate_limit_wait_needed_table() {
     assert!(!gates::rate_limit_wait_needed(1, true, true));
     assert!(!gates::rate_limit_wait_needed(0, false, true));
