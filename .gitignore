@@ -5,3 +5,4 @@ out.json
 bazel-*
 /sample-eval
 /ote
+gen/
