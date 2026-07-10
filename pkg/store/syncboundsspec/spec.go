@@ -118,6 +118,11 @@ func (s State) NoStaleAccepted() bool {
 	return (!(s.Accepted) || (s.IncomingAttempt >= s.StoredAttempt))
 }
 
+// AcceptAllowed is the pure TLA+ operator AcceptAllowed.
+func (s State) AcceptAllowed() bool {
+	return s.IncomingAttempt == 0 || s.IncomingAttempt == s.StoredAttempt
+}
+
 // PurePredicate is a named pure decision gate (no state change).
 type PurePredicate struct {
 	Name  string
@@ -128,6 +133,7 @@ type PurePredicate struct {
 func PurePredicates() []PurePredicate {
 	return []PurePredicate{
 		{Name: "NoStaleAccepted", Check: State.NoStaleAccepted},
+		{Name: "AcceptAllowed", Check: State.AcceptAllowed},
 	}
 }
 

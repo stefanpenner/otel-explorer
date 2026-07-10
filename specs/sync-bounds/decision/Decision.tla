@@ -96,6 +96,11 @@ TypeOK ==
 NoStaleAccepted ==
   accepted => incomingAttempt >= storedAttempt
 
+\* Production pure acceptJobsAttempt(stored, incoming):
+\* accept when incoming is 0 (unknown) or equals stored.
+AcceptAllowed ==
+  incomingAttempt = 0 \/ incomingAttempt = storedAttempt
+
 \* Bait: "never accepts any write" - MUST FAIL after OfferNewer.
 \* Proves TLC explores Store then OfferNewer.
 BaitNeverAccepted == ~accepted

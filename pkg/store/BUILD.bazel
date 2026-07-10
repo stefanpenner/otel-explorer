@@ -11,6 +11,7 @@ go_library(
     deps = [
         "//pkg/analyzer",
         "//pkg/githubapi",
+        "//pkg/store/syncboundsspec",
         "@org_modernc_sqlite//:sqlite",
     ],
 )
