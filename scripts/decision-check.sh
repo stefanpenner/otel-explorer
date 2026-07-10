@@ -3,13 +3,14 @@
 #
 # Fast path after gate/symbol edits:
 #   1. Production wire symbols still exist
-#   2. Bazel tests tagged decision (*spec duals + codegen up_to_date)
-#   3. Optional: TLC for named cores (full + decision for that core)
+#   2. Bazel tests tagged decision (*spec duals + Go/Rust up_to_date)
+#   3. Rust decision_cores duals when cargo is on PATH
+#   4. Optional: TLC for named cores (full + decision for that core)
 #
 # Full design TLC for everything: scripts/check-specs.sh
 #
 # Usage:
-#   scripts/decision-check.sh              # wires + bazel decision tags
+#   scripts/decision-check.sh              # wires + bazel decision tags + cargo
 #   scripts/decision-check.sh --with-tlc   # also TLC every core with decision/
 #   scripts/decision-check.sh <core> ...   # TLC only those cores (implies TLC)
 
@@ -46,6 +47,19 @@ echo
 echo "=== bazel --test_tag_filters=decision ==="
 if ! bazel test //... --test_tag_filters=decision --test_output=errors; then
   fail=1
+fi
+
+echo
+echo "=== cargo test -p decision_cores ==="
+if command -v cargo >/dev/null 2>&1; then
+  # Force system linker: hermetic_cc/zig from Bazel env breaks rustc link.
+  # Always override RUSTFLAGS (do not inherit zig flags from the shell).
+  if ! env CC=cc RUSTFLAGS='-C linker=/usr/bin/cc' \
+    cargo test -p decision_cores --quiet; then
+    fail=1
+  fi
+else
+  echo "skip: cargo not on PATH"
 fi
 
 if [ "$WITH_TLC" -eq 1 ]; then
