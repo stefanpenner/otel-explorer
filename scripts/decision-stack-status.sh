@@ -17,7 +17,7 @@ rows=(
   "rate-limit|pkg/githubapi/ratelimitspec|rateLimitWaitNeeded"
   "timing-clamp|pkg/analyzer/timingclampspec|DoClamp(via timingclampspec)"
   "sync-bounds|pkg/store/syncboundsspec|acceptJobsAttempt"
-  "gha-lifecycle|pkg/analyzer/ghalifecyclespec|countsFailed,countsQueue"
+  "gha-lifecycle|pkg/analyzer/ghalifecyclespec|isJobPending,countsFailed,countsQueue"
   "log-groups|pkg/logparse/loggroupsspec|canOpenGroup,canCloseGroup"
   "span-tree|pkg/analyzer/spantreespec|dropAPIForRunnerTwin"
 )

@@ -815,9 +815,12 @@ func conclusionFromJobs(jobs []githubapi.Job) string {
 // isJobPending reports whether a job has not yet run to completion. GitHub
 // can report a completed job with no completed_at (fault); treat it as
 // still pending — the same discipline FailedJobs counting relies on.
-// Spec: specs/gha-lifecycle/decision (~hasCompletedAt / ClassifyPending).
+// Spec: specs/gha-lifecycle/decision ClassifyPending → CanClassifyPending.
+// SSOT: hasCompletedAt = completed with timestamp; pending = generated guard.
 func isJobPending(job githubapi.Job) bool {
-	return job.Status != "completed" || job.CompletedAt == ""
+	return ghalifecyclespec.State{
+		HasCompletedAt: job.Status == "completed" && job.CompletedAt != "",
+	}.CanClassifyPending()
 }
 
 // countsFailed is the FailedJobs gate: not pending AND (failure|timed_out).
