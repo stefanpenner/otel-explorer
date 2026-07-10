@@ -9,7 +9,7 @@
 (* This core pins the pure clamp decision so it cannot drift from the      *)
 (* generated Go module (pkg/analyzer/timingclampspec).                     *)
 (*                                                                         *)
-(* Mirrors clampSpanToParent in pkg/analyzer/analyzer.go:826:              *)
+(* Mirrors production clampSpanToParent → generated DoClamp:               *)
 (*   pe  = parentEnd if parentEnd > parentStart else parentStart + 1       *)
 (*   cs  = clamp start into [parentStart, pe-1]                            *)
 (*   ce0 = min(end, pe)                                                    *)
@@ -56,7 +56,7 @@ SetHostile ==
   /\ parentEnd' = 3
   /\ UNCHANGED <<phase, outStart, outEnd>>
 
-\* Faithful clamp - mirrors analyzer.go:826 / ClampSpan in TimingClamp.tla.
+\* Faithful clamp — clampSpanToParent / DoClamp / ClampSpan (full TLC).
 \* Only enabled when Bug = FALSE.
 
 DoClamp ==

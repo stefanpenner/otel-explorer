@@ -87,7 +87,7 @@ Spec == Init /\ [][Next]_vars
 
 -----------------------------------------------------------------------------
 \* [code-documented] Unambiguous {1 api, 1 runner} group → runner wins.
-\* dedup.go:46-48; TestRunnerSpanDedup.
+\* Production dropAPIForRunnerTwin / TestRunnerSpanDedup.
 Inv_RunnerWins ==
     (done /\ haveAPI /\ haveRunner) => kept = "runner"
 
