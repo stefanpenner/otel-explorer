@@ -11,4 +11,4 @@ Load this for code changes. Full TLC for multi-attempt runs: `GhaLifecycle.tla`.
 
 **Rule:** pending never failed; queue only non-pending (and not skipped/cancelled).
 
-**Check:** `bazel test //pkg/analyzer:analyzer_test --test_filter=GhaLifecycle|Pure`
+**Check:** `scripts/decision-check.sh`

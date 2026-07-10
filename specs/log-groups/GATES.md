@@ -12,4 +12,4 @@ Load this for code changes. Full TLC for timestamps/gaps: `LogGroups.tla`.
 Open stays parametric (prod unbounded depth; core MaxDepth=3).  
 **Rule:** never underflow depth (stray endgroup is no-op).
 
-**Check:** `bazel test //pkg/logparse:logparse_test --test_filter=GroupStack|LogGroups|Pure`
+**Check:** `scripts/decision-check.sh`

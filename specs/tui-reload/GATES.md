@@ -4,9 +4,10 @@ Load this for code changes. Full TLC only for race redesign: `TuiReload.tla`.
 
 | Gate | Production | Decision | Generated pure |
 |------|------------|----------|----------------|
-| Fresh log-fetch result | `logFetchResultFresh` | FetchAccept / FetchDiscard | `NoStaleAccepted` |
+| Fresh log-fetch result | `logFetchResultFresh` → **CanFetchAccept** | FetchAccept / FetchDiscard | `NoStaleAccepted` |
 | Package | `pkg/tui/results` | `decision/Decision.tla` | `tuireloadspec` |
 
-**Rule:** accept only if `msgJob == fetchingJob` and `msgGen == reloadGen`.
+**SSOT:** production calls generated `CanFetchAccept` (after msg job match).  
+**Rule:** accept only if job matches in-flight and `msgGen == reloadGen`.
 
-**Check:** `bazel test //pkg/tui/results:results_test --test_filter=LogFetch|TuiReload|Pure`
+**Check:** `scripts/decision-check.sh`

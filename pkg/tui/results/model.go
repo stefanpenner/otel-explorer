@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stefanpenner/otel-explorer/pkg/analyzer"
 	"github.com/stefanpenner/otel-explorer/pkg/enrichment"
+	"github.com/stefanpenner/otel-explorer/pkg/tui/results/tuireloadspec"
 	"github.com/stefanpenner/otel-explorer/pkg/utils"
 	"go.opentelemetry.io/otel/sdk/trace"
 )
@@ -399,10 +400,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // logFetchResultFresh is the TuiReloadDecision FetchAccept guard: the result
 // names the in-flight job and was started under the current reloadGen.
-// Spec: specs/tui-reload/decision (FetchAccept / FetchDiscard).
+// Spec: specs/tui-reload/decision FetchAccept → tuireloadspec.CanFetchAccept.
+// SSOT: production calls the generated guard (msg job must match in-flight).
 // Dual: TestLogFetchResultFreshMatchesDecision.
 func logFetchResultFresh(msgJob, fetchingJob int64, msgGen, reloadGen int) bool {
-	return msgJob != 0 && msgJob == fetchingJob && msgGen == reloadGen
+	if msgJob == 0 || msgJob != fetchingJob {
+		return false
+	}
+	// Encode result gen into FetchGen; CanFetchAccept is gen match + job set.
+	return tuireloadspec.State{
+		FetchJob:  fetchingJob,
+		FetchGen:  int64(msgGen),
+		ReloadGen: int64(reloadGen),
+	}.CanFetchAccept()
 }
 
 // handleLogFetchResult processes a completed inline log fetch. Stale results

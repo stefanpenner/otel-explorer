@@ -9,4 +9,4 @@ Load this for code changes. Full TLC for pipeline/cycles: `SpanTree.tla`.
 
 **Rule:** when group is exactly {1 API, 1 runner}, drop the API span.
 
-**Check:** `bazel test //pkg/analyzer:analyzer_test --test_filter=DropAPI|Dedup|SpanTree|Pure`
+**Check:** `scripts/decision-check.sh`
