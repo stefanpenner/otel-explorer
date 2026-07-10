@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/stefanpenner/otel-explorer/pkg/githubapi/ratelimitspec"
+
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -348,11 +350,25 @@ type rateLimiter struct {
 	resetTime time.Time
 }
 
-// rateLimitWaitNeeded is the RateLimitDecision WaitNeeded predicate:
+// rateLimitWaitNeeded is the RateLimitDecision WaitNeeded pure gate:
 // remaining exhausted, reset known, and the reset is still in the future.
-// Spec: specs/rate-limit/decision WaitNeeded (client.go waitDuration > 0).
+// Spec: specs/rate-limit/decision WaitNeeded → ratelimitspec.WaitNeeded.
+// SSOT: production calls the generated pure (scalar encoding of duration).
 func rateLimitWaitNeeded(remaining int, resetKnown bool, untilReset time.Duration) bool {
-	return remaining == 0 && resetKnown && untilReset > 0
+	resetAt := int64(0)
+	if resetKnown {
+		resetAt = 1
+	}
+	clock := int64(0)
+	if untilReset <= 0 {
+		// At or past reset: clock >= resetAt so WaitNeeded is false.
+		clock = resetAt
+	}
+	return ratelimitspec.State{
+		Remaining: int64(remaining),
+		ResetAt:   resetAt,
+		Clock:     clock,
+	}.WaitNeeded()
 }
 
 // waitDuration computes how long the caller must wait before issuing a

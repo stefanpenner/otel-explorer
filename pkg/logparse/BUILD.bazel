@@ -12,6 +12,9 @@ go_library(
     ],
     importpath = "github.com/stefanpenner/otel-explorer/pkg/logparse",
     visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/logparse/loggroupsspec",
+    ],
 )
 
 go_test(
