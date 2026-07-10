@@ -15,13 +15,11 @@
 #
 # Toolchain:
 #   Prefer `tlc` on PATH (dotai CLI). Else fall back to java -cp tla2tools.jar.
-#   After TLC, if `specgen` is on PATH, verify generated *spec packages exist
-#   under pkg/ (optional: go test those packages). Does not re-codegen by
-#   default — regenerate intentionally when Decision.tla changes.
+#   Order: SSOT wires + *spec duals first (fast), TLC last (slow).
+#   Does not re-codegen by default — use //tools/decision:update.
 #
-# Skips gracefully (exit 0) when no TLC toolchain is available.
-# Green TLC at these bounds = strong bug hunt, not proof.
-# Does not break full-spec checking when decision cores are absent.
+# Without TLC toolchain: still runs wires/duals; skips model-check (exit 0 if
+# those pass). Green TLC at these bounds = strong bug hunt, not proof.
 #
 # Usage: scripts/check-specs.sh [spec-name ...]   # default: all specs
 
@@ -35,6 +33,7 @@ JAR="${TLA2TOOLS_JAR:-$HOME/.cache/tla2tools.jar}"
 # Prefer dotai `tlc` CLI when present; else java + jar (legacy path).
 USE_TLC_CLI=0
 JAVA=""
+SKIP_TLC=0
 
 if command -v tlc >/dev/null 2>&1; then
   USE_TLC_CLI=1
@@ -46,17 +45,16 @@ else
     fi
   done
   if [ -z "$JAVA" ]; then
-    echo "SKIP: no tlc on PATH and no working JVM (TLA+ specs not checked)"
-    exit 0
-  fi
-  if [ ! -f "$JAR" ]; then
+    echo "note: no tlc/JVM — SSOT wires/duals only (TLC skipped)"
+    SKIP_TLC=1
+  elif [ ! -f "$JAR" ]; then
     mkdir -p "$(dirname "$JAR")"
     echo "tla2tools.jar not found; downloading to $JAR ..."
     if ! curl -fsSL -o "$JAR" \
       https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar; then
-      echo "SKIP: could not download tla2tools.jar (TLA+ specs not checked)"
+      echo "note: could not download tla2tools.jar — SSOT wires/duals only"
       rm -f "$JAR"
-      exit 0
+      SKIP_TLC=1
     fi
   fi
 fi
@@ -148,6 +146,101 @@ if [ ${#specs[@]} -eq 0 ]; then
 fi
 
 pass=0 fail=0
+
+# --- 1) Fast SSOT first (no JVM) — fail before multi-minute TLC ------------
+echo "=== SSOT / duals (fast) ==="
+
+echo
+echo "--- production wires ---"
+if [ -x "$REPO_ROOT/scripts/verify-decision-wires.sh" ]; then
+  if ! "$REPO_ROOT/scripts/verify-decision-wires.sh"; then
+    fail=$((fail + 1))
+  fi
+else
+  echo "scripts/verify-decision-wires.sh missing or not executable"
+  fail=$((fail + 1))
+fi
+
+# Generated decision modules are committed — verify they exist and pass
+# go tests whenever `go` is available (CI has go; local may not).
+echo
+echo "--- decision packages (committed *spec) ---"
+declare -a SPEC_PKGS=(
+  "tui-reload:pkg/tui/results/tuireloadspec"
+  "rate-limit:pkg/githubapi/ratelimitspec"
+  "timing-clamp:pkg/analyzer/timingclampspec"
+  "sync-bounds:pkg/store/syncboundsspec"
+  "gha-lifecycle:pkg/analyzer/ghalifecyclespec"
+  "log-groups:pkg/logparse/loggroupsspec"
+  "span-tree:pkg/analyzer/spantreespec"
+)
+for entry in "${SPEC_PKGS[@]}"; do
+  sname="${entry%%:*}"
+  pkg="${entry#*:}"
+  # Only check cores we were asked to run and that have a Decision.tla
+  skip=1
+  for n in "${specs[@]}"; do
+    if [ "$n" = "$sname" ]; then skip=0; break; fi
+  done
+  [ "$skip" -eq 0 ] || continue
+  [ -f "$SPECS_DIR/$sname/decision/Decision.tla" ] || continue
+
+  if [ -f "$REPO_ROOT/$pkg/spec.go" ] && [ -f "$REPO_ROOT/$pkg/spec_test.go" ]; then
+    printf '%-22s %-40s %s\n' "$sname" "$pkg" 'present'
+    if command -v go >/dev/null 2>&1; then
+      if (cd "$REPO_ROOT" && go test "./$pkg/" -count=1 >/dev/null 2>&1); then
+        printf '%-22s %-40s %s\n' "$sname" "go test ./$pkg/" 'ok'
+      else
+        printf '%-22s %-40s %s\n' "$sname" "go test ./$pkg/" 'FAIL ✗'
+        fail=$((fail + 1))
+      fi
+    else
+      printf '%-22s %-40s %s\n' "$sname" "go test" 'skip (no go)'
+    fi
+  else
+    printf '%-22s %-40s %s\n' "$sname" "$pkg" 'MISSING ✗'
+    echo "    | regenerate: scripts/regenerate-decision-cores.sh $sname"
+    fail=$((fail + 1))
+  fi
+done
+if ! command -v specgen >/dev/null 2>&1; then
+  echo "(specgen not on PATH — packages not re-codegen'd; committed *spec still tested)"
+fi
+
+# Dual tests pin production gates to generated Can*/pure preds.
+echo
+echo "--- dual tests (production ↔ decision) ---"
+if command -v go >/dev/null 2>&1; then
+  dual_run='Decision|PurePredicates|Dual|GroupStack|LogFetchResultFresh|DropAPI|ClampDecision|RateLimit|SyncBounds'
+  declare -a DUAL_PKGS=(
+    "pkg/analyzer"
+    "pkg/githubapi"
+    "pkg/store"
+    "pkg/logparse"
+    "pkg/tui/results"
+  )
+  for dpkg in "${DUAL_PKGS[@]}"; do
+    if (cd "$REPO_ROOT" && go test "./$dpkg/" -run "$dual_run" -count=1 >/dev/null 2>&1); then
+      printf '%-22s %-40s %s\n' "dual" "./$dpkg/" 'ok'
+    else
+      printf '%-22s %-40s %s\n' "dual" "./$dpkg/" 'FAIL ✗'
+      fail=$((fail + 1))
+    fi
+  done
+else
+  echo "go not on PATH — skip dual package tests"
+fi
+
+if [ "$SKIP_TLC" -eq 1 ]; then
+  echo
+  echo "specs: $pass ok (TLC skipped), $fail failed (SSOT/duals)"
+  [ $fail -eq 0 ]
+  exit $?
+fi
+
+# --- 2) TLC last (slow) ----------------------------------------------------
+echo
+echo "=== TLC (slow) ==="
 if [ "$USE_TLC_CLI" -eq 1 ]; then
   echo "toolchain: tlc CLI ($(command -v tlc))"
 else
@@ -189,95 +282,6 @@ for name in "${specs[@]}"; do
   fi
   run_mc_configs "$name/decision" "$ddir" "Decision.tla"
 done
-
-# Generated decision modules are committed — verify they exist and pass
-# go tests whenever `go` is available (CI has go; local may not have
-# specgen). Regenerating still requires specgen on PATH intentionally.
-echo
-echo "--- decision packages (committed *spec) ---"
-declare -a SPEC_PKGS=(
-  "tui-reload:pkg/tui/results/tuireloadspec"
-  "rate-limit:pkg/githubapi/ratelimitspec"
-  "timing-clamp:pkg/analyzer/timingclampspec"
-  "sync-bounds:pkg/store/syncboundsspec"
-  "gha-lifecycle:pkg/analyzer/ghalifecyclespec"
-  "log-groups:pkg/logparse/loggroupsspec"
-  "span-tree:pkg/analyzer/spantreespec"
-)
-for entry in "${SPEC_PKGS[@]}"; do
-  sname="${entry%%:*}"
-  pkg="${entry#*:}"
-  # Only check cores we were asked to run and that have a Decision.tla
-  skip=1
-  for n in "${specs[@]}"; do
-    if [ "$n" = "$sname" ]; then skip=0; break; fi
-  done
-  [ "$skip" -eq 0 ] || continue
-  [ -f "$SPECS_DIR/$sname/decision/Decision.tla" ] || continue
-
-  if [ -f "$REPO_ROOT/$pkg/spec.go" ] && [ -f "$REPO_ROOT/$pkg/spec_test.go" ]; then
-    printf '%-22s %-40s %s\n' "$sname" "$pkg" 'present'
-    # Always run generated package tests when go is available (BFS +
-    # TestPurePredicates). Does not require specgen on PATH.
-    if command -v go >/dev/null 2>&1; then
-      if (cd "$REPO_ROOT" && go test "./$pkg/" -count=1 >/dev/null 2>&1); then
-        printf '%-22s %-40s %s\n' "$sname" "go test ./$pkg/" 'ok'
-      else
-        printf '%-22s %-40s %s\n' "$sname" "go test ./$pkg/" 'FAIL ✗'
-        fail=$((fail + 1))
-      fi
-    else
-      printf '%-22s %-40s %s\n' "$sname" "go test" 'skip (no go)'
-    fi
-  else
-    printf '%-22s %-40s %s\n' "$sname" "$pkg" 'MISSING ✗'
-    echo "    | regenerate: scripts/regenerate-decision-cores.sh $sname"
-    fail=$((fail + 1))
-  fi
-done
-if ! command -v specgen >/dev/null 2>&1; then
-  echo "(specgen not on PATH — packages not re-codegen'd; committed *spec still tested)"
-fi
-
-# Production wires: every decision core that documents a production gate
-# must still have that symbol in non-test sources (fast stack-health check).
-echo
-echo "--- production wires ---"
-if [ -x "$REPO_ROOT/scripts/verify-decision-wires.sh" ]; then
-  if ! "$REPO_ROOT/scripts/verify-decision-wires.sh"; then
-    fail=$((fail + 1))
-  fi
-else
-  echo "scripts/verify-decision-wires.sh missing or not executable"
-  fail=$((fail + 1))
-fi
-
-# Dual tests pin production gates to generated Can*/pure preds. Run a
-# filtered suite when go is available so the tla-specs job (not only the
-# unit-test job) exercises the stack bridge.
-echo
-echo "--- dual tests (production ↔ decision) ---"
-if command -v go >/dev/null 2>&1; then
-  # Broad but safe filter: dual files use these name patterns.
-  dual_run='Decision|PurePredicates|Dual|GroupStack|LogFetchResultFresh|DropAPI|ClampDecision|RateLimit|SyncBounds'
-  declare -a DUAL_PKGS=(
-    "pkg/analyzer"
-    "pkg/githubapi"
-    "pkg/store"
-    "pkg/logparse"
-    "pkg/tui/results"
-  )
-  for dpkg in "${DUAL_PKGS[@]}"; do
-    if (cd "$REPO_ROOT" && go test "./$dpkg/" -run "$dual_run" -count=1 >/dev/null 2>&1); then
-      printf '%-22s %-40s %s\n' "dual" "./$dpkg/" 'ok'
-    else
-      printf '%-22s %-40s %s\n' "dual" "./$dpkg/" 'FAIL ✗'
-      fail=$((fail + 1))
-    fi
-  done
-else
-  echo "go not on PATH — skip dual package tests"
-fi
 
 echo
 echo "specs: $pass ok, $fail failed"
