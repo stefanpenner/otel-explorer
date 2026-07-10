@@ -1,6 +1,8 @@
 package analyzer
 
 import (
+	"github.com/stefanpenner/otel-explorer/pkg/analyzer/spantreespec"
+
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
@@ -59,8 +61,14 @@ func DedupeRunnerSpans(spans []sdktrace.ReadOnlySpan) []sdktrace.ReadOnlySpan {
 // dropAPIForRunnerTwin is the SpanTreeDecision keep rule for the unambiguous
 // {1 API, 1 runner} twin: drop the API span so the runner survives.
 // Spec: specs/span-tree/decision DedupChoose → kept = "runner".
+// SSOT: twin shape runs generated DedupChoose; drop only when kept is runner
+// and this span is the API side.
 func dropAPIForRunnerTwin(apiCount, runnerCount int, thisIsRunner bool) bool {
-	return apiCount == 1 && runnerCount == 1 && !thisIsRunner
+	if apiCount != 1 || runnerCount != 1 {
+		return false // not the unambiguous twin shape
+	}
+	kept := spantreespec.Init().SeeAPI().SeeRunner().DedupChoose().Kept
+	return kept == "runner" && !thisIsRunner
 }
 
 // spanIsRunner reports whether a span was emitted natively by the GitHub Actions

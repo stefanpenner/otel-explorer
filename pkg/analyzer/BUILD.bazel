@@ -28,6 +28,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/analyzer/ghalifecyclespec",
+        "//pkg/analyzer/spantreespec",
         "//pkg/analyzer/timingclampspec",
         "//pkg/enrichment",
         "//pkg/githubapi",
