@@ -83,6 +83,7 @@ decision_core(
 
 test_suite(
     name = "up_to_date",
+    tags = ["decision"],
     tests = [
         ":tui_reload_up_to_date",
         ":rate_limit_up_to_date",

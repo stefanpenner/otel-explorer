@@ -2,7 +2,9 @@
 
 **Day-to-day:** load `specs/<core>/GATES.md` only.  
 **Race redesign:** full TLC in `specs/<core>/*.tla`.  
-**Regen:** `bazel run //tools/decision:update`
+**Regen:** `bazel run //tools/decision:update`  
+**Lean check:** `scripts/decision-check.sh`  
+(`--with-tlc` or `<core>` for TLC; full suite: `scripts/check-specs.sh`)
 
 | Core | GATES | Production package |
 |------|-------|--------------------|

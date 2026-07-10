@@ -17,4 +17,5 @@ go_test(
     name = "spantreespec_test",
     srcs = ["//tools/decision:span_tree_gen/spec_test.go"],
     embed = [":spantreespec"],
+    tags = ["decision"],
 )

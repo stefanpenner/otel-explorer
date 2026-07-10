@@ -21,4 +21,5 @@ go_test(
         "//tools/decision:rate_limit_gen/spec_test.go",
     ],
     embed = [":ratelimitspec"],
+    tags = ["decision"],
 )

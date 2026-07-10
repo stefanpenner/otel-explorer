@@ -59,4 +59,4 @@ done
 
 echo
 echo "Legend: FULL=specs/<core>/*.tla  DECISION=decision/Decision.tla  GEN=committed *spec"
-echo "Verify: scripts/verify-decision-wires.sh · scripts/check-specs.sh"
+echo "Verify: scripts/decision-check.sh · scripts/check-specs.sh"

@@ -63,6 +63,8 @@ Two layers:
 Open full `.tla` only for race redesign. Cite **symbols**, not line numbers.
 
 ```bash
+scripts/decision-check.sh                # lean: wires + decision-tagged tests
+scripts/decision-check.sh --with-tlc     # also TLC cores (or pass core names)
 bazel test //tools/decision:up_to_date   # codegen freshness (in bazel test //...)
 bazel run  //tools/decision:update       # regenerate committed *spec from .tla
 scripts/decision-stack-status.sh
