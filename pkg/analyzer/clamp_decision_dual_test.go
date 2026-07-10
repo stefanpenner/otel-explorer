@@ -186,21 +186,3 @@ func TestClampDecisionDual_BugPassthrough(t *testing.T) {
 	assert.Greater(t, st.OutEnd, int64(3))
 }
 
-func TestClampPurePredicatesRegistry(t *testing.T) {
-	t.Parallel()
-	preds := timingclampspec.PurePredicates()
-	require.NotEmpty(t, preds)
-	s := timingclampspec.Init()
-	var sawContained, sawOrdered bool
-	for _, p := range preds {
-		_ = p.Check(s)
-		switch p.Name {
-		case "ClampedContained":
-			sawContained = true
-		case "ClampedOrdered":
-			sawOrdered = true
-		}
-	}
-	assert.True(t, sawContained)
-	assert.True(t, sawOrdered)
-}

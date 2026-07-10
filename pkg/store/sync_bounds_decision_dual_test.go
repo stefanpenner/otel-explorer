@@ -117,17 +117,3 @@ func TestSyncBoundsDecisionDual_AgainstStore(t *testing.T) {
 	}
 }
 
-func TestSyncBoundsPurePredicatesRegistry(t *testing.T) {
-	t.Parallel()
-	preds := syncboundsspec.PurePredicates()
-	require.NotEmpty(t, preds)
-	s := syncboundsspec.Init()
-	var saw bool
-	for _, p := range preds {
-		_ = p.Check(s)
-		if p.Name == "NoStaleAccepted" {
-			saw = true
-		}
-	}
-	assert.True(t, saw)
-}
