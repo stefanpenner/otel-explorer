@@ -77,7 +77,7 @@ Checks:
 - Pure registry dual-stub is **generated** (`TestPurePredicates` in `*spec`)
 - Optional: `SPECGEN_CHECK_REGEN=1` → regenerate + no-diff
 
-Generated pure API (per `*spec` package):
+Generated pure API (per Go `*spec` package):
 
 ```go
 func (s State) WaitNeeded() bool          // example pure gate
@@ -85,6 +85,17 @@ func PurePredicates() []PurePredicate     // enumerate all pure gates
 // TestPurePredicates — generated dual-stub: exact names + no panic on Init
 // (do not re-list PurePredicates in production dual tests)
 ```
+
+**Rust (peer language):** PATH A scalar cores via canonical JIT `specgen -lang rust`
+(`~/.ai` tool — not yet wired into this repo’s Bazel `//tools/decision` pipeline).
+
+```bash
+specgen -lang rust -const MaxDepth=3 -const Bug=FALSE \
+  -o ./out specs/log-groups/decision/Decision.tla   # → out/spec.rs
+```
+
+Idiomatic Rust: `snake_case`, `can_open` / `open(self)`, `Copy`/`Clone`, `PURE_PREDICATES`.
+Go remains the production path for ote; both languages share the same Decision.tla SSOT.
 
 ```bash
 # Hermetic Bazel pipeline (preferred — used by CI via bazel test //...)
