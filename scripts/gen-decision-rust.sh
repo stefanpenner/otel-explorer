@@ -10,7 +10,7 @@
 #   scripts/gen-decision-rust.sh --check         # rustc -D warnings each (if rustc)
 #   scripts/gen-decision-rust.sh --parity        # after gen: Go↔JIT Rust names
 #   scripts/gen-decision-rust.sh --parity-committed
-#       # hermetic: Go *spec ↔ crates/decision_cores (no JIT; used by decision-check)
+#       # hermetic: Go *spec ↔ crates + gates cover all cores (decision-check / CI)
 #   scripts/gen-decision-rust.sh --check --parity
 #
 # Requires: specgen for gen / --check / --parity (not for --parity-committed alone).
@@ -171,6 +171,29 @@ if [ "$PARITY_COMMITTED" -eq 1 ]; then
       fail=1
     fi
   done
+
+  # Every generated Rust module must have a thin gates::* wrapper (peer of Go prod).
+  echo "--- gates cover cores ---"
+  gates_rs="crates/decision_cores/src/gates.rs"
+  if [ ! -f "$gates_rs" ]; then
+    echo "  FAIL missing $gates_rs"
+    fail=1
+  else
+    for row in "${rows[@]}"; do
+      core="${row%%|*}"
+      rest="${row#*|}"
+      rest2="${rest#*|}"
+      rsmod="${rest2##*|}"
+      want_core "$core" || continue
+      if grep -qE "use crate::${rsmod}|crate::${rsmod}::" "$gates_rs"; then
+        echo "  ok $rsmod → gates"
+      else
+        echo "  FAIL $rsmod not wired in gates.rs (add thin wrapper + dual)"
+        fail=1
+      fi
+    done
+  fi
+
   echo
   if [ "$fail" -ne 0 ]; then
     echo "gen-decision-rust --parity-committed: FAIL"
