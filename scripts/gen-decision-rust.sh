@@ -175,6 +175,7 @@ if [ "$PARITY_COMMITTED" -eq 1 ]; then
   # Every generated Rust module must have a thin gates::* wrapper (peer of Go prod).
   echo "--- gates cover cores ---"
   gates_rs="crates/decision_cores/src/gates.rs"
+  duals_dir="crates/decision_cores/tests"
   if [ ! -f "$gates_rs" ]; then
     echo "  FAIL missing $gates_rs"
     fail=1
@@ -192,6 +193,22 @@ if [ "$PARITY_COMMITTED" -eq 1 ]; then
         fail=1
       fi
     done
+
+    # Every pub gates::* fn must appear in dual tests (peer of Go dual tables).
+    echo "--- gates dual inventory ---"
+    while IFS= read -r gfn; do
+      [ -n "$gfn" ] || continue
+      if grep -rqE "gates::${gfn}\\b" "$duals_dir" 2>/dev/null; then
+        echo "  ok dual $gfn"
+      else
+        echo "  FAIL no dual for gates::$gfn (add table in tests/)"
+        fail=1
+      fi
+    done < <(
+      grep -oE 'pub fn [a-z_]+' "$gates_rs" \
+        | sed 's/pub fn //' \
+        | sort -u
+    )
   fi
 
   echo
