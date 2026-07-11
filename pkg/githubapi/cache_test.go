@@ -215,6 +215,118 @@ func TestCachedTransportRevalidatesWithETag(t *testing.T) {
 	assert.Empty(t, req.Header.Get("If-None-Match"))
 }
 
+// rtFunc is a RoundTripper that never hits the network (unit-test double).
+type rtFunc func(*http.Request) (*http.Response, error)
+
+func (f rtFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestCachedTransportImmutableCompletedRunSurvivesTTL(t *testing.T) {
+	cacheDir := t.TempDir()
+	callCount := 0
+	body := `{"id":1,"status":"completed","conclusion":"success","name":"CI"}`
+	base := rtFunc(func(req *http.Request) (*http.Response, error) {
+		callCount++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})
+	transport := NewCachedTransport(base, cacheDir)
+	client := &http.Client{Transport: transport}
+
+	url := "https://api.github.com/repos/o/r/actions/runs/42"
+	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	resp, err := client.Do(req)
+	assert.NoError(t, err)
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	assert.Equal(t, body, string(got))
+	assert.Equal(t, 1, callCount)
+
+	files, _ := os.ReadDir(cacheDir)
+	assert.Len(t, files, 1)
+	cachePath := cacheDir + "/" + files[0].Name()
+	// Past short TTL, still within immutable window.
+	stale := time.Now().Add(-(cacheTTL + time.Hour))
+	assert.NoError(t, os.Chtimes(cachePath, stale, stale))
+
+	resp2, err := client.Do(req)
+	assert.NoError(t, err)
+	got2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	assert.Equal(t, body, string(got2))
+	assert.Equal(t, 1, callCount, "completed run must stay cache-fresh past short TTL")
+}
+
+func TestCachedTransportInProgressRunExpires(t *testing.T) {
+	cacheDir := t.TempDir()
+	callCount := 0
+	body := `{"id":1,"status":"in_progress","conclusion":null}`
+	base := rtFunc(func(req *http.Request) (*http.Response, error) {
+		callCount++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})
+	transport := NewCachedTransport(base, cacheDir)
+	client := &http.Client{Transport: transport}
+
+	url := "https://api.github.com/repos/o/r/actions/runs/99"
+	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	_, err := client.Do(req)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, callCount)
+
+	files, _ := os.ReadDir(cacheDir)
+	cachePath := cacheDir + "/" + files[0].Name()
+	stale := time.Now().Add(-(cacheTTL + time.Minute))
+	assert.NoError(t, os.Chtimes(cachePath, stale, stale))
+
+	_, err = client.Do(req)
+	assert.NoError(t, err)
+	assert.Equal(t, 2, callCount, "in_progress run must revalidate after short TTL")
+}
+
+func TestCachedTransportImmutableJobLogs(t *testing.T) {
+	cacheDir := t.TempDir()
+	callCount := 0
+	logBody := "2026-01-01T00:00:00.0000000Z hello"
+	base := rtFunc(func(req *http.Request) (*http.Response, error) {
+		callCount++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(logBody)),
+			Request:    req,
+		}, nil
+	})
+	transport := NewCachedTransport(base, cacheDir)
+	client := &http.Client{Transport: transport}
+
+	url := "https://api.github.com/repos/o/r/actions/jobs/7/logs"
+	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	_, err := client.Do(req)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, callCount)
+
+	files, _ := os.ReadDir(cacheDir)
+	cachePath := cacheDir + "/" + files[0].Name()
+	stale := time.Now().Add(-(cacheTTL + 2*time.Hour))
+	assert.NoError(t, os.Chtimes(cachePath, stale, stale))
+
+	resp, err := client.Do(req)
+	assert.NoError(t, err)
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	assert.Equal(t, logBody, string(got))
+	assert.Equal(t, 1, callCount, "job logs are immutable once fetched")
+}
+
 func TestCachedTransportConcurrentSameURL(t *testing.T) {
 	cacheDir := t.TempDir()
 

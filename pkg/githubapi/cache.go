@@ -5,20 +5,30 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httputil"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
 
-// cacheTTL controls how long cached responses remain valid.
+// cacheTTL is the default freshness window for mutable GitHub responses
+// (lists, in-progress runs, PR metadata, …).
 const cacheTTL = 5 * time.Minute
+
+// cacheTTLImmutable is how long completed GHA resources stay fresh without a
+// network round-trip. Completed runs/jobs/logs do not change; re-fetching them
+// wastes rate budget and wall clock. Cap avoids unbounded disk trust if GitHub
+// ever mutates history (deletes, redactions).
+const cacheTTLImmutable = 30 * 24 * time.Hour
 
 // cacheVersion is incremented to invalidate all existing cached responses.
 // Bump this when response parsing or enrichment logic changes.
-const cacheVersion = "v4"
+const cacheVersion = "v5"
 
 // CachedTransport implements http.RoundTripper and caches GET requests to disk.
 type CachedTransport struct {
@@ -155,8 +165,62 @@ func (t *CachedTransport) readFromCache(path string, req *http.Request) (*http.R
 	// Don't os.Remove stale entries here: another process may be concurrently
 	// renaming a fresh entry into place, and removing would delete it. A stale
 	// file is simply overwritten by the next save (or touched on a 304).
-	fresh := time.Since(info.ModTime()) <= cacheTTL
+	age := time.Since(info.ModTime())
+	fresh := age <= cacheTTL
+	if !fresh && age <= cacheTTLImmutable && isImmutableCachedResponse(req, resp) {
+		// Completed Actions resources are effectively write-once: serve without
+		// revalidation until the immutable window ends (or cacheVersion bumps).
+		fresh = true
+	}
 	return resp, fresh
+}
+
+// Single-run / single-job JSON paths (not list or nested collections).
+var (
+	reActionsRun  = regexp.MustCompile(`^/repos/[^/]+/[^/]+/actions/runs/\d+$`)
+	reActionsJob  = regexp.MustCompile(`^/repos/[^/]+/[^/]+/actions/jobs/\d+$`)
+	reActionsLogs = regexp.MustCompile(`^/repos/[^/]+/[^/]+/actions/jobs/\d+/logs$`)
+)
+
+// isImmutableCachedResponse reports whether this cached GET is safe to treat as
+// long-lived. Only GitHub API completed workflow runs, completed jobs, and job
+// logs qualify. List endpoints and in-progress resources stay on short TTL.
+func isImmutableCachedResponse(req *http.Request, resp *http.Response) bool {
+	if req == nil || resp == nil || resp.Body == nil {
+		return false
+	}
+	host := req.URL.Host
+	if host != "api.github.com" && !strings.HasSuffix(host, ".api.github.com") {
+		return false
+	}
+	path := req.URL.Path
+	switch {
+	case reActionsLogs.MatchString(path):
+		// Logs are only available after completion and do not change.
+		return true
+	case reActionsRun.MatchString(path), reActionsJob.MatchString(path):
+		return bodyStatusCompleted(resp)
+	default:
+		return false
+	}
+}
+
+// bodyStatusCompleted peeks at a JSON body for status=="completed" and restores
+// resp.Body so the caller can still read it.
+func bodyStatusCompleted(resp *http.Response) bool {
+	raw, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(raw))
+	if err != nil || len(raw) == 0 {
+		return false
+	}
+	var meta struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return false
+	}
+	return meta.Status == "completed"
 }
 
 // touch resets a cache entry's TTL by bumping its modification time to now,
