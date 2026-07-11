@@ -1,8 +1,10 @@
-// specgen — generate a decision module from a TLA+ spec (Go default; Rust PATH A).
+// specgen — generate a decision module from a TLA+ spec.
 //
-// The generated module mirrors the spec's state machine as pure functions:
-// State struct, Init(), Can<Action>() guards, <Action>() transitions,
-// EnabledActions() dispatcher, and trace helpers for conformance checking.
+// Languages (peers, same Decision.tla SSOT):
+//   -lang go   (default) — Can*/ApplyAction/Trace, PurePredicates
+//   -lang rust — PATH A scalars only; can_*/consuming transitions, PURE_PREDICATES
+//
+// Do not expand into multi-object/record models; full TLC stays design-only.
 //
 // Usage:
 //
@@ -11,7 +13,8 @@
 // Flags:
 //
 //	-o, --output <dir>    output directory (default: <spec>_gen)
-//	-p, --package <name>  Go package name (default: <spec>spec)
+//	-p, --package <name>  Go package / Rust module hint (default: <spec>spec)
+//	-lang go|rust         target language (default: go)
 //	-h, --help
 package main
 
@@ -48,6 +51,7 @@ Flags:
 
 Examples:
   specgen Toggle.tla                          # → Toggle_gen/spec.go
+  specgen -lang rust -o ./out Toggle.tla      # → ./out/spec.rs (PATH A)
   specgen -o ./out Toggle.tla                 # → ./out/spec.go
   specgen -p cache Toggle.tla                 # → Toggle_gen/spec.go (package cache)
   specgen -const Guarded=TRUE Picker.tla       # bind Guarded; HasSel (unbound)
