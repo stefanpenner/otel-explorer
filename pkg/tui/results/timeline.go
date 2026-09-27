@@ -23,7 +23,7 @@ func timelineHyperlink(url, text string) string {
 // Returns left padding + styled marker + right padding, totaling exactly 'width' visual characters.
 func renderMarker(markerChar string, style lipgloss.Style, startPos, width int, url string, applyStyle bool) string {
 	// Use a fixed width for known markers to avoid terminal inconsistencies
-	markerWidth := getMarkerWidth(markerChar)
+	markerWidth := GetCharWidth(markerChar)
 
 	// Clamp position
 	if startPos < 0 {
@@ -80,11 +80,6 @@ func GetCharWidth(char string) int {
 	}
 }
 
-// getMarkerWidth returns the visual width of a marker character.
-func getMarkerWidth(char string) int {
-	return GetCharWidth(char)
-}
-
 // barGeometry holds the computed columns for a timeline bar.
 type barGeometry struct {
 	startPos  int  // 0-based start column
@@ -92,10 +87,9 @@ type barGeometry struct {
 	isZero    bool // true → render as a 1-column marker at startPos
 }
 
-// computeBarGeometry is the shared math for all 5 timeline-bar renderers:
-// guard against degenerate windows, clamp item times to global bounds, detect
-// zero-duration items, and compute start/length with minimum-1 and width
-// clamping. Returns ok=false for degenerate inputs (caller renders blanks).
+// computeBarGeometry is the one timeline-bar placement: reject a degenerate
+// window, clamp the item into it, then start column and length (at least 1).
+// ok is false when the caller should paint a blank row.
 func computeBarGeometry(item TreeItem, globalStart, globalEnd time.Time, width int) (barGeometry, bool) {
 	if globalEnd.Before(globalStart) || globalEnd.Equal(globalStart) || width <= 0 {
 		return barGeometry{}, false
@@ -383,13 +377,11 @@ func computeChildPositions(children []*TreeItem, globalStart, globalEnd time.Tim
 	return positions
 }
 
-// renderTimelineWithChildren builds a timeline bar with child markers overlaid.
-// The buffer is filled with child markers first, then the parent bar overwrites on top.
-// styleFn selects the appropriate child style variant (normal vs selected).
-// If bgStyle is non-nil, empty space gets that background (for search-match rows).
-// If selected is true, parent uses selected styles and padding gets selection bg.
+// renderTimelineWithChildren paints child dots, then the parent bar on top.
+// selected uses selection styles; bgStyle tints empty columns when set.
 func renderTimelineWithChildren(item TreeItem, globalStart, globalEnd time.Time, width int, url string, selected bool, bgStyle *lipgloss.Style, hiddenState map[string]bool) string {
-	if globalEnd.Before(globalStart) || globalEnd.Equal(globalStart) || width <= 0 {
+	geo, ok := computeBarGeometry(item, globalStart, globalEnd, width)
+	if !ok {
 		if selected {
 			return SelectedBgStyle.Render(strings.Repeat(" ", width))
 		}
@@ -399,96 +391,35 @@ func renderTimelineWithChildren(item TreeItem, globalStart, globalEnd time.Time,
 		return strings.Repeat(" ", width)
 	}
 
-	totalDuration := globalEnd.Sub(globalStart)
-
-	// Choose child style function based on mode
 	childStyleFn := getChildMarkerStyle
 	if selected {
 		childStyleFn = getChildMarkerStyleSelected
 	}
-
-	// Compute child marker positions
 	childPositions := computeChildPositions(item.Children, globalStart, globalEnd, width, childStyleFn, hiddenState)
 
-	// Build buffer tracking what's at each position
 	type cell struct {
 		isChild bool
 		style   lipgloss.Style
 	}
 	buf := make([]cell, width)
-
-	// Place child markers
 	for _, cp := range childPositions {
 		buf[cp.pos] = cell{isChild: true, style: cp.style}
 	}
 
-	// Compute parent bar range
-	parentStart := item.StartTime
-	parentEnd := item.EndTime
-	if parentStart.Before(globalStart) {
-		parentStart = globalStart
-	}
-	if parentEnd.After(globalEnd) {
-		parentEnd = globalEnd
-	}
-
-	isZeroDuration := parentEnd.Before(parentStart) || parentEnd.Equal(parentStart)
-
-	var parentStartPos, parentBarLen int
-	if isZeroDuration {
-		startOffset := parentStart.Sub(globalStart)
-		parentStartPos = int(float64(startOffset) / float64(totalDuration) * float64(width))
-		if parentStartPos >= width {
-			parentStartPos = width - 1
-		}
-		if parentStartPos < 0 {
-			parentStartPos = 0
-		}
-		parentBarLen = 1
-	} else {
-		startOffset := parentStart.Sub(globalStart)
-		endOffset := parentEnd.Sub(globalStart)
-		parentStartPos = int(float64(startOffset) / float64(totalDuration) * float64(width))
-		endPos := int(float64(endOffset) / float64(totalDuration) * float64(width))
-		parentBarLen = endPos - parentStartPos
-		if parentBarLen < 1 {
-			parentBarLen = 1
-		}
-		if parentStartPos < 0 {
-			parentStartPos = 0
-		}
-		if parentStartPos > width-1 {
-			parentStartPos = width - 1
-		}
-		if parentStartPos+parentBarLen > width {
-			parentBarLen = width - parentStartPos
-		}
-		if parentBarLen < 1 {
-			parentBarLen = 1
-		}
-	}
-
-	// Get parent bar character and style
-	var barChar string
-	var parentStyle lipgloss.Style
+	barChar, parentStyle := getBarStyle(item)
 	if selected {
 		barChar, parentStyle = getBarStyleSelected(item)
-	} else {
-		barChar, parentStyle = getBarStyle(item)
 	}
-
-	// For zero-duration non-marker, use | as indicator
-	if isZeroDuration && !item.Hints.IsMarker {
+	if geo.isZero && !item.Hints.IsMarker {
 		barChar = "|"
 	}
 
-	// Now build the output string by scanning the buffer and grouping runs
 	var result strings.Builder
 	i := 0
 	for i < width {
-		if i >= parentStartPos && i < parentStartPos+parentBarLen {
+		if i >= geo.startPos && i < geo.startPos+geo.barLength {
 			// Parent bar region — render with duration label
-			end := parentStartPos + parentBarLen
+			end := geo.startPos + geo.barLength
 			if end > width {
 				end = width
 			}
@@ -511,8 +442,8 @@ func renderTimelineWithChildren(item TreeItem, globalStart, globalEnd time.Time,
 		} else {
 			// Empty space — collect consecutive spaces
 			j := i
-			for j < width && j != parentStartPos && !buf[j].isChild {
-				if j >= parentStartPos && j < parentStartPos+parentBarLen {
+			for j < width && j != geo.startPos && !buf[j].isChild {
+				if j >= geo.startPos && j < geo.startPos+geo.barLength {
 					break
 				}
 				j++
@@ -718,4 +649,3 @@ func overlayLogicalEndLine(timeline string, col, width int, selected bool) strin
 
 	return string(bytes[:beforeEnd]) + marker + string(bytes[afterStart:])
 }
-
