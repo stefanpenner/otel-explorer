@@ -422,408 +422,330 @@ func (m Model) renderTimeAxis() string {
 	return BorderStyle.Render("│") + " " + treePart + SeparatorStyle.Render("│") + timelineContent.String() + BorderStyle.Render("│")
 }
 
-// renderItem renders a single tree item with timeline bar
+// renderItem paints an info row, or one tree cell, its timeline, then the borders.
 func (m Model) renderItem(item TreeItem, isSelected bool, itemIdx int) string {
-	width := m.width
-	if width < 40 {
-		width = 40
-	}
-	totalWidth := width - horizontalPad*2 // account for left/right padding
-	if totalWidth < 1 {
-		totalWidth = 80
-	}
-
-	// Calculate widths
-	// Line structure: │ + space + treePart + │ + timelineBar + │ = 3 border chars + 1 padding
-	availableWidth := totalWidth - 4 // 3 border characters + 1 left padding
-	treeW := m.treeWidth
-	timelineW := availableWidth - treeW
-	if timelineW < 10 {
-		timelineW = 10
-	}
-
-	// Info items: colored metadata line with hyperlink, no timeline bar
+	timelineW := timelineWidth(m.width, m.treeWidth)
 	if item.ItemType == ItemTypeInfo {
-		var indentBuf strings.Builder
-		var infoConn []rune
-		if itemIdx >= 0 && itemIdx < len(m.treeConnectors) {
-			infoConn = m.treeConnectors[itemIdx]
-		}
-		for i := 0; i < item.Depth; i++ {
-			var ch rune
-			if i < len(infoConn) {
-				ch = infoConn[i]
-			} else {
-				ch = ' '
-			}
-			switch ch {
-			case '├':
-				indentBuf.WriteString(IndentGuideStyle.Render("├─"))
-			case '└':
-				indentBuf.WriteString(IndentGuideStyle.Render("└─"))
-			case '│':
-				indentBuf.WriteString(IndentGuideStyle.Render("│"))
-				indentBuf.WriteString(" ")
-			default:
-				indentBuf.WriteString("  ")
-			}
-		}
-		indent := indentBuf.String() + "  "
-
-		isInfoHidden := m.hiddenState[item.ID]
-		isInfoDimmed := m.isFocused && !m.focusedIDs[item.ID]
-
-		var displayText string
-		if isInfoHidden || isInfoDimmed {
-			displayText = HiddenStyle.Render(item.Name)
-		} else if item.Hints.Category == "diff" {
-			displayText = renderDiffLabel(item.Name, item.Hints.URL)
-		} else {
-			infoStyle := infoColorStyle(item.Hints.Color)
-			displayText = hyperlink(item.Hints.URL, infoStyle.Render(item.Name))
-		}
-		label := FooterStyle.Render(indent) + displayText
-		labelWidth := lipgloss.Width(indent + item.Name)
-		pad := treeW - labelWidth
-		if pad < 0 {
-			pad = 0
-		}
-		midSep := SeparatorStyle.Render("│")
-		emptyTimeline := strings.Repeat(" ", timelineW)
-		if isSelected {
-			sel := SelectedStyle
-			selLabel := sel.Render(indent + item.Name)
-			selPad := SelectedBgStyle.Render(strings.Repeat(" ", pad))
-			selTimeline := SelectedBgStyle.Render(emptyTimeline)
-			return BorderStyle.Render("│") + " " + selLabel + selPad + midSep + selTimeline + BorderStyle.Render("│")
-		}
-		return BorderStyle.Render("│") + " " + label + strings.Repeat(" ", pad) + midSep + emptyTimeline + BorderStyle.Render("│")
+		return m.renderInfoItem(item, isSelected, itemIdx, m.treeWidth, timelineW)
 	}
 
-	// Build indent with tree connectors (├─ / └─ / │  /   )
-	indentDepth := item.Depth
-	var indentBuf strings.Builder
-	var indentPlainBuf strings.Builder
-	var connectors []rune
-	if itemIdx >= 0 && itemIdx < len(m.treeConnectors) {
-		connectors = m.treeConnectors[itemIdx]
+	tree, pad := m.paintTreeCell(item, itemIdx, isSelected)
+	bar := m.itemTimeline(item, isSelected, timelineW)
+	return m.finishItemRow(tree, pad, bar, item, isSelected)
+}
+
+// timelineWidth is the bar width inside │ + space + tree + │ + bar + │.
+func timelineWidth(viewWidth, treeW int) int {
+	if viewWidth < 40 {
+		viewWidth = 40
 	}
-	for i := 0; i < indentDepth; i++ {
-		var ch rune
+	total := viewWidth - horizontalPad*2
+	if total < 1 {
+		total = 80
+	}
+	return max(total-4-treeW, 10)
+}
+
+func (m Model) renderInfoItem(item TreeItem, isSelected bool, itemIdx, treeW, timelineW int) string {
+	indent, _ := treeIndent(m.connectorsAt(itemIdx), item.Depth, ' ')
+	indent += "  "
+	pad := max(treeW-lipgloss.Width(indent+item.Name), 0)
+	left := BorderStyle.Render("│") + " "
+	mid := SeparatorStyle.Render("│")
+	right := BorderStyle.Render("│")
+	gap := strings.Repeat(" ", timelineW)
+	if isSelected {
+		return left + SelectedStyle.Render(indent+item.Name) + SelectedBgStyle.Render(strings.Repeat(" ", pad)) + mid + SelectedBgStyle.Render(gap) + right
+	}
+	return left + FooterStyle.Render(indent) + m.infoText(item) + strings.Repeat(" ", pad) + mid + gap + right
+}
+
+func (m Model) infoText(item TreeItem) string {
+	if m.hiddenState[item.ID] || (m.isFocused && !m.focusedIDs[item.ID]) {
+		return HiddenStyle.Render(item.Name)
+	}
+	if item.Hints.Category == "diff" {
+		return renderDiffLabel(item.Name, item.Hints.URL)
+	}
+	return hyperlink(item.Hints.URL, infoColorStyle(item.Hints.Color).Render(item.Name))
+}
+
+func (m Model) connectorsAt(itemIdx int) []rune {
+	if itemIdx < 0 || itemIdx >= len(m.treeConnectors) {
+		return nil
+	}
+	return m.treeConnectors[itemIdx]
+}
+
+func treeIndent(connectors []rune, depth int, fallback rune) (styled, plain string) {
+	var styledBuf, plainBuf strings.Builder
+	for i := 0; i < depth; i++ {
+		ch := fallback
 		if i < len(connectors) {
 			ch = connectors[i]
-		} else {
-			ch = '│' // fallback
 		}
 		switch ch {
 		case '├':
-			indentBuf.WriteString(IndentGuideStyle.Render("├─"))
-			indentPlainBuf.WriteString("├─")
+			styledBuf.WriteString(IndentGuideStyle.Render("├─"))
+			plainBuf.WriteString("├─")
 		case '└':
-			indentBuf.WriteString(IndentGuideStyle.Render("└─"))
-			indentPlainBuf.WriteString("└─")
+			styledBuf.WriteString(IndentGuideStyle.Render("└─"))
+			plainBuf.WriteString("└─")
 		case '│':
-			indentBuf.WriteString(IndentGuideStyle.Render("│"))
-			indentBuf.WriteString(" ")
-			indentPlainBuf.WriteString("│ ")
-		default: // ' '
-			indentBuf.WriteString("  ")
-			indentPlainBuf.WriteString("  ")
+			styledBuf.WriteString(IndentGuideStyle.Render("│"))
+			styledBuf.WriteString(" ")
+			plainBuf.WriteString("│ ")
+		default:
+			styledBuf.WriteString("  ")
+			plainBuf.WriteString("  ")
 		}
 	}
-	indent := indentBuf.String()
-	indentPlain := indentPlainBuf.String()
-	indentWidth := indentDepth * 2
+	return styledBuf.String(), plainBuf.String()
+}
 
-	// Expand indicator
-	expandIndicator := " "
-	if item.HasChildren {
-		if m.expandedState[item.ID] {
-			expandIndicator = "▼"
-		} else {
-			expandIndicator = "▶"
-		}
-	}
-	expandWidth := 1
-
-	// Get icon based on item type
+func (m Model) paintTreeCell(item TreeItem, itemIdx int, isSelected bool) (string, int) {
+	indent, indentPlain := treeIndent(m.connectorsAt(itemIdx), item.Depth, '│')
+	expand := expandMark(item.HasChildren, m.expandedState[item.ID])
 	icon := getItemIcon(item)
-	iconWidth := GetCharWidth(icon)
-
-	// Get status indicator
-	statusIcon := getStatusIcon(item)
-	statusWidth := GetCharWidth(statusIcon)
-
-	// Get badges
+	status := getStatusIcon(item)
 	badges := getBadges(item)
-	badgesWidth := getBadgesWidth(badges)
 
-	// Check logical end state (needed early for badge width calculation)
-	isLogicalEnd := item.ID == m.logicalEndID
-	isAfterEnd := m.isAfterLogicalEnd(item)
+	logicalEnd := item.ID == m.logicalEndID
+	afterEnd := m.isAfterLogicalEnd(item)
+	hidden := m.hiddenState[item.ID]
+	dim := m.isFocused && !m.focusedIDs[item.ID]
+	search := m.searchMatchIDs[item.ID]
 
-	// Check if item is hidden from chart (needed early for width calculation)
-	isHidden := m.hiddenState[item.ID]
-
-	// Add [end] badge for logical end marker
-	endBadgeWidth := 0
-	if isLogicalEnd {
-		endBadgeWidth = 6 // len(" [end]")
+	endW, hiddenW := 0, 0
+	if logicalEnd {
+		endW = 6 // len(" [end]")
+	}
+	if hidden {
+		hiddenW = 2 // len(" ⊘")
 	}
 
-	// Hidden badge width: " ⊘" = 2 chars
-	hiddenBadgeWidth := 0
-	if isHidden {
-		hiddenBadgeWidth = 2
-	}
+	name := m.rowName(item)
+	hint, hintW := sourceHint(item.SourceHint)
+	dur, durW := rowDuration(item)
+	iconW := GetCharWidth(icon)
+	badgeW := getBadgesWidth(badges)
+	statusW := GetCharWidth(status)
+	const expandW, gapW = 1, 1
+	fixed := item.Depth*2 + expandW + gapW + iconW + gapW + hintW + durW + badgeW + endW + hiddenW + gapW + statusW
+	name = fitName(name, max(m.treeWidth-fixed, 5))
+	pad := max(m.treeWidth-fixed-lipgloss.Width(name), 0)
 
-	// Build the name part
+	switch {
+	case isSelected || search:
+		shown := linkedName(name, m.searchQuery, item.Hints.URL, isSelected, search)
+		prefix := fmt.Sprintf("%s%s %s %s", indent, expand, icon, shown)
+		style, bg := tintedStyle(isSelected, hidden, afterEnd)
+		return tintedRow(prefix, hint, dur, badges, item, logicalEnd, hidden, style, bg), pad
+	case dim || hidden || afterEnd:
+		return mutedRow(indentPlain, expand, icon, name, hint, dur, badges, status, dim, hidden), pad
+	default:
+		shown := hyperlink(item.Hints.URL, name)
+		return activeRow(indent, expand, icon, shown, hint, dur, badges, item, logicalEnd), pad
+	}
+}
+
+func (m Model) rowName(item TreeItem) string {
 	name := item.DisplayName
 	if item.Hints.User != "" && item.Hints.IsMarker {
 		name = fmt.Sprintf("%s by %s", name, item.Hints.User)
 	}
-	// Append semantic detail (model, route, SQL, token usage, feature flags, …)
-	// inline next to the name — the same information the CLI timeline shows —
-	// so the interactive view surfaces it without opening the inspector. Done
-	// before width budgeting so it participates in truncation.
 	if item.Hints.Detail != "" && !item.Hints.IsMarker {
 		if extra := enrichment.NonRedundantDetail(item.DisplayName, item.Hints.Detail); extra != "" {
 			name = name + "  " + extra
 		}
 	}
-
-	// Inline log fetch spinner
 	if phase := m.logFetchPhase(item.ID); phase != "" {
 		name = fmt.Sprintf("%s %s %s", name, m.spinner.View(), phase)
 	}
+	return name
+}
 
-	// Provenance hint at a source boundary (e.g. "build ← runner", "unit tests ← jest").
-	// Kept as a separate segment (not baked into name) so the label can be color-coded
-	// on active rows and inherit dim styling on inactive ones. Width is reserved below
-	// and the segment is appended per render-branch.
-	hintPlain := ""
-	hintWidth := 0
-	if item.SourceHint != "" {
-		hintPlain = " ← " + item.SourceHint
-		hintWidth = lipgloss.Width(hintPlain)
+func sourceHint(label string) (string, int) {
+	if label == "" {
+		return "", 0
 	}
+	plain := " ← " + label
+	return plain, lipgloss.Width(plain)
+}
 
-	// Build duration string separately (styled in gray)
-	durationStr := ""
-	durationWidth := 0
-	if !item.StartTime.IsZero() && !item.EndTime.IsZero() {
-		duration := item.EndTime.Sub(item.StartTime).Seconds()
-		if duration < 0 {
-			duration = 0
-		}
-		durationStr = fmt.Sprintf(" (%s)", utils.HumanizeTime(duration))
-		durationWidth = lipgloss.Width(durationStr)
+func rowDuration(item TreeItem) (string, int) {
+	if item.StartTime.IsZero() || item.EndTime.IsZero() {
+		return "", 0
 	}
-
-	// Calculate available space for name
-	// Format: indent + expand + space + icon + space + name + duration + badges + endBadge + hiddenBadge + space + status
-	usedWidth := indentWidth + expandWidth + 1 + iconWidth + 1 + hintWidth + durationWidth + badgesWidth + endBadgeWidth + hiddenBadgeWidth + 1 + statusWidth
-	maxNameWidth := treeW - usedWidth
-	if maxNameWidth < 5 {
-		maxNameWidth = 5
+	secs := item.EndTime.Sub(item.StartTime).Seconds()
+	if secs < 0 {
+		secs = 0
 	}
+	s := fmt.Sprintf(" (%s)", utils.HumanizeTime(secs))
+	return s, lipgloss.Width(s)
+}
 
-	// Truncate name if needed
-	nameWidth := lipgloss.Width(name)
-	if nameWidth > maxNameWidth {
-		// Truncate to fit
-		truncated := ""
-		w := 0
-		for _, r := range name {
-			rw := lipgloss.Width(string(r))
-			if w+rw+3 > maxNameWidth { // +3 for "..."
-				break
-			}
-			truncated += string(r)
-			w += rw
-		}
-		name = truncated + "..."
-		nameWidth = lipgloss.Width(name)
+func expandMark(hasChildren, expanded bool) string {
+	if !hasChildren {
+		return " "
 	}
-
-	// Calculate tree part width from known component widths (avoids issues with escape sequences)
-	// Format: indent + expand + space + icon + space + name + duration + badges + endBadge + hiddenBadge + space + status
-	treePartWidth := indentWidth + expandWidth + 1 + iconWidth + 1 + nameWidth + hintWidth + durationWidth + badgesWidth + endBadgeWidth + hiddenBadgeWidth + 1 + statusWidth
-
-	// Pad tree part to fixed width
-	treePadding := treeW - treePartWidth
-	if treePadding < 0 {
-		treePadding = 0
+	if expanded {
+		return "▼"
 	}
+	return "▶"
+}
 
-	// Check if item has collapsed children (for sparkline markers)
-	hasCollapsedChildren := item.HasChildren && !m.expandedState[item.ID]
-
-	// Check if item is dimmed (not in focus set)
-	isDimmedByFocus := m.isFocused && !m.focusedIDs[item.ID]
-
-	// Check if item is a search match for two-tone highlighting
-	isSearchMatch := m.searchMatchIDs[item.ID]
-
-	// Wrap name in hyperlink if URL is available (must be done after width calculation)
-	// Apply two-tone search match highlighting: row gets subtle bg, matching chars get stronger style
-	displayName := name
-	if isSearchMatch && m.searchQuery != "" {
-		if isSelected {
-			displayName = highlightMatch(name, m.searchQuery, SearchCharSelectedStyle, SelectedStyle)
-		} else {
-			displayName = highlightMatch(name, m.searchQuery, SearchCharStyle, SearchRowStyle)
-		}
+func fitName(name string, maxWidth int) string {
+	if lipgloss.Width(name) <= maxWidth {
+		return name
 	}
-	displayName = hyperlink(item.Hints.URL, displayName)
-
-	// Build styled [end] badge
-	styledEndBadge := ""
-	if isLogicalEnd {
-		styledEndBadge = LogicalEndBadgeStyle.Render(" [end]")
+	var b strings.Builder
+	w := 0
+	for _, r := range name {
+		rw := lipgloss.Width(string(r))
+		if w+rw+3 > maxWidth {
+			break
+		}
+		b.WriteRune(r)
+		w += rw
 	}
+	return b.String() + "..."
+}
 
-	// Build tree part content
-	// When selected, every segment must carry the selection background because
-	// each lipgloss Render() ends with an ANSI reset that kills the outer background.
-	var treePart string
-	if isSelected {
-		sel := SelectedStyle
-		if isHidden || isAfterEnd {
-			sel = HiddenSelectedStyle
+func linkedName(name, query, url string, selected, search bool) string {
+	shown := name
+	if search && query != "" {
+		charStyle := SearchCharStyle
+		rowStyle := SearchRowStyle
+		if selected {
+			charStyle = SearchCharSelectedStyle
+			rowStyle = SelectedStyle
 		}
-		selDur := FooterStyle.Background(ColorSelectionBg)
-		prefix := fmt.Sprintf("%s%s %s %s", indent, expandIndicator, icon, displayName)
-		treePart = sel.Render(prefix)
-		if hintPlain != "" {
-			treePart += lipgloss.NewStyle().Foreground(SourceHintColor(item.SourceHint)).Background(ColorSelectionBg).Render(hintPlain)
-		}
-		if durationStr != "" {
-			treePart += selDur.Render(durationStr)
-		}
-		treePart += sel.Render(badges)
-		if isLogicalEnd {
-			treePart += LogicalEndBadgeStyle.Background(ColorSelectionBg).Render(" [end]")
-		}
-		treePart += sel.Render(" ") + getStyledStatusIconWithBg(item, ColorSelectionBg)
-		if isHidden {
-			treePart += HiddenBadgeStyle.Background(ColorSelectionBg).Render(" ⊘")
-		}
-	} else if isSearchMatch {
-		// Search match row: subtle purple-tinted background
-		row := SearchRowStyle
-		rowDur := FooterStyle.Background(ColorSearchRowBg)
-		prefix := fmt.Sprintf("%s%s %s %s", indent, expandIndicator, icon, displayName)
-		treePart = row.Render(prefix)
-		if hintPlain != "" {
-			treePart += lipgloss.NewStyle().Foreground(SourceHintColor(item.SourceHint)).Background(ColorSearchRowBg).Render(hintPlain)
-		}
-		if durationStr != "" {
-			treePart += rowDur.Render(durationStr)
-		}
-		treePart += row.Render(badges)
-		if isLogicalEnd {
-			treePart += LogicalEndBadgeStyle.Background(ColorSearchRowBg).Render(" [end]")
-		}
-		treePart += row.Render(" ") + getStyledStatusIconWithBg(item, ColorSearchRowBg)
-		if isHidden {
-			treePart += HiddenBadgeStyle.Background(ColorSearchRowBg).Render(" ⊘")
-		}
-	} else if isDimmedByFocus {
-		// Not in focus: render entire line in dim style using plain text
-		// (avoids inner ANSI codes from indent guides/hyperlinks overriding the dim)
-		hiddenBadge := ""
-		if isHidden {
-			hiddenBadge = " ⊘"
-		}
-		treePart = FocusDimStyle.Render(fmt.Sprintf("%s%s %s %s%s%s%s %s%s",
-			indentPlain, expandIndicator, icon, name, hintPlain, durationStr, badges, getStatusIcon(item), hiddenBadge))
-	} else if isHidden {
-		// Hidden from chart: render in gray with ⊘ badge
-		treePart = HiddenStyle.Render(fmt.Sprintf("%s%s %s %s%s%s%s %s",
-			indentPlain, expandIndicator, icon, name, hintPlain, durationStr, badges, getStatusIcon(item))) +
-			HiddenBadgeStyle.Render(" ⊘")
-	} else if isAfterEnd {
-		// After logical end: render in gray (dimmed) using plain text to avoid inner ANSI overrides
-		treePart = HiddenStyle.Render(fmt.Sprintf("%s%s %s %s%s%s%s %s",
-			indentPlain, expandIndicator, icon, name, hintPlain, durationStr, badges, getStatusIcon(item)))
-	} else {
-		styledDuration := ""
-		if durationStr != "" {
-			styledDuration = FooterStyle.Render(durationStr)
-		}
-		styledStatusIcon := getStyledStatusIcon(item)
-		styledHint := ""
-		if hintPlain != "" {
-			styledHint = lipgloss.NewStyle().Foreground(SourceHintColor(item.SourceHint)).Render(hintPlain)
-		}
-		treePart = fmt.Sprintf("%s%s %s %s", indent, expandIndicator, icon, displayName) + styledHint +
-			fmt.Sprintf("%s%s", styledDuration, badges) + styledEndBadge + fmt.Sprintf(" %s", styledStatusIcon)
+		shown = highlightMatch(name, query, charStyle, rowStyle)
 	}
+	return hyperlink(url, shown)
+}
 
-	// Render timeline bar (empty if hidden, dimmed colors if selected, full colors otherwise)
-	// For normal items, URL is passed so bar characters are clickable.
-	// For selected/hidden items, URL is omitted since we apply row-level hyperlink at the end.
-	// For collapsed items with children, overlay dimmed child markers as a sparkline summary.
-	var timelineBar string
-	if isHidden && isSelected {
-		// Hidden + selected: empty timeline with selection background
-		timelineBar = SelectedBgStyle.Render(strings.Repeat(" ", timelineW))
-	} else if isHidden {
-		timelineBar = strings.Repeat(" ", timelineW)
-	} else if isAfterEnd && isSelected {
-		// After logical end + selected: dimmed bar with selection background
-		timelineBar = RenderTimelineBarDimmedSelected(item, m.chartStart, m.chartEnd, timelineW)
-	} else if isAfterEnd {
-		// After logical end: dimmed gray bar
-		timelineBar = RenderTimelineBarDimmed(item, m.chartStart, m.chartEnd, timelineW)
-	} else if isSelected && hasCollapsedChildren {
-		timelineBar = RenderTimelineBarWithChildrenSelected(item, m.chartStart, m.chartEnd, timelineW, "", m.hiddenState)
-	} else if isSelected {
-		// Render with dimmed colors and selection background
-		timelineBar = RenderTimelineBarSelected(item, m.chartStart, m.chartEnd, timelineW, "")
-	} else if isSearchMatch && hasCollapsedChildren {
-		timelineBar = renderTimelineBarWithChildrenBg(item, m.chartStart, m.chartEnd, timelineW, item.Hints.URL, SearchRowBgStyle, m.hiddenState)
-	} else if isSearchMatch {
-		// Search match: normal bar colors but with subtle row background on empty space
-		timelineBar = renderTimelineBarWithBg(item, m.chartStart, m.chartEnd, timelineW, item.Hints.URL, SearchRowBgStyle)
-	} else if hasCollapsedChildren {
-		timelineBar = RenderTimelineBarWithChildren(item, m.chartStart, m.chartEnd, timelineW, item.Hints.URL, m.hiddenState)
-	} else {
-		// Normal: full colors, pass URL so bar is clickable
-		timelineBar = RenderTimelineBar(item, m.chartStart, m.chartEnd, timelineW, item.Hints.URL)
+func tintedStyle(selected, hidden, afterEnd bool) (lipgloss.Style, lipgloss.Color) {
+	if !selected {
+		return SearchRowStyle, ColorSearchRowBg
 	}
-
-	// Overlay logical end vertical line on the timeline bar
-	endCol := m.logicalEndCol(timelineW)
-	if endCol >= 0 {
-		timelineBar = overlayLogicalEndLine(timelineBar, endCol, timelineW, isSelected)
+	style := SelectedStyle
+	if hidden || afterEnd {
+		style = HiddenSelectedStyle
 	}
+	return style, ColorSelectionBg
+}
 
-	// Combine with styled borders
-	midSep := SeparatorStyle.Render("│")
-
-	// Padding is rendered separately so that inner ANSI resets (from styled
-	// status icons, durations, etc.) don't kill the selection background.
-	lBorder := BorderStyle.Render("│") + " "
-	if isSelected && (isHidden || isAfterEnd) {
-		pad := SelectedBgStyle.Render(strings.Repeat(" ", treePadding))
-		return lBorder + treePart + pad + midSep + timelineBar + BorderStyle.Render("│")
-	} else if isSelected {
-		pad := SelectedBgStyle.Render(strings.Repeat(" ", treePadding))
-		return lBorder + treePart + pad + midSep + timelineBar + BorderStyle.Render("│")
-	} else if isSearchMatch {
-		pad := SearchRowBgStyle.Render(strings.Repeat(" ", treePadding))
-		return lBorder + treePart + pad + midSep + timelineBar + BorderStyle.Render("│")
-	} else if isHidden {
-		treePart += strings.Repeat(" ", treePadding)
-		return lBorder + HiddenStyle.Render(treePart) + midSep + timelineBar + BorderStyle.Render("│")
-	} else if isAfterEnd {
-		treePart += strings.Repeat(" ", treePadding)
-		return lBorder + treePart + midSep + timelineBar + BorderStyle.Render("│")
+// tintedRow paints one selected or search row.
+// Each segment carries the background: lipgloss Render ends in a reset.
+func tintedRow(prefix, hint, dur, badges string, item TreeItem, logicalEnd, hidden bool, row lipgloss.Style, bg lipgloss.Color) string {
+	tree := row.Render(prefix)
+	if hint != "" {
+		tree += lipgloss.NewStyle().Foreground(SourceHintColor(item.SourceHint)).Background(bg).Render(hint)
 	}
-	treePart += strings.Repeat(" ", treePadding)
-	return lBorder + treePart + midSep + timelineBar + BorderStyle.Render("│")
+	if dur != "" {
+		tree += FooterStyle.Background(bg).Render(dur)
+	}
+	tree += row.Render(badges)
+	if logicalEnd {
+		tree += LogicalEndBadgeStyle.Background(bg).Render(" [end]")
+	}
+	tree += row.Render(" ") + getStyledStatusIconWithBg(item, bg)
+	if hidden {
+		tree += HiddenBadgeStyle.Background(bg).Render(" ⊘")
+	}
+	return tree
+}
+
+// mutedRow paints dim, hidden, and after-end rows as plain text.
+// Inner ANSI from guides, links, or status colors would override the dim.
+func mutedRow(indentPlain, expand, icon, name, hint, dur, badges, status string, dim, hidden bool) string {
+	body := fmt.Sprintf("%s%s %s %s%s%s%s %s", indentPlain, expand, icon, name, hint, dur, badges, status)
+	if dim {
+		mark := ""
+		if hidden {
+			mark = " ⊘"
+		}
+		return FocusDimStyle.Render(body + mark)
+	}
+	painted := HiddenStyle.Render(body)
+	if hidden {
+		painted += HiddenBadgeStyle.Render(" ⊘")
+	}
+	return painted
+}
+
+func activeRow(indent, expand, icon, shown, hint, dur, badges string, item TreeItem, logicalEnd bool) string {
+	styledHint := ""
+	if hint != "" {
+		styledHint = lipgloss.NewStyle().Foreground(SourceHintColor(item.SourceHint)).Render(hint)
+	}
+	styledDur := ""
+	if dur != "" {
+		styledDur = FooterStyle.Render(dur)
+	}
+	end := ""
+	if logicalEnd {
+		end = LogicalEndBadgeStyle.Render(" [end]")
+	}
+	return fmt.Sprintf("%s%s %s %s", indent, expand, icon, shown) + styledHint + styledDur + badges + end + fmt.Sprintf(" %s", getStyledStatusIcon(item))
+}
+
+func (m Model) itemTimeline(item TreeItem, isSelected bool, timelineW int) string {
+	hidden := m.hiddenState[item.ID]
+	afterEnd := m.isAfterLogicalEnd(item)
+	search := m.searchMatchIDs[item.ID]
+	collapsed := item.HasChildren && !m.expandedState[item.ID]
+
+	var bar string
+	switch {
+	case hidden && isSelected:
+		bar = SelectedBgStyle.Render(strings.Repeat(" ", timelineW))
+	case hidden:
+		bar = strings.Repeat(" ", timelineW)
+	case afterEnd && isSelected:
+		bar = RenderTimelineBarDimmedSelected(item, m.chartStart, m.chartEnd, timelineW)
+	case afterEnd:
+		bar = RenderTimelineBarDimmed(item, m.chartStart, m.chartEnd, timelineW)
+	case isSelected && collapsed:
+		bar = RenderTimelineBarWithChildrenSelected(item, m.chartStart, m.chartEnd, timelineW, "", m.hiddenState)
+	case isSelected:
+		bar = RenderTimelineBarSelected(item, m.chartStart, m.chartEnd, timelineW, "")
+	case search && collapsed:
+		bar = renderTimelineBarWithChildrenBg(item, m.chartStart, m.chartEnd, timelineW, item.Hints.URL, SearchRowBgStyle, m.hiddenState)
+	case search:
+		bar = renderTimelineBarWithBg(item, m.chartStart, m.chartEnd, timelineW, item.Hints.URL, SearchRowBgStyle)
+	case collapsed:
+		bar = RenderTimelineBarWithChildren(item, m.chartStart, m.chartEnd, timelineW, item.Hints.URL, m.hiddenState)
+	default:
+		bar = RenderTimelineBar(item, m.chartStart, m.chartEnd, timelineW, item.Hints.URL)
+	}
+	if col := m.logicalEndCol(timelineW); col >= 0 {
+		bar = overlayLogicalEndLine(bar, col, timelineW, isSelected)
+	}
+	return bar
+}
+
+// finishItemRow joins borders, the tree cell, and the bar.
+// Selection and search paint their own pad: a later reset would drop the background.
+// A hidden row wraps the pad too, so the gray covers the gap.
+func (m Model) finishItemRow(tree string, pad int, bar string, item TreeItem, isSelected bool) string {
+	left := BorderStyle.Render("│") + " "
+	mid := SeparatorStyle.Render("│")
+	right := BorderStyle.Render("│")
+	switch {
+	case isSelected:
+		return left + tree + SelectedBgStyle.Render(strings.Repeat(" ", pad)) + mid + bar + right
+	case m.searchMatchIDs[item.ID]:
+		return left + tree + SearchRowBgStyle.Render(strings.Repeat(" ", pad)) + mid + bar + right
+	case m.hiddenState[item.ID]:
+		tree += strings.Repeat(" ", pad)
+		return left + HiddenStyle.Render(tree) + mid + bar + right
+	default:
+		tree += strings.Repeat(" ", pad)
+		return left + tree + mid + bar + right
+	}
 }
 
 // getItemIcon returns the icon for an item type.
