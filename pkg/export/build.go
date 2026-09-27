@@ -37,59 +37,72 @@ func ratePtr(num, den int) *float64 {
 // RFC3339 timestamp supplied by the caller (kept out of this function so it
 // stays deterministic and testable).
 func BuildRunReport(results []analyzer.URLResult, spanRuns []analyzer.SpanRun, combined analyzer.CombinedMetrics, globalEarliestMs, globalLatestMs int64, generatedAt string) *Report {
-	rr := &RunReport{Runs: []Run{}} // never nil, so `.run.runs[]` is jq-safe
-	var repo string
+	runs, repo := pickRuns(results, spanRuns)
+	summary := runSummary(combined, globalEarliestMs, globalLatestMs)
+	countOutcomes(&summary, results, runs)
 
+	rep := &Report{
+		SchemaVersion: SchemaVersion,
+		Kind:          KindRunAnalysis,
+		Meta:          Meta{Tool: "ote", GeneratedAt: generatedAt, Repo: repo},
+		Run:           &RunReport{Runs: runs, Summary: summary},
+	}
+	rep.Highlights = Highlights(rep)
+	return rep
+}
+
+// pickRuns prefers URL results. Span runs fill the report only when results
+// are empty. The slice is never nil, so `.run.runs[]` is jq-safe.
+func pickRuns(results []analyzer.URLResult, spanRuns []analyzer.SpanRun) (runs []Run, repo string) {
+	runs = []Run{}
 	if len(results) > 0 {
 		for _, res := range results {
 			if repo == "" && res.Owner != "" {
 				repo = res.Owner + "/" + res.Repo
 			}
-			rr.Runs = append(rr.Runs, runFromURLResult(res))
+			runs = append(runs, runFromURLResult(res))
 		}
-	} else {
-		for _, sr := range spanRuns {
-			rr.Runs = append(rr.Runs, runFromSpanRun(sr))
-		}
+		return runs, repo
 	}
+	for _, sr := range spanRuns {
+		runs = append(runs, runFromSpanRun(sr))
+	}
+	return runs, ""
+}
 
-	rr.Summary = RunSummary{
+func runSummary(combined analyzer.CombinedMetrics, earliestMs, latestMs int64) RunSummary {
+	return RunSummary{
 		TotalRuns:         combined.TotalRuns,
 		TotalJobs:         combined.TotalJobs,
 		TotalSteps:        combined.TotalSteps,
 		MaxConcurrency:    combined.MaxConcurrency,
 		SuccessRatePct:    parseRatePtr(combined.SuccessRate),
 		JobSuccessRatePct: parseRatePtr(combined.JobSuccessRate),
-		WallClockMs:       max(globalLatestMs-globalEarliestMs, int64(0)),
+		WallClockMs:       max(latestMs-earliestMs, int64(0)),
 	}
-	// Derive run/job pass/fail counts from the per-run metrics.
-	for _, res := range results {
-		m := res.Metrics
-		rr.Summary.SuccessfulRuns += m.SuccessfulRuns
-		rr.Summary.FailedRuns += m.FailedRuns
-		rr.Summary.FailedJobs += m.FailedJobs
-	}
-	// Span-derived path: combined lacks per-run pass/fail, so count from runs.
-	if len(results) == 0 {
-		for _, run := range rr.Runs {
-			switch run.conclusion {
-			case "success":
-				rr.Summary.SuccessfulRuns++
-			case "failure":
-				rr.Summary.FailedRuns++
-			}
-			rr.Summary.FailedJobs += run.FailedJobs
-		}
-	}
+}
 
-	rep := &Report{
-		SchemaVersion: SchemaVersion,
-		Kind:          KindRunAnalysis,
-		Meta:          Meta{Tool: "ote", GeneratedAt: generatedAt, Repo: repo},
-		Run:           rr,
+// countOutcomes fills pass/fail. URL metrics carry the counts; the span path
+// has none on combined, so it counts run conclusions and failed jobs instead.
+func countOutcomes(summary *RunSummary, results []analyzer.URLResult, runs []Run) {
+	if len(results) > 0 {
+		for _, res := range results {
+			m := res.Metrics
+			summary.SuccessfulRuns += m.SuccessfulRuns
+			summary.FailedRuns += m.FailedRuns
+			summary.FailedJobs += m.FailedJobs
+		}
+		return
 	}
-	rep.Highlights = Highlights(rep)
-	return rep
+	for _, run := range runs {
+		switch run.conclusion {
+		case "success":
+			summary.SuccessfulRuns++
+		case "failure":
+			summary.FailedRuns++
+		}
+		summary.FailedJobs += run.FailedJobs
+	}
 }
 
 func runFromURLResult(res analyzer.URLResult) Run {
@@ -169,55 +182,90 @@ func runFromSpanRun(sr analyzer.SpanRun) Run {
 // BuildTrendReport projects a trend analysis into a Report.
 func BuildTrendReport(a *analyzer.TrendAnalysis, generatedAt string) *Report {
 	tr := &TrendReport{
-		Days: a.TimeRange.Days,
-		Summary: TrendSummary{
-			TotalRuns:         a.Summary.TotalRuns,
-			AvgDurationSec:    a.Summary.AvgDuration,
-			MedianDurationSec: a.Summary.MedianDuration,
-			P95DurationSec:    a.Summary.P95Duration,
-			AvgSuccessRatePct: a.Summary.AvgSuccessRate,
-			TrendDirection:    a.Summary.TrendDirection,
-			TrendDescription:  a.Summary.TrendDescription,
-			PercentChange:     a.Summary.PercentChange,
-			RerunRuns:         a.Summary.RerunRuns,
-			RerunComputeMs:    a.Summary.RerunComputeMs,
-		},
-		QueueStats: QueueStats{
-			AvgQueueSec:    a.QueueTimeStats.AvgQueueTime,
-			MedianQueueSec: a.QueueTimeStats.MedianQueueTime,
-			P95QueueSec:    a.QueueTimeStats.P95QueueTime,
-			QueueRatioPct:  a.QueueTimeStats.QueueTimeRatio,
-		},
+		Days:          a.TimeRange.Days,
+		Summary:       trendSummary(a.Summary),
+		QueueStats:    queueStats(a.QueueTimeStats),
+		Typical:       typicalWorkflows(a.Typical),
+		FlakyJobs:     flakyJobs(a.FlakyJobs),
+		Regressions:   regressions(a.TopRegressions),
+		Improvements:  improvements(a.TopImprovements),
+		Hourly:        hourlyBuckets(a.Hourly),
+		DailyDuration: dailyPoints(a.DurationTrend),
+		DailySuccess:  dailyPoints(a.SuccessRateTrend),
 	}
+	rep := &Report{
+		SchemaVersion: SchemaVersion,
+		Kind:          KindTrends,
+		Meta:          Meta{Tool: "ote", GeneratedAt: generatedAt, Repo: a.Owner + "/" + a.Repo},
+		Trends:        tr,
+	}
+	rep.Highlights = Highlights(rep)
+	return rep
+}
 
-	if a.Typical != nil {
-		for _, w := range a.Typical.Workflows {
-			tw := TypicalWorkflow{
-				Name:        w.Name,
-				SampledRuns: w.SampledRuns,
-				TotalRuns:   w.TotalRuns,
-				RunDuration: quant(w.RunDuration),
-			}
-			for _, j := range w.Jobs {
-				tw.Jobs = append(tw.Jobs, TypicalJob{
-					Name:            j.Name,
-					Samples:         j.Samples,
-					PresenceRatePct: j.PresenceRate,
-					SuccessRatePct:  j.SuccessRate,
-					StartOffset:     quant(j.StartOffset),
-					Duration:        quant(j.Duration),
-					QueueTime:       quant(j.QueueTime),
-					TrendDirection:  j.TrendDirection,
-					P50URL:          j.P50URL,
-					P95URL:          j.P95URL,
-				})
-			}
-			tr.Typical = append(tr.Typical, tw)
+func trendSummary(s analyzer.TrendSummary) TrendSummary {
+	return TrendSummary{
+		TotalRuns:         s.TotalRuns,
+		AvgDurationSec:    s.AvgDuration,
+		MedianDurationSec: s.MedianDuration,
+		P95DurationSec:    s.P95Duration,
+		AvgSuccessRatePct: s.AvgSuccessRate,
+		TrendDirection:    s.TrendDirection,
+		TrendDescription:  s.TrendDescription,
+		PercentChange:     s.PercentChange,
+		RerunRuns:         s.RerunRuns,
+		RerunComputeMs:    s.RerunComputeMs,
+	}
+}
+
+func queueStats(q analyzer.QueueTimeStats) QueueStats {
+	return QueueStats{
+		AvgQueueSec:    q.AvgQueueTime,
+		MedianQueueSec: q.MedianQueueTime,
+		P95QueueSec:    q.P95QueueTime,
+		QueueRatioPct:  q.QueueTimeRatio,
+	}
+}
+
+func typicalWorkflows(t *analyzer.TypicalRun) []TypicalWorkflow {
+	if t == nil {
+		return nil
+	}
+	var out []TypicalWorkflow
+	for _, w := range t.Workflows {
+		tw := TypicalWorkflow{
+			Name:        w.Name,
+			SampledRuns: w.SampledRuns,
+			TotalRuns:   w.TotalRuns,
+			RunDuration: quant(w.RunDuration),
 		}
+		for _, j := range w.Jobs {
+			tw.Jobs = append(tw.Jobs, typicalJob(j))
+		}
+		out = append(out, tw)
 	}
+	return out
+}
 
-	for _, f := range a.FlakyJobs {
-		tr.FlakyJobs = append(tr.FlakyJobs, FlakyJob{
+func typicalJob(j analyzer.TypicalJob) TypicalJob {
+	return TypicalJob{
+		Name:            j.Name,
+		Samples:         j.Samples,
+		PresenceRatePct: j.PresenceRate,
+		SuccessRatePct:  j.SuccessRate,
+		StartOffset:     quant(j.StartOffset),
+		Duration:        quant(j.Duration),
+		QueueTime:       quant(j.QueueTime),
+		TrendDirection:  j.TrendDirection,
+		P50URL:          j.P50URL,
+		P95URL:          j.P95URL,
+	}
+}
+
+func flakyJobs(in []analyzer.FlakyJob) []FlakyJob {
+	var out []FlakyJob
+	for _, f := range in {
+		out = append(out, FlakyJob{
 			Name:            f.Name,
 			TotalRuns:       f.TotalRuns,
 			SuccessCount:    f.SuccessCount,
@@ -229,57 +277,61 @@ func BuildTrendReport(a *analyzer.TrendAnalysis, generatedAt string) *Report {
 			SampleURL:       first(f.URLs),
 		})
 	}
-	for _, r := range a.TopRegressions {
-		jc := JobChange{
-			Name:          r.Name,
-			OldAvgSec:     r.OldAvgDuration,
-			NewAvgSec:     r.NewAvgDuration,
-			PercentChange: r.PercentIncrease,
-			AbsoluteSec:   r.AbsoluteChange,
-		}
-		applyChangepoint(&jc, r.Changepoint)
-		tr.Regressions = append(tr.Regressions, jc)
-	}
-	for _, im := range a.TopImprovements {
-		jc := JobChange{
-			Name:          im.Name,
-			OldAvgSec:     im.OldAvgDuration,
-			NewAvgSec:     im.NewAvgDuration,
-			PercentChange: -im.PercentDecrease,
-			AbsoluteSec:   im.AbsoluteChange,
-		}
-		applyChangepoint(&jc, im.Changepoint)
-		tr.Improvements = append(tr.Improvements, jc)
-	}
-	if a.Hourly != nil {
-		for h, b := range a.Hourly.Hours {
-			tr.Hourly = append(tr.Hourly, HourBucket{
-				Hour:           h,
-				RunCount:       b.RunCount,
-				QueueP50Sec:    b.QueueP50,
-				DurationP50Sec: b.DurationP50,
-			})
-		}
-	}
-	for _, p := range a.DurationTrend {
-		tr.DailyDuration = append(tr.DailyDuration, DailyPoint{
-			Date: p.Timestamp.UTC().Format("2006-01-02"), Value: p.Value, Count: p.Count,
-		})
-	}
-	for _, p := range a.SuccessRateTrend {
-		tr.DailySuccess = append(tr.DailySuccess, DailyPoint{
-			Date: p.Timestamp.UTC().Format("2006-01-02"), Value: p.Value, Count: p.Count,
-		})
-	}
+	return out
+}
 
-	rep := &Report{
-		SchemaVersion: SchemaVersion,
-		Kind:          KindTrends,
-		Meta:          Meta{Tool: "ote", GeneratedAt: generatedAt, Repo: a.Owner + "/" + a.Repo},
-		Trends:        tr,
+func regressions(in []analyzer.JobRegression) []JobChange {
+	var out []JobChange
+	for _, r := range in {
+		out = append(out, jobChange(r.Name, r.OldAvgDuration, r.NewAvgDuration, r.PercentIncrease, r.AbsoluteChange, r.Changepoint))
 	}
-	rep.Highlights = Highlights(rep)
-	return rep
+	return out
+}
+
+func improvements(in []analyzer.JobImprovement) []JobChange {
+	var out []JobChange
+	for _, im := range in {
+		out = append(out, jobChange(im.Name, im.OldAvgDuration, im.NewAvgDuration, -im.PercentDecrease, im.AbsoluteChange, im.Changepoint))
+	}
+	return out
+}
+
+func jobChange(name string, oldSec, newSec, percent, absolute float64, c *analyzer.Changepoint) JobChange {
+	jc := JobChange{
+		Name:          name,
+		OldAvgSec:     oldSec,
+		NewAvgSec:     newSec,
+		PercentChange: percent,
+		AbsoluteSec:   absolute,
+	}
+	applyChangepoint(&jc, c)
+	return jc
+}
+
+func hourlyBuckets(h *analyzer.HourlyPatterns) []HourBucket {
+	if h == nil {
+		return nil
+	}
+	var out []HourBucket
+	for hour, b := range h.Hours {
+		out = append(out, HourBucket{
+			Hour:           hour,
+			RunCount:       b.RunCount,
+			QueueP50Sec:    b.QueueP50,
+			DurationP50Sec: b.DurationP50,
+		})
+	}
+	return out
+}
+
+func dailyPoints(in []analyzer.DataPoint) []DailyPoint {
+	var out []DailyPoint
+	for _, p := range in {
+		out = append(out, DailyPoint{
+			Date: p.Timestamp.UTC().Format("2006-01-02"), Value: p.Value, Count: p.Count,
+		})
+	}
+	return out
 }
 
 func quant(q analyzer.Quantiles) Quantiles {
