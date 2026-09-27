@@ -475,7 +475,14 @@ func TestSpanBuilderGeneration(t *testing.T) {
 			ReviewEvents: reviewEvents,
 		}, 0)
 
-		_, err := buildURLResult(context.Background(), parsed, 0, "sha", "main", "PR 1", "url", reviewEvents, nil, nil, nil, 0, 0, nil, nil, 0, 0, 0, mockClient, nil, 0, builder, emitter, AnalyzeOptions{})
+		_, err := buildURLResult(context.Background(), &RawData{
+			Parsed:       parsed,
+			HeadSHA:      "sha",
+			BranchName:   "main",
+			DisplayName:  "PR 1",
+			DisplayURL:   "url",
+			ReviewEvents: reviewEvents,
+		}, mockClient, nil, 0, builder, emitter, AnalyzeOptions{})
 		assert.NoError(t, err)
 
 		spans := builder.Spans()
@@ -514,7 +521,14 @@ func TestSpanBuilderGeneration(t *testing.T) {
 			CommitTimeMs: &commitTimeMs,
 		}, 0)
 
-		_, err := buildURLResult(context.Background(), parsed, 0, "sha123", "main", "Commit sha123", "url", nil, nil, &commitTimeMs, nil, 0, 0, nil, nil, 0, 0, 0, mockClient, nil, 0, builder, emitter, AnalyzeOptions{})
+		_, err := buildURLResult(context.Background(), &RawData{
+			Parsed:       parsed,
+			HeadSHA:      "sha123",
+			BranchName:   "main",
+			DisplayName:  "Commit sha123",
+			DisplayURL:   "url",
+			CommitTimeMs: &commitTimeMs,
+		}, mockClient, nil, 0, builder, emitter, AnalyzeOptions{})
 		assert.NoError(t, err)
 
 		spans := builder.Spans()
@@ -781,9 +795,14 @@ func TestCheckRunAnnotationsFetchedOncePerURL(t *testing.T) {
 
 	parsed := utils.ParsedGitHubURL{Owner: "owner", Repo: "repo", Type: "pr", Identifier: "1"}
 	earliest, _ := utils.ParseTime("2026-03-18T17:00:00Z")
-	_, err := buildURLResult(context.Background(), parsed, 0, "abc123", "main", "PR 1", "url",
-		nil, nil, nil, nil, 0, 0, runs, nil, 0, 0, 0,
-		mockClient, nil, earliest.UnixMilli(), builder, emitter, AnalyzeOptions{NoArtifacts: true})
+	_, err := buildURLResult(context.Background(), &RawData{
+		Parsed:      parsed,
+		HeadSHA:     "abc123",
+		BranchName:  "main",
+		DisplayName: "PR 1",
+		DisplayURL:  "url",
+		Runs:        runs,
+	}, mockClient, nil, earliest.UnixMilli(), builder, emitter, AnalyzeOptions{NoArtifacts: true})
 	assert.NoError(t, err)
 
 	mockClient.AssertNumberOfCalls(t, "FetchCheckRunsForCommit", 1)

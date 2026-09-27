@@ -85,12 +85,12 @@ type AnalyzeOptions struct {
 }
 
 func AnalyzeURLs(ctx context.Context, urls []string, client githubapi.GitHubProvider, reporter ProgressReporter, opts AnalyzeOptions) ([]URLResult, []TraceEvent, int64, int64, []sdktrace.ReadOnlySpan, []URLError) {
-	allTraceEvents := []TraceEvent{}
-	allJobStartTimes := []JobEvent{}
-	allJobEndTimes := []JobEvent{}
-	urlResults := []URLResult{}
-	globalEarliestTime := int64(1<<63 - 1)
-	globalLatestTime := int64(0)
+	traceEvents := []TraceEvent{}
+	jobStarts := []JobEvent{}
+	jobEnds := []JobEvent{}
+	results := []URLResult{}
+	earliest := int64(1<<63 - 1)
+	latest := int64(0)
 	urlErrors := []URLError{}
 
 	builder := &SpanBuilder{}
@@ -102,37 +102,18 @@ func AnalyzeURLs(ctx context.Context, urls []string, client githubapi.GitHubProv
 			reporter.StartURL(urlIndex, githubURL)
 		}
 
-		rawData, err := provider.Fetch(ctx, githubURL, urlIndex, reporter, opts)
+		raw, err := provider.Fetch(ctx, githubURL, urlIndex, reporter, opts)
 		if err != nil {
 			urlErrors = append(urlErrors, URLError{URL: githubURL, Err: err})
 			continue
 		}
-		if rawData == nil {
+		if raw == nil {
 			continue
 		}
 
-		// Emit marker spans for review/merge events
-		emitter.EmitMarkers(rawData, urlIndex)
+		emitter.EmitMarkers(raw, urlIndex)
 
-		// Calculate urlEarliestTime here to ensure it's consistent
-		urlEarliestTime := FindEarliestTimestamp(rawData.Runs)
-		if rawData.CommitTimeMs != nil && *rawData.CommitTimeMs < urlEarliestTime {
-			urlEarliestTime = *rawData.CommitTimeMs
-		}
-		if rawData.CommitPushedAtMs != nil && *rawData.CommitPushedAtMs < urlEarliestTime {
-			urlEarliestTime = *rawData.CommitPushedAtMs
-		}
-		for _, event := range rawData.ReviewEvents {
-			// TimeMillis returns 0 for missing/unparseable timestamps (e.g.
-			// pending reviews); skip those so they can't reset the timeline
-			// origin to the Unix epoch.
-			ms := event.TimeMillis()
-			if ms > 0 && ms < urlEarliestTime {
-				urlEarliestTime = ms
-			}
-		}
-
-		result, err := buildURLResult(ctx, rawData.Parsed, urlIndex, rawData.HeadSHA, rawData.BranchName, rawData.DisplayName, rawData.DisplayURL, rawData.ReviewEvents, rawData.MergedAtMs, rawData.CommitTimeMs, rawData.CommitPushedAtMs, rawData.AllCommitRunsCount, rawData.AllCommitRunsComputeMs, rawData.Runs, rawData.RequiredContexts, rawData.ChangedFilesCount, rawData.ChangedAdditions, rawData.ChangedDeletions, client, reporter, urlEarliestTime, builder, emitter, opts)
+		result, err := buildURLResult(ctx, raw, client, reporter, earliestOf(raw), builder, emitter, opts)
 		if err != nil {
 			urlErrors = append(urlErrors, URLError{URL: githubURL, Err: err})
 			continue
@@ -140,32 +121,20 @@ func AnalyzeURLs(ctx context.Context, urls []string, client githubapi.GitHubProv
 		if result == nil {
 			continue
 		}
+
 		// Carry the fetched runs so callers can seed the local store with the
 		// completed ones. Shared slice (no copy); not used for rendering.
-		result.RawRuns = rawData.Runs
-		urlResults = append(urlResults, *result)
-		allTraceEvents = append(allTraceEvents, result.TraceEvents...)
-		allJobStartTimes = append(allJobStartTimes, result.JobStartTimes...)
-		allJobEndTimes = append(allJobEndTimes, result.JobEndTimes...)
+		result.RawRuns = raw.Runs
+		results = append(results, *result)
+		traceEvents = append(traceEvents, result.TraceEvents...)
+		jobStarts = append(jobStarts, result.JobStartTimes...)
+		jobEnds = append(jobEnds, result.JobEndTimes...)
 
-		if result.EarliestTime < globalEarliestTime {
-			globalEarliestTime = result.EarliestTime
+		if result.EarliestTime < earliest {
+			earliest = result.EarliestTime
 		}
-		// Calculate the actual latest time from all events in this result
-		urlLatest := result.EarliestTime
-		for _, job := range result.Metrics.JobTimeline {
-			if job.EndTime > urlLatest {
-				urlLatest = job.EndTime
-			}
-		}
-		for _, event := range result.ReviewEvents {
-			ms := event.TimeMillis()
-			if ms > urlLatest {
-				urlLatest = ms
-			}
-		}
-		if urlLatest > globalLatestTime {
-			globalLatestTime = urlLatest
+		if end := latestOf(result); end > latest {
+			latest = end
 		}
 	}
 
@@ -173,24 +142,86 @@ func AnalyzeURLs(ctx context.Context, urls []string, client githubapi.GitHubProv
 		reporter.Finish()
 	}
 
-	if len(urlResults) == 0 {
+	if len(results) == 0 {
 		return nil, nil, 0, 0, nil, urlErrors
 	}
 
-	GenerateConcurrencyCounters(allJobStartTimes, allJobEndTimes, &allTraceEvents, globalEarliestTime)
-	addReviewMarkersToTrace(urlResults, &allTraceEvents)
-
-	combinedTrace := append([]TraceEvent{}, allTraceEvents...)
-	allTraceEvents = combinedTrace
-	return urlResults, allTraceEvents, globalEarliestTime, globalLatestTime, builder.Spans(), urlErrors
+	GenerateConcurrencyCounters(jobStarts, jobEnds, &traceEvents, earliest)
+	addReviewMarkersToTrace(results, &traceEvents)
+	return results, traceEvents, earliest, latest, builder.Spans(), urlErrors
 }
 
-func buildURLResult(ctx context.Context, parsed utils.ParsedGitHubURL, urlIndex int, headSHA, branchName, displayName, displayURL string, reviewEvents []ReviewEvent, mergedAtMs, commitTimeMs, commitPushedAtMs *int64, allCommitRunsCount int, allCommitRunsComputeMs int64, runs []githubapi.WorkflowRun, requiredContexts []string, changedFilesCount, changedAdditions, changedDeletions int, client githubapi.GitHubProvider, reporter ProgressReporter, urlEarliestTime int64, builder *SpanBuilder, emitter *TraceEmitter, opts AnalyzeOptions) (*URLResult, error) {
-	if reporter != nil {
-		reporter.SetURLRuns(len(runs))
-		reporter.SetPhase("Processing workflow runs")
-		reporter.SetDetail(fmt.Sprintf("%d runs", len(runs)))
+// earliestOf is the timeline origin for one URL. TimeMillis returns 0 for
+// missing timestamps (pending reviews); those must not pull the origin back
+// to the Unix epoch.
+func earliestOf(raw *RawData) int64 {
+	earliest := FindEarliestTimestamp(raw.Runs)
+	if raw.CommitTimeMs != nil && *raw.CommitTimeMs < earliest {
+		earliest = *raw.CommitTimeMs
 	}
+	if raw.CommitPushedAtMs != nil && *raw.CommitPushedAtMs < earliest {
+		earliest = *raw.CommitPushedAtMs
+	}
+	for _, event := range raw.ReviewEvents {
+		ms := event.TimeMillis()
+		if ms > 0 && ms < earliest {
+			earliest = ms
+		}
+	}
+	return earliest
+}
+
+func latestOf(result *URLResult) int64 {
+	latest := result.EarliestTime
+	for _, job := range result.Metrics.JobTimeline {
+		if job.EndTime > latest {
+			latest = job.EndTime
+		}
+	}
+	for _, event := range result.ReviewEvents {
+		if ms := event.TimeMillis(); ms > latest {
+			latest = ms
+		}
+	}
+	return latest
+}
+
+func buildURLResult(ctx context.Context, raw *RawData, client githubapi.GitHubProvider, reporter ProgressReporter, earliest int64, builder *SpanBuilder, emitter *TraceEmitter, opts AnalyzeOptions) (*URLResult, error) {
+	if reporter != nil {
+		reporter.SetURLRuns(len(raw.Runs))
+	}
+	report(reporter, "Processing workflow runs", fmt.Sprintf("%d runs", len(raw.Runs)))
+
+	metrics, traceEvents, jobStarts, jobEnds, err := processRuns(ctx, raw, client, reporter, earliest, builder, emitter, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	return &URLResult{
+		Owner:                  raw.Parsed.Owner,
+		Repo:                   raw.Parsed.Repo,
+		Identifier:             raw.Parsed.Identifier,
+		BranchName:             raw.BranchName,
+		HeadSHA:                raw.HeadSHA,
+		Metrics:                CalculateFinalMetrics(metrics, len(raw.Runs), jobStarts, jobEnds),
+		TraceEvents:            traceEvents,
+		Type:                   raw.Parsed.Type,
+		DisplayName:            raw.DisplayName,
+		DisplayURL:             raw.DisplayURL,
+		URLIndex:               raw.URLIndex,
+		JobStartTimes:          jobStarts,
+		JobEndTimes:            jobEnds,
+		EarliestTime:           earliest,
+		ReviewEvents:           raw.ReviewEvents,
+		MergedAtMs:             raw.MergedAtMs,
+		CommitTimeMs:           raw.CommitTimeMs,
+		CommitPushedAtMs:       raw.CommitPushedAtMs,
+		AllCommitRunsCount:     raw.AllCommitRunsCount,
+		AllCommitRunsComputeMs: raw.AllCommitRunsComputeMs,
+	}, nil
+}
+
+func processRuns(ctx context.Context, raw *RawData, client githubapi.GitHubProvider, reporter ProgressReporter, earliest int64, builder *SpanBuilder, emitter *TraceEmitter, opts AnalyzeOptions) (Metrics, []TraceEvent, []JobEvent, []JobEvent, error) {
 	metrics := InitializeMetrics()
 	traceEvents := []TraceEvent{}
 	jobStartTimes := []JobEvent{}
@@ -207,9 +238,9 @@ func buildURLResult(ctx context.Context, parsed utils.ParsedGitHubURL, urlIndex 
 	// Fetch check-run annotations once for the whole URL: all runs share the
 	// same head SHA, so fetching per run would issue identical API calls
 	// (concurrently, on a cold cache) for every workflow run.
-	jobAnnotations := fetchJobAnnotations(ctx, client, runs)
+	jobAnnotations := fetchJobAnnotations(ctx, client, raw.Runs)
 
-	workerCount := minInt(runtime.GOMAXPROCS(0), len(runs))
+	workerCount := minInt(runtime.GOMAXPROCS(0), len(raw.Runs))
 	if workerCount == 0 {
 		workerCount = 1
 	}
@@ -218,7 +249,7 @@ func buildURLResult(ctx context.Context, parsed utils.ParsedGitHubURL, urlIndex 
 		index int
 		run   githubapi.WorkflowRun
 	})
-	resultsCh := make(chan runResult, len(runs))
+	resultsCh := make(chan runResult, len(raw.Runs))
 	var wg sync.WaitGroup
 
 	for i := 0; i < workerCount; i++ {
@@ -226,8 +257,14 @@ func buildURLResult(ctx context.Context, parsed utils.ParsedGitHubURL, urlIndex 
 		go func() {
 			defer wg.Done()
 			for job := range jobsCh {
-				processID := (urlIndex+1)*1000 + job.index + 1
-				runMetrics, runTrace, runStarts, runEnds, err := processWorkflowRun(ctx, job.run, job.index, processID, urlEarliestTime, parsed.Owner, parsed.Repo, parsed.Identifier, urlIndex, displayURL, parsed.Type, requiredContexts, changedFilesCount, changedAdditions, changedDeletions, client, reporter, builder, emitter, opts, jobAnnotations)
+				processID := (raw.URLIndex+1)*1000 + job.index + 1
+				runMetrics, runTrace, runStarts, runEnds, err := processWorkflowRun(
+					ctx, job.run, job.index, processID, earliest,
+					raw.Parsed.Owner, raw.Parsed.Repo, raw.Parsed.Identifier,
+					raw.URLIndex, raw.DisplayURL, raw.Parsed.Type, raw.RequiredContexts,
+					raw.ChangedFilesCount, raw.ChangedAdditions, raw.ChangedDeletions,
+					client, reporter, builder, emitter, opts, jobAnnotations,
+				)
 				resultsCh <- runResult{
 					metrics:     runMetrics,
 					traceEvents: runTrace,
@@ -239,7 +276,7 @@ func buildURLResult(ctx context.Context, parsed utils.ParsedGitHubURL, urlIndex 
 		}()
 	}
 
-	for runIndex, run := range runs {
+	for runIndex, run := range raw.Runs {
 		jobsCh <- struct {
 			index int
 			run   githubapi.WorkflowRun
@@ -251,7 +288,7 @@ func buildURLResult(ctx context.Context, parsed utils.ParsedGitHubURL, urlIndex 
 
 	for result := range resultsCh {
 		if result.err != nil {
-			return nil, result.err
+			return metrics, traceEvents, jobStartTimes, jobEndTimes, result.err
 		}
 		mergeMetrics(&metrics, result.metrics)
 		traceEvents = append(traceEvents, result.traceEvents...)
@@ -261,31 +298,7 @@ func buildURLResult(ctx context.Context, parsed utils.ParsedGitHubURL, urlIndex 
 			reporter.ProcessRun()
 		}
 	}
-
-	finalMetrics := CalculateFinalMetrics(metrics, len(runs), jobStartTimes, jobEndTimes)
-	result := URLResult{
-		Owner:                  parsed.Owner,
-		Repo:                   parsed.Repo,
-		Identifier:             parsed.Identifier,
-		BranchName:             branchName,
-		HeadSHA:                headSHA,
-		Metrics:                finalMetrics,
-		TraceEvents:            traceEvents,
-		Type:                   parsed.Type,
-		DisplayName:            displayName,
-		DisplayURL:             displayURL,
-		URLIndex:               urlIndex,
-		JobStartTimes:          jobStartTimes,
-		JobEndTimes:            jobEndTimes,
-		EarliestTime:           urlEarliestTime,
-		ReviewEvents:           reviewEvents,
-		MergedAtMs:             mergedAtMs,
-		CommitTimeMs:           commitTimeMs,
-		CommitPushedAtMs:       commitPushedAtMs,
-		AllCommitRunsCount:     allCommitRunsCount,
-		AllCommitRunsComputeMs: allCommitRunsComputeMs,
-	}
-	return &result, nil
+	return metrics, traceEvents, jobStartTimes, jobEndTimes, nil
 }
 
 func processWorkflowRun(ctx context.Context, run githubapi.WorkflowRun, runIndex, processID int, earliestTime int64, owner, repo, identifier string, urlIndex int, displayURL, sourceType string, requiredContexts []string, changedFilesCount, changedAdditions, changedDeletions int, client githubapi.GitHubProvider, reporter ProgressReporter, builder *SpanBuilder, emitter *TraceEmitter, opts AnalyzeOptions, jobAnnotations map[int64][]githubapi.Annotation) (Metrics, []TraceEvent, []JobEvent, []JobEvent, error) {
