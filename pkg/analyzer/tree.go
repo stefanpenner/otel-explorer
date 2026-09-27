@@ -89,220 +89,218 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 		return nil
 	}
 
-	// Collapse API/runner duplicates (same job/step from both the GitHub API
-	// reconstruction and the runner). Idempotent by construction — group-based
-	// resolution, pinned by TestDedupSpec_Idempotent — so safe on every
-	// rebuild, including TUI reloads and log-fetch appends that bypass the
-	// initial combine.
+	// Idempotent, so a TUI reload or a log-fetch append may dedupe again.
 	spans = DedupeRunnerSpans(spans)
 
-	type spanWithHints struct {
-		span  trace.ReadOnlySpan
-		attrs map[string]string
-		hints enrichment.SpanHints
-	}
-
-	filtered := []spanWithHints{}
-	seenDedup := make(map[string]struct{})
-
-	for _, s := range spans {
-		// Shared flattening: Emit()-stringified attributes plus the span's
-		// OTel status and kind injected as otel.status_code/otel.span_kind.
-		attrs := SpanEnrichmentAttrs(s)
-
-		isZeroDuration := s.EndTime().Before(s.StartTime()) || s.EndTime().Equal(s.StartTime())
-		hints := enricher.Enrich(s.Name(), attrs, isZeroDuration)
-
-		// Skip spans the enricher doesn't recognize
-		if hints.Category == "" {
-			continue
-		}
-
-		// Filter by time bounds if provided
-		if !globalEarliest.IsZero() && s.EndTime().Before(globalEarliest) {
-			continue
-		}
-		if !globalLatest.IsZero() && s.StartTime().After(globalLatest) {
-			continue
-		}
-
-		// Deduplicate using DedupKey from hints
-		if hints.DedupKey != "" {
-			if _, seen := seenDedup[hints.DedupKey]; seen {
-				continue
-			}
-			seenDedup[hints.DedupKey] = struct{}{}
-		}
-
-		filtered = append(filtered, spanWithHints{span: s, attrs: attrs, hints: hints})
-	}
-
-	if len(filtered) == 0 {
+	kept := filterSpans(spans, globalEarliest, globalLatest, enricher)
+	if len(kept) == 0 {
 		return nil
 	}
 
-	// Build one node per span, plus a (traceID, spanID) → node mapping for
-	// parent lookup. Per the OTel spec span IDs are only unique within a
-	// trace, so keying by span ID alone would let spans from one trace
-	// attach under a same-ID parent in another. Building a node per span
-	// (instead of per map key) also keeps spans with colliding IDs — e.g.
-	// two same-named steps in one job — from silently overwriting each other.
-	nodes := make(map[string]*TreeNode)
-	nodeList := make([]*TreeNode, len(filtered))
+	nodes, byID := nodesFromSpans(kept)
+	roots, parentOf := linkParents(kept, nodes, byID)
+	roots = detachParentCycles(roots, nodes, parentOf)
+	sortTree(roots, nodes)
+	return roots
+}
 
-	for i, sh := range filtered {
-		spanID := sh.span.SpanContext().SpanID().String()
+// keptSpan is a span that survived filtering, with enrichment already computed.
+type keptSpan struct {
+	span  trace.ReadOnlySpan
+	attrs map[string]string
+	hints enrichment.SpanHints
+}
 
-		urlIndex := 0
-		for _, a := range sh.span.Attributes() {
-			if string(a.Key) == "github.url_index" {
-				urlIndex = int(a.Value.AsInt64())
-				break
-			}
+func filterSpans(spans []trace.ReadOnlySpan, earliest, latest time.Time, enricher enrichment.Enricher) []keptSpan {
+	kept := []keptSpan{}
+	seen := make(map[string]struct{})
+	for _, s := range spans {
+		attrs := SpanEnrichmentAttrs(s)
+		zero := s.EndTime().Before(s.StartTime()) || s.EndTime().Equal(s.StartTime())
+		hints := enricher.Enrich(s.Name(), attrs, zero)
+		if hints.Category == "" {
+			continue
 		}
-
-		// Extract span events
-		var events []SpanEvent
-		for _, e := range sh.span.Events() {
-			eventAttrs := make(map[string]string)
-			for _, a := range e.Attributes {
-				eventAttrs[string(a.Key)] = a.Value.Emit()
-			}
-			events = append(events, SpanEvent{
-				Name:  e.Name,
-				Time:  e.Time,
-				Attrs: eventAttrs,
-			})
+		if !earliest.IsZero() && s.EndTime().Before(earliest) {
+			continue
 		}
-
-		// Extract span links
-		var links []SpanLink
-		for _, l := range sh.span.Links() {
-			linkAttrs := make(map[string]string)
-			for _, a := range l.Attributes {
-				linkAttrs[string(a.Key)] = a.Value.Emit()
-			}
-			links = append(links, SpanLink{
-				TraceID: l.SpanContext.TraceID().String(),
-				SpanID:  l.SpanContext.SpanID().String(),
-				Attrs:   linkAttrs,
-			})
+		if !latest.IsZero() && s.StartTime().After(latest) {
+			continue
 		}
-
-		// Extract InstrumentationScope
-		scope := sh.span.InstrumentationScope()
-
-		// Extract resource attributes
-		resourceAttrs := make(map[string]string)
-		if sh.span.Resource() != nil {
-			for _, a := range sh.span.Resource().Attributes() {
-				resourceAttrs[string(a.Key)] = a.Value.Emit()
+		if hints.DedupKey != "" {
+			if _, ok := seen[hints.DedupKey]; ok {
+				continue
 			}
+			seen[hints.DedupKey] = struct{}{}
 		}
+		kept = append(kept, keptSpan{span: s, attrs: attrs, hints: hints})
+	}
+	return kept
+}
 
-		// Enrich hints with resource context
-		if sh.hints.ServiceName == "" {
-			if svc, ok := resourceAttrs["service.name"]; ok {
-				sh.hints.ServiceName = svc
-			}
-		}
-		if sh.hints.Environment == "" {
-			// Stable name first, then the legacy one.
-			if env, ok := resourceAttrs["deployment.environment.name"]; ok {
-				sh.hints.Environment = env
-			} else if env, ok := resourceAttrs["deployment.environment"]; ok {
-				sh.hints.Environment = env
-			}
-		}
-
-		// Surface recorded exceptions and feature-flag evaluations (span
-		// events) onto the span itself, so they are visible in the timeline,
-		// not only in the inspector.
-		var flags []string
-		exceptionApplied := false
-		for _, ev := range events {
-			if !exceptionApplied {
-				if excType := enrichment.ExceptionTypeFromEvent(ev.Name, ev.Attrs); excType != "" {
-					enrichment.ApplyException(&sh.hints, excType)
-					exceptionApplied = true
-				}
-			}
-			if f := enrichment.FeatureFlagFromEvent(ev.Name, ev.Attrs); f != "" {
-				flags = append(flags, f)
-			}
-		}
-		enrichment.ApplyFeatureFlags(&sh.hints, flags)
-
-		node := &TreeNode{
-			Attrs:         sh.attrs,
-			Hints:         sh.hints,
-			Name:          sh.span.Name(),
-			StartTime:     sh.span.StartTime(),
-			EndTime:       sh.span.EndTime(),
-			URLIndex:      urlIndex,
-			Children:      []*TreeNode{},
-			Events:        events,
-			Links:         links,
-			SpanID:        spanID,
-			TraceID:       sh.span.SpanContext().TraceID().String(),
-			ScopeName:     scope.Name,
-			ScopeVersion:  scope.Version,
-			ResourceAttrs: resourceAttrs,
-		}
-		nodeList[i] = node
-		key := node.TraceID + "/" + spanID
-		if _, exists := nodes[key]; !exists {
-			nodes[key] = node
+// nodesFromSpans builds one node per span. The map is keyed by traceID/spanID
+// because span IDs are unique only within a trace. The first span keeps the
+// key, so a later colliding ID (two same-named steps) is not overwritten.
+func nodesFromSpans(kept []keptSpan) ([]*TreeNode, map[string]*TreeNode) {
+	nodes := make([]*TreeNode, len(kept))
+	byID := make(map[string]*TreeNode)
+	for i := range kept {
+		node := treeNode(&kept[i])
+		nodes[i] = node
+		key := node.TraceID + "/" + node.SpanID
+		if _, exists := byID[key]; !exists {
+			byID[key] = node
 		}
 	}
+	return nodes, byID
+}
 
-	// Link children to parents
+func treeNode(sh *keptSpan) *TreeNode {
+	events := spanEvents(sh.span)
+	links := spanLinks(sh.span)
+	scope := sh.span.InstrumentationScope()
+	resourceAttrs := resourceAttrsOf(sh.span)
+
+	fillResourceHints(&sh.hints, resourceAttrs)
+	fillEventHints(&sh.hints, events)
+
+	return &TreeNode{
+		Attrs:         sh.attrs,
+		Hints:         sh.hints,
+		Name:          sh.span.Name(),
+		StartTime:     sh.span.StartTime(),
+		EndTime:       sh.span.EndTime(),
+		URLIndex:      urlIndexOf(sh.span),
+		Children:      []*TreeNode{},
+		Events:        events,
+		Links:         links,
+		SpanID:        sh.span.SpanContext().SpanID().String(),
+		TraceID:       sh.span.SpanContext().TraceID().String(),
+		ScopeName:     scope.Name,
+		ScopeVersion:  scope.Version,
+		ResourceAttrs: resourceAttrs,
+	}
+}
+
+func spanEvents(s trace.ReadOnlySpan) []SpanEvent {
+	var events []SpanEvent
+	for _, e := range s.Events() {
+		attrs := make(map[string]string)
+		for _, a := range e.Attributes {
+			attrs[string(a.Key)] = a.Value.Emit()
+		}
+		events = append(events, SpanEvent{Name: e.Name, Time: e.Time, Attrs: attrs})
+	}
+	return events
+}
+
+func spanLinks(s trace.ReadOnlySpan) []SpanLink {
+	var links []SpanLink
+	for _, l := range s.Links() {
+		attrs := make(map[string]string)
+		for _, a := range l.Attributes {
+			attrs[string(a.Key)] = a.Value.Emit()
+		}
+		links = append(links, SpanLink{
+			TraceID: l.SpanContext.TraceID().String(),
+			SpanID:  l.SpanContext.SpanID().String(),
+			Attrs:   attrs,
+		})
+	}
+	return links
+}
+
+func resourceAttrsOf(s trace.ReadOnlySpan) map[string]string {
+	attrs := make(map[string]string)
+	if s.Resource() != nil {
+		for _, a := range s.Resource().Attributes() {
+			attrs[string(a.Key)] = a.Value.Emit()
+		}
+	}
+	return attrs
+}
+
+func urlIndexOf(s trace.ReadOnlySpan) int {
+	for _, a := range s.Attributes() {
+		if string(a.Key) == "github.url_index" {
+			return int(a.Value.AsInt64())
+		}
+	}
+	return 0
+}
+
+func fillResourceHints(hints *enrichment.SpanHints, resourceAttrs map[string]string) {
+	if hints.ServiceName == "" {
+		if svc, ok := resourceAttrs["service.name"]; ok {
+			hints.ServiceName = svc
+		}
+	}
+	if hints.Environment == "" {
+		// Stable name first, then the legacy one.
+		if env, ok := resourceAttrs["deployment.environment.name"]; ok {
+			hints.Environment = env
+		} else if env, ok := resourceAttrs["deployment.environment"]; ok {
+			hints.Environment = env
+		}
+	}
+}
+
+// fillEventHints folds the first exception and any feature-flag evaluations
+// onto the span, so the timeline shows them and not only the inspector.
+func fillEventHints(hints *enrichment.SpanHints, events []SpanEvent) {
+	var flags []string
+	exceptionApplied := false
+	for _, ev := range events {
+		if !exceptionApplied {
+			if excType := enrichment.ExceptionTypeFromEvent(ev.Name, ev.Attrs); excType != "" {
+				enrichment.ApplyException(hints, excType)
+				exceptionApplied = true
+			}
+		}
+		if f := enrichment.FeatureFlagFromEvent(ev.Name, ev.Attrs); f != "" {
+			flags = append(flags, f)
+		}
+	}
+	enrichment.ApplyFeatureFlags(hints, flags)
+}
+
+// linkParents hangs each span under its parent in the same trace.
+// The all-zero parent ID, or a parent missing from this batch, is a root.
+func linkParents(kept []keptSpan, nodes []*TreeNode, byID map[string]*TreeNode) ([]*TreeNode, map[*TreeNode]*TreeNode) {
 	var roots []*TreeNode
-	parentNode := make(map[*TreeNode]*TreeNode)
-	for i, sh := range filtered {
+	parentOf := make(map[*TreeNode]*TreeNode)
+	for i, sh := range kept {
 		parentID := sh.span.Parent().SpanID().String()
-		node := nodeList[i]
-
+		node := nodes[i]
 		if parentID == "0000000000000000" {
 			roots = append(roots, node)
-		} else if parent, ok := nodes[node.TraceID+"/"+parentID]; ok && parent != node {
+		} else if parent, ok := byID[node.TraceID+"/"+parentID]; ok && parent != node {
 			parent.Children = append(parent.Children, node)
-			parentNode[node] = parent
+			parentOf[node] = parent
 		} else {
-			// Parent not in this batch, treat as root
 			roots = append(roots, node)
 		}
 	}
+	return roots, parentOf
+}
 
-	// Contain parent cycles: a node whose parent chain never reaches a root
-	// (mutual/looped parent IDs in hostile or corrupt input) is unreachable
-	// from the forest, and FlattenTree — which walks from roots — would
-	// silently drop it from every renderer. Promote one node per cycle to
-	// root (deterministic: smallest span ID, earliest position on ties),
-	// detached from its parent so it renders exactly once; the rest of the
-	// cycle hangs under it. Pinned by TestTreeSpec_ParentCycleSpansReachable.
-	reachable := make(map[*TreeNode]bool, len(nodeList))
-	var mark func(n *TreeNode)
-	mark = func(n *TreeNode) {
-		if reachable[n] {
-			return
-		}
-		reachable[n] = true
-		for _, c := range n.Children {
-			mark(c)
-		}
-	}
+// detachParentCycles promotes one node per parent cycle to root so FlattenTree
+// does not drop it. Choice is the smallest span ID, earliest position on ties.
+// That node is detached from its parent and renders once; the rest of the
+// cycle hangs under it. Pinned by TestTreeSpec_ParentCycleSpansReachable.
+func detachParentCycles(roots []*TreeNode, nodes []*TreeNode, parentOf map[*TreeNode]*TreeNode) []*TreeNode {
+	reachable := make(map[*TreeNode]bool, len(nodes))
 	for _, r := range roots {
-		mark(r)
+		markReachable(r, reachable)
 	}
-	for len(reachable) < len(nodeList) {
+	for len(reachable) < len(nodes) {
 		var promote *TreeNode
-		for _, n := range nodeList {
+		for _, n := range nodes {
 			if !reachable[n] && (promote == nil || n.SpanID < promote.SpanID) {
 				promote = n
 			}
 		}
-		if p := parentNode[promote]; p != nil {
+		if p := parentOf[promote]; p != nil {
 			for i, c := range p.Children {
 				if c == promote {
 					p.Children = append(p.Children[:i], p.Children[i+1:]...)
@@ -312,16 +310,26 @@ func BuildTreeFromSpans(spans []trace.ReadOnlySpan, globalEarliest, globalLatest
 		}
 		promote.Attrs["otel-explorer.parent_cycle"] = "detached: parent chain forms a cycle"
 		roots = append(roots, promote)
-		mark(promote)
+		markReachable(promote, reachable)
 	}
+	return roots
+}
 
-	// Sort all nodes by start time
+func markReachable(n *TreeNode, reachable map[*TreeNode]bool) {
+	if reachable[n] {
+		return
+	}
+	reachable[n] = true
+	for _, c := range n.Children {
+		markReachable(c, reachable)
+	}
+}
+
+func sortTree(roots []*TreeNode, nodes []*TreeNode) {
 	sortTreeNodes(roots)
-	for _, node := range nodeList {
+	for _, node := range nodes {
 		sortTreeNodes(node.Children)
 	}
-
-	return roots
 }
 
 // sortTreeNodes sorts nodes by start time, using SortPriority for tie-breaking
