@@ -81,78 +81,71 @@ func RenderOTelTimeline(w io.Writer, spans []trace.ReadOnlySpan, globalEarliest,
 	fmt.Fprintf(w, "└%s┘\n", strings.Repeat("─", scale+2))
 }
 
-// markerWidth measures the marker glyph's display width. Guessing from the
-// event type drifted from the glyphs enrichment actually emits, leaving
-// marker rows a column short of the box border.
-func markerWidth(barChar string) int {
-	if w := lipgloss.Width(barChar); w > 0 {
-		return w
+func renderNode(w io.Writer, node *analyzer.TreeNode, depth int, globalStart time.Time, totalDuration time.Duration, scale int) {
+	start, dur, visible := clampToWindow(node.StartTime, node.EndTime, globalStart, totalDuration)
+	if !visible {
+		return // entirely outside the window
 	}
-	return 1
+
+	pad, glyph, rest := timelineBar(node.Hints, start, dur, totalDuration, scale)
+	colored := colorizeText(glyph, node.Hints.Color)
+	name, clock := timelineLabel(node, dur)
+	indent := strings.Repeat("  ", depth)
+
+	fmt.Fprintf(w, "│%s%s%s  │ %s%s %s\n", pad, colored, rest, indent, name, clock)
+
+	for _, child := range node.Children {
+		renderNode(w, child, depth+1, globalStart, totalDuration, scale)
+	}
 }
 
-func renderNode(w io.Writer, node *analyzer.TreeNode, depth int, globalStart time.Time, totalDuration time.Duration, scale int) {
-	h := node.Hints
-
-	// Clamp start and end times to the global window for visualization
-	startT := node.StartTime
-	if startT.Before(globalStart) {
-		startT = globalStart
+func clampToWindow(start, end, globalStart time.Time, total time.Duration) (offset, dur time.Duration, visible bool) {
+	if start.Before(globalStart) {
+		start = globalStart
 	}
-	endT := node.EndTime
-	if endT.After(globalStart.Add(totalDuration)) {
-		endT = globalStart.Add(totalDuration)
+	windowEnd := globalStart.Add(total)
+	if end.After(windowEnd) {
+		end = windowEnd
 	}
-
-	if endT.Before(startT) {
-		return // Span is entirely outside the window
+	if end.Before(start) {
+		return 0, 0, false
 	}
+	return start.Sub(globalStart), end.Sub(start), true
+}
 
-	start := startT.Sub(globalStart)
-	duration := endT.Sub(startT)
-
-	startPos := int(float64(start) / float64(totalDuration) * float64(scale))
-	barLength := maxInt(1, int(float64(duration)/float64(totalDuration)*float64(scale)))
+func timelineBar(h enrichment.SpanHints, start, duration, total time.Duration, scale int) (pad, glyph, rest string) {
+	startPos := int(float64(start) / float64(total) * float64(scale))
+	barLength := maxInt(1, int(float64(duration)/float64(total)*float64(scale)))
 	clampedLength := minInt(barLength, scale-startPos)
 
-	padding := strings.Repeat(" ", maxInt(0, startPos))
+	pad = strings.Repeat(" ", maxInt(0, startPos))
 
-	// Use hints for icon. Do NOT bake indentation spaces into the icon: the depth
-	// indent (below) is what conveys hierarchy. Padding the leaf icon with spaces
-	// made a depth-N leaf align with a depth-(N+1) child, so child spans (e.g. a
-	// tool span under its step) looked like siblings instead of nested.
-	icon := h.Icon
-	if icon == "" {
-		icon = "• "
-	}
-
-	statusIcon := "  "
-	if h.Outcome == "failure" {
-		statusIcon = "❌"
-	}
-
-	// Build bar
 	barChar := h.BarChar
 	if barChar == "" {
 		barChar = "█"
 	}
 
-	coloredBar := strings.Repeat(barChar, maxInt(1, clampedLength))
-	markerCells := 1
+	cells := maxInt(1, clampedLength)
+	glyph = strings.Repeat(barChar, cells)
 	if h.IsMarker {
-		// Markers render as a single glyph; reserve its actual display width
-		markerCells = markerWidth(barChar)
-		coloredBar = colorizeText(barChar, h.Color)
-	} else {
-		coloredBar = colorizeText(coloredBar, h.Color)
+		// A marker is one glyph. Reserve its display width, not a repeated bar.
+		cells = markerWidth(barChar)
+		glyph = barChar
 	}
+	rest = strings.Repeat(" ", maxInt(0, scale-startPos-cells))
+	return pad, glyph, rest
+}
 
-	indent := strings.Repeat("  ", depth)
-	remainingCount := scale - startPos - maxInt(1, clampedLength)
-	if h.IsMarker {
-		remainingCount = scale - startPos - markerCells
+// timelineLabel is the row caption. Hierarchy is the depth indent in renderNode,
+// not spaces inside the icon: a padded leaf lines up with the next depth and
+// looks like a sibling.
+func timelineLabel(node *analyzer.TreeNode, duration time.Duration) (name, clock string) {
+	h := node.Hints
+
+	icon := h.Icon
+	if icon == "" {
+		icon = "• "
 	}
-	remaining := strings.Repeat(" ", maxInt(0, remainingCount))
 
 	label := node.Name
 	if h.User != "" {
@@ -161,43 +154,47 @@ func renderNode(w io.Writer, node *analyzer.TreeNode, depth int, globalStart tim
 	if h.URL != "" {
 		label = utils.MakeClickableLink(h.URL, label)
 	}
-	// Append semantic detail (model, route, statement, token usage, …) so that
-	// generic OTel spans — HTTP, DB, RPC, GenAI — read at a glance in the
-	// waterfall rather than as anonymous bars. Markers carry no detail.
+	// Semantic detail (model, route, statement, token usage) so HTTP, DB, RPC,
+	// and GenAI spans read at a glance. Markers carry no detail.
 	if h.Detail != "" && !h.IsMarker {
 		if extra := enrichment.NonRedundantDetail(node.Name, h.Detail); extra != "" {
 			label = fmt.Sprintf("%s  %s", label, colorizeText(extra, "gray"))
 		}
 	}
 
-	// Pad icons to ensure consistent labeling alignment
-	var displayName string
+	name = displayName(h, icon, label)
+	clock = fmt.Sprintf("(%s)", utils.HumanizeTime(duration.Seconds()))
 	if h.IsMarker {
-		if markerCells == 1 {
-			displayName = fmt.Sprintf("%s     %s", icon, label)
-		} else {
-			displayName = fmt.Sprintf("%s    %s", icon, label)
-		}
-	} else {
-		if statusIcon != "  " {
-			displayName = fmt.Sprintf("%s %s %s", icon, label, statusIcon)
-		} else {
-			displayName = fmt.Sprintf("%s %s", icon, label)
-		}
+		clock = ""
 	}
+	return name, clock
+}
 
-	durationDisplay := fmt.Sprintf("(%s)", utils.HumanizeTime(duration.Seconds()))
+func displayName(h enrichment.SpanHints, icon, label string) string {
 	if h.IsMarker {
-		durationDisplay = ""
+		ch := h.BarChar
+		if ch == "" {
+			ch = "█"
+		}
+		if markerWidth(ch) == 1 {
+			return fmt.Sprintf("%s     %s", icon, label)
+		}
+		return fmt.Sprintf("%s    %s", icon, label)
 	}
-
-	fmt.Fprintf(w, "│%s%s%s  │ %s%s %s\n",
-		padding, coloredBar, remaining,
-		indent, displayName, durationDisplay)
-
-	for _, child := range node.Children {
-		renderNode(w, child, depth+1, globalStart, totalDuration, scale)
+	if h.Outcome == "failure" {
+		return fmt.Sprintf("%s %s ❌", icon, label)
 	}
+	return fmt.Sprintf("%s %s", icon, label)
+}
+
+// markerWidth measures the marker glyph's display width. Guessing from the
+// event type drifted from the glyphs enrichment actually emits, leaving
+// marker rows a column short of the box border.
+func markerWidth(barChar string) int {
+	if w := lipgloss.Width(barChar); w > 0 {
+		return w
+	}
+	return 1
 }
 
 // colorizeText applies terminal color based on color name.
