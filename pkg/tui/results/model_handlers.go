@@ -10,7 +10,6 @@ import (
 	"github.com/stefanpenner/otel-explorer/pkg/analyzer"
 )
 
-
 // handleReloadResult applies a fresh span set from a reload. Resets all
 // view state (cursor, expansion, focus, log-fetch tracking) so the new
 // data starts from a clean slate.
@@ -94,250 +93,12 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Handle detail modal
+	// Detail modal: search the inspector, or move inside it.
 	if m.showDetailModal {
-		// Inspector search input mode
 		if m.inspectorSearching {
-			switch msg.Type {
-			case tea.KeyCtrlC:
-				// Quit must work even while typing a query.
-				return m, tea.Quit
-			case tea.KeyEsc:
-				m.inspectorSearching = false
-				m.inspectorSearchQuery = ""
-				m.inspectorSearchMatches = nil
-				m.inspectorSearchIdx = -1
-				return m, nil
-			case tea.KeyEnter:
-				m.inspectorSearching = false
-				if len(m.inspectorSearchMatches) > 0 {
-					m.inspectorSearchIdx = 0
-					m.inspectorJumpToMatch()
-				}
-				return m, nil
-			case tea.KeyBackspace:
-				if len(m.inspectorSearchQuery) > 0 {
-					_, size := utf8.DecodeLastRuneInString(m.inspectorSearchQuery)
-					m.inspectorSearchQuery = m.inspectorSearchQuery[:len(m.inspectorSearchQuery)-size]
-					m.updateInspectorSearch()
-				}
-				return m, nil
-			default:
-				if msg.Type == tea.KeyRunes {
-					m.inspectorSearchQuery += string(msg.Runes)
-					m.updateInspectorSearch()
-					// Auto-jump to first match
-					if len(m.inspectorSearchMatches) > 0 {
-						m.inspectorSearchIdx = 0
-						m.inspectorJumpToMatch()
-					}
-				}
-				return m, nil
-			}
+			return m.handleInspectorSearchKey(msg)
 		}
-
-		// Normal modal keys
-		switch msg.String() {
-		case "esc":
-			if m.inspectorSearchQuery != "" {
-				// Clear search
-				m.inspectorSearchQuery = ""
-				m.inspectorSearchMatches = nil
-				m.inspectorSearchIdx = -1
-				return m, nil
-			}
-			if m.inspectorNavigateBack() {
-				return m, nil
-			}
-			m.resetInspectorModal()
-			return m, nil
-		case "i", "q":
-			m.resetInspectorModal()
-			return m, nil
-		case "tab":
-			// Switch between sidebar and tree pane
-			m.inspectorFocusLeft = !m.inspectorFocusLeft
-			return m, nil
-		case "up", "k":
-			if m.inspectorFocusLeft {
-				if m.inspectorSidebarIdx > 0 {
-					m.inspectorSidebarIdx--
-					m.rebuildInspectorFlat()
-				}
-			} else {
-				if m.inspectorCursor > 0 {
-					m.inspectorCursor--
-				}
-			}
-			return m, nil
-		case "down", "j":
-			if m.inspectorFocusLeft {
-				if m.inspectorSidebarIdx < len(m.inspectorNodes)-1 {
-					m.inspectorSidebarIdx++
-					m.rebuildInspectorFlat()
-				}
-			} else {
-				if m.inspectorCursor < len(m.inspectorFlat)-1 {
-					m.inspectorCursor++
-				}
-			}
-			return m, nil
-		case "left", "h":
-			if m.inspectorFocusLeft {
-				// No-op on sidebar
-				return m, nil
-			}
-			// Collapse current node, or move to parent
-			if m.inspectorCursor < len(m.inspectorFlat) {
-				entry := m.inspectorFlat[m.inspectorCursor]
-				if entry.Node.Expanded && len(entry.Node.Children) > 0 {
-					entry.Node.Expanded = false
-					m.rebuildInspectorFlat()
-				} else {
-					parentIdx := FindParentIndex(m.inspectorFlat, m.inspectorCursor)
-					if parentIdx >= 0 {
-						m.inspectorCursor = parentIdx
-					} else {
-						// At top level, switch to sidebar
-						m.inspectorFocusLeft = true
-					}
-				}
-			}
-			return m, nil
-		case "right", "l":
-			if m.inspectorFocusLeft {
-				// Jump into the tree pane
-				m.inspectorFocusLeft = false
-				return m, nil
-			}
-			if m.inspectorCursor < len(m.inspectorFlat) {
-				entry := m.inspectorFlat[m.inspectorCursor]
-				if !entry.Node.Expanded && len(entry.Node.Children) > 0 {
-					entry.Node.Expanded = true
-					m.rebuildInspectorFlat()
-				}
-			}
-			return m, nil
-		case " ", "enter":
-			if m.inspectorFocusLeft {
-				// Select section and jump to tree
-				m.inspectorFocusLeft = false
-				m.inspectorCursor = 0
-				m.modalScroll = 0
-				return m, nil
-			}
-			if m.inspectorCursor < len(m.inspectorFlat) {
-				entry := m.inspectorFlat[m.inspectorCursor]
-				// Navigate into child span
-				if entry.Node.ChildItem != nil {
-					m.inspectorNavigateIntoChild(entry.Node.ChildItem)
-					return m, nil
-				}
-				if len(entry.Node.Children) > 0 {
-					entry.Node.Expanded = !entry.Node.Expanded
-					m.rebuildInspectorFlat()
-				}
-			}
-			return m, nil
-		case "]":
-			// Navigate to next item in main tree
-			if m.cursor < len(m.visibleItems)-1 {
-				m.cursor++
-				m.modalScroll = 0
-				item := m.visibleItems[m.cursor]
-				m.modalItem = &item
-				m.inspectorNodes = BuildInspectorTree(m.modalItem)
-				m.inspectorSidebarIdx = 0
-				m.rebuildInspectorFlat()
-				m.inspectorCursor = 0
-				m.inspectorBreadcrumb = nil
-			}
-			return m, nil
-		case "[":
-			// Navigate to previous item in main tree
-			if m.cursor > 0 {
-				m.cursor--
-				m.modalScroll = 0
-				item := m.visibleItems[m.cursor]
-				m.modalItem = &item
-				m.inspectorNodes = BuildInspectorTree(m.modalItem)
-				m.inspectorSidebarIdx = 0
-				m.rebuildInspectorFlat()
-				m.inspectorCursor = 0
-				m.inspectorBreadcrumb = nil
-			}
-			return m, nil
-		case "/":
-			m.inspectorSearching = true
-			m.inspectorSearchQuery = ""
-			m.inspectorSearchMatches = nil
-			m.inspectorSearchIdx = -1
-			return m, nil
-		case "n":
-			// Next search match
-			if len(m.inspectorSearchMatches) > 0 {
-				m.inspectorSearchIdx = (m.inspectorSearchIdx + 1) % len(m.inspectorSearchMatches)
-				m.inspectorJumpToMatch()
-			}
-			return m, nil
-		case "N":
-			// Previous search match
-			if len(m.inspectorSearchMatches) > 0 {
-				m.inspectorSearchIdx--
-				if m.inspectorSearchIdx < 0 {
-					m.inspectorSearchIdx = len(m.inspectorSearchMatches) - 1
-				}
-				m.inspectorJumpToMatch()
-			}
-			return m, nil
-		case "c":
-			cmd := m.inspectorCopyValue()
-			return m, cmd
-		case "o":
-			m.inspectorOpenValue()
-			return m, nil
-		case "backspace":
-			// Navigate back in breadcrumb
-			if m.inspectorNavigateBack() {
-				return m, nil
-			}
-			return m, nil
-		case "r":
-			m.resetInspectorModal()
-			if m.reloadFunc != nil && !m.isLoading {
-				m.isLoading = true
-				return m, tea.Batch(m.spinner.Tick, m.doReload())
-			}
-			return m, nil
-		case "p":
-			if m.openPerfettoFunc != nil {
-				m.openPerfettoFunc(m.visibleSpans(), m.isActivityHidden())
-			}
-			return m, nil
-		case "g":
-			if m.inspectorFocusLeft {
-				m.inspectorSidebarIdx = 0
-				m.rebuildInspectorFlat()
-			} else {
-				m.inspectorCursor = 0
-			}
-			return m, nil
-		case "G":
-			if m.inspectorFocusLeft {
-				m.inspectorSidebarIdx = len(m.inspectorNodes) - 1
-				m.rebuildInspectorFlat()
-			} else {
-				if len(m.inspectorFlat) > 0 {
-					m.inspectorCursor = len(m.inspectorFlat) - 1
-				}
-			}
-			return m, nil
-		}
-
-		// Handle Enter on a tree item to navigate into children (breadcrumb)
-		// This is handled via "enter" key above for expand/collapse
-
-		return m, nil
+		return m.handleInspectorKey(msg)
 	}
 
 	// Handle search input mode
@@ -584,6 +345,313 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// handleInspectorSearchKey edits the inspector query.
+// Ctrl+C still quits.
+func (m Model) handleInspectorSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyEsc:
+		m.cancelInspectorSearch()
+	case tea.KeyEnter:
+		m.commitInspectorSearch()
+	case tea.KeyBackspace:
+		m.popInspectorSearch()
+	default:
+		if msg.Type == tea.KeyRunes {
+			m.typeInspectorSearch(msg.Runes)
+		}
+	}
+	return m, nil
+}
+
+// cancelInspectorSearch leaves search and drops the query.
+func (m *Model) cancelInspectorSearch() {
+	m.inspectorSearching = false
+	m.clearInspectorSearch()
+}
+
+// commitInspectorSearch leaves search and jumps to the first match.
+func (m *Model) commitInspectorSearch() {
+	m.inspectorSearching = false
+	if len(m.inspectorSearchMatches) == 0 {
+		return
+	}
+	m.inspectorSearchIdx = 0
+	m.inspectorJumpToMatch()
+}
+
+// popInspectorSearch deletes the last rune and refreshes matches.
+func (m *Model) popInspectorSearch() {
+	if len(m.inspectorSearchQuery) == 0 {
+		return
+	}
+	_, size := utf8.DecodeLastRuneInString(m.inspectorSearchQuery)
+	m.inspectorSearchQuery = m.inspectorSearchQuery[:len(m.inspectorSearchQuery)-size]
+	m.updateInspectorSearch()
+}
+
+// typeInspectorSearch appends runes and jumps to the first match.
+func (m *Model) typeInspectorSearch(runes []rune) {
+	m.inspectorSearchQuery += string(runes)
+	m.updateInspectorSearch()
+	if len(m.inspectorSearchMatches) == 0 {
+		return
+	}
+	m.inspectorSearchIdx = 0
+	m.inspectorJumpToMatch()
+}
+
+// beginInspectorSearch starts an empty inspector query.
+func (m *Model) beginInspectorSearch() {
+	m.inspectorSearching = true
+	m.clearInspectorSearch()
+}
+
+// clearInspectorSearch drops the query and its matches.
+func (m *Model) clearInspectorSearch() {
+	m.inspectorSearchQuery = ""
+	m.inspectorSearchMatches = nil
+	m.inspectorSearchIdx = -1
+}
+
+// handleInspectorKey moves inside the detail inspector.
+func (m Model) handleInspectorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.dismissInspector()
+	case "i", "q":
+		m.resetInspectorModal()
+	case "tab":
+		m.inspectorFocusLeft = !m.inspectorFocusLeft
+	case "up", "k":
+		m.moveInspectorUp()
+	case "down", "j":
+		m.moveInspectorDown()
+	case "left", "h":
+		m.collapseInspectorOrParent()
+	case "right", "l":
+		m.expandInspectorOrEnter()
+	case " ", "enter":
+		m.activateInspector()
+	case "]":
+		m.showNextInspectorItem()
+	case "[":
+		m.showPrevInspectorItem()
+	case "/":
+		m.beginInspectorSearch()
+	case "n":
+		m.nextInspectorMatch()
+	case "N":
+		m.prevInspectorMatch()
+	case "c":
+		cmd := m.inspectorCopyValue()
+		return m, cmd
+	case "o":
+		m.inspectorOpenValue()
+	case "backspace":
+		m.inspectorNavigateBack()
+	case "r":
+		cmd := m.reloadFromInspector()
+		return m, cmd
+	case "p":
+		if m.openPerfettoFunc != nil {
+			m.openPerfettoFunc(m.visibleSpans(), m.isActivityHidden())
+		}
+	case "g":
+		m.jumpInspectorHome()
+	case "G":
+		m.jumpInspectorEnd()
+	}
+	return m, nil
+}
+
+// dismissInspector clears a query, goes back, or closes the inspector.
+func (m *Model) dismissInspector() {
+	if m.inspectorSearchQuery != "" {
+		m.clearInspectorSearch()
+		return
+	}
+	if m.inspectorNavigateBack() {
+		return
+	}
+	m.resetInspectorModal()
+}
+
+// moveInspectorUp steps the sidebar, or the tree, one row toward the start.
+func (m *Model) moveInspectorUp() {
+	if m.inspectorFocusLeft {
+		if m.inspectorSidebarIdx > 0 {
+			m.inspectorSidebarIdx--
+			m.rebuildInspectorFlat()
+		}
+		return
+	}
+	if m.inspectorCursor > 0 {
+		m.inspectorCursor--
+	}
+}
+
+// moveInspectorDown steps the sidebar, or the tree, one row toward the end.
+func (m *Model) moveInspectorDown() {
+	if m.inspectorFocusLeft {
+		if m.inspectorSidebarIdx < len(m.inspectorNodes)-1 {
+			m.inspectorSidebarIdx++
+			m.rebuildInspectorFlat()
+		}
+		return
+	}
+	if m.inspectorCursor < len(m.inspectorFlat)-1 {
+		m.inspectorCursor++
+	}
+}
+
+// collapseInspectorOrParent collapses the node, moves to its parent, or focuses the sidebar.
+func (m *Model) collapseInspectorOrParent() {
+	if m.inspectorFocusLeft || m.inspectorCursor >= len(m.inspectorFlat) {
+		return
+	}
+
+	entry := m.inspectorFlat[m.inspectorCursor]
+	if entry.Node.Expanded && len(entry.Node.Children) > 0 {
+		entry.Node.Expanded = false
+		m.rebuildInspectorFlat()
+		return
+	}
+
+	parentIdx := FindParentIndex(m.inspectorFlat, m.inspectorCursor)
+	if parentIdx >= 0 {
+		m.inspectorCursor = parentIdx
+		return
+	}
+	m.inspectorFocusLeft = true
+}
+
+// expandInspectorOrEnter enters the tree, or expands a collapsed node.
+func (m *Model) expandInspectorOrEnter() {
+	if m.inspectorFocusLeft {
+		m.inspectorFocusLeft = false
+		return
+	}
+	if m.inspectorCursor >= len(m.inspectorFlat) {
+		return
+	}
+
+	entry := m.inspectorFlat[m.inspectorCursor]
+	if !entry.Node.Expanded && len(entry.Node.Children) > 0 {
+		entry.Node.Expanded = true
+		m.rebuildInspectorFlat()
+	}
+}
+
+// activateInspector enters the tree, opens a child span, or toggles a node.
+func (m *Model) activateInspector() {
+	if m.inspectorFocusLeft {
+		m.inspectorFocusLeft = false
+		m.inspectorCursor = 0
+		m.modalScroll = 0
+		return
+	}
+	if m.inspectorCursor >= len(m.inspectorFlat) {
+		return
+	}
+
+	entry := m.inspectorFlat[m.inspectorCursor]
+	if entry.Node.ChildItem != nil {
+		m.inspectorNavigateIntoChild(entry.Node.ChildItem)
+		return
+	}
+	if len(entry.Node.Children) > 0 {
+		entry.Node.Expanded = !entry.Node.Expanded
+		m.rebuildInspectorFlat()
+	}
+}
+
+// showNextInspectorItem opens the next main-tree row in the inspector.
+func (m *Model) showNextInspectorItem() {
+	if m.cursor >= len(m.visibleItems)-1 {
+		return
+	}
+	m.cursor++
+	m.showInspectorItem()
+}
+
+// showPrevInspectorItem opens the previous main-tree row in the inspector.
+func (m *Model) showPrevInspectorItem() {
+	if m.cursor <= 0 {
+		return
+	}
+	m.cursor--
+	m.showInspectorItem()
+}
+
+// showInspectorItem loads the inspector for the current main-tree row.
+func (m *Model) showInspectorItem() {
+	m.modalScroll = 0
+	item := m.visibleItems[m.cursor]
+	m.modalItem = &item
+	m.inspectorNodes = BuildInspectorTree(m.modalItem)
+	m.inspectorSidebarIdx = 0
+	m.rebuildInspectorFlat()
+	m.inspectorCursor = 0
+	m.inspectorBreadcrumb = nil
+}
+
+// nextInspectorMatch jumps to the following query match, wrapping at the end.
+func (m *Model) nextInspectorMatch() {
+	n := len(m.inspectorSearchMatches)
+	if n == 0 {
+		return
+	}
+	m.inspectorSearchIdx = (m.inspectorSearchIdx + 1) % n
+	m.inspectorJumpToMatch()
+}
+
+// prevInspectorMatch jumps to the previous query match, wrapping at the start.
+func (m *Model) prevInspectorMatch() {
+	n := len(m.inspectorSearchMatches)
+	if n == 0 {
+		return
+	}
+	m.inspectorSearchIdx--
+	if m.inspectorSearchIdx < 0 {
+		m.inspectorSearchIdx = n - 1
+	}
+	m.inspectorJumpToMatch()
+}
+
+// reloadFromInspector closes the inspector and starts a reload when one is wired.
+func (m *Model) reloadFromInspector() tea.Cmd {
+	m.resetInspectorModal()
+	if m.reloadFunc == nil || m.isLoading {
+		return nil
+	}
+	m.isLoading = true
+	return tea.Batch(m.spinner.Tick, m.doReload())
+}
+
+// jumpInspectorHome moves to the first sidebar section, or the first tree row.
+func (m *Model) jumpInspectorHome() {
+	if m.inspectorFocusLeft {
+		m.inspectorSidebarIdx = 0
+		m.rebuildInspectorFlat()
+		return
+	}
+	m.inspectorCursor = 0
+}
+
+// jumpInspectorEnd moves to the last sidebar section, or the last tree row.
+func (m *Model) jumpInspectorEnd() {
+	if m.inspectorFocusLeft {
+		m.inspectorSidebarIdx = len(m.inspectorNodes) - 1
+		m.rebuildInspectorFlat()
+		return
+	}
+	if len(m.inspectorFlat) > 0 {
+		m.inspectorCursor = len(m.inspectorFlat) - 1
+	}
 }
 
 // handleMouseMsg dispatches mouse input (wheel scroll, click selection).
