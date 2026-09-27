@@ -226,163 +226,192 @@ type RunDump struct {
 	Runs  []RunData
 }
 
-// AnalyzeTrends analyzes historical trends for a repository using GitHub API.
-// All run pages are always fetched to ensure accurate trend detection.
-// When opts.NoSample is false (default), job detail fetching uses statistical
-// sampling to reduce API calls. Run-level metrics use all fetched runs.
+// AnalyzeTrends lists completed runs, samples which get job detail, fetches
+// those jobs, then analyzes the window. Every run page is fetched — listing
+// is one call per 100 runs, and trends need the full set. Job detail is
+// sampled unless NoSample, or the sample would save less than 25% of the
+// fetches. Run-level metrics use every completed run.
 func AnalyzeTrends(ctx context.Context, client githubapi.GitHubProvider, owner, repo string, days int, branch, workflow string, opts TrendOptions, reporter ProgressReporter) (*TrendAnalysis, error) {
-	endTime := time.Now().UTC()
-	startTime := endTime.Add(-time.Duration(days) * 24 * time.Hour)
+	window := trendWindow(days)
 
-	marginOfError := opts.MarginOfError
-	if marginOfError <= 0 {
-		marginOfError = 0.10
-	}
-
-	fetchDetail := fmt.Sprintf("%s/%s, last %d days", owner, repo, days)
-	if branch != "" {
-		fetchDetail += fmt.Sprintf(", branch: %s", branch)
-	}
-	if workflow != "" {
-		fetchDetail += fmt.Sprintf(", workflow: %s", workflow)
-	}
-
-	if reporter != nil {
-		reporter.SetPhase("Fetching workflow runs")
-		reporter.SetDetail(fetchDetail)
-	}
-
-	sampling := SamplingInfo{
-		MarginOfError: marginOfError,
-	}
-
-	// Fetch all run pages — run listing is cheap (1 API call per 100 runs)
-	// and complete data is needed for accurate trend detection.
-	var onPage func(fetched, total int)
-	if reporter != nil {
-		onPage = func(fetched, total int) {
-			if total > 0 {
-				reporter.SetDetail(fmt.Sprintf("%s — %d/%d runs", fetchDetail, fetched, total))
-			} else {
-				reporter.SetDetail(fmt.Sprintf("%s — %d runs", fetchDetail, fetched))
-			}
-		}
-	}
-	runs, err := client.FetchWorkflowRunsSince(ctx, owner, repo, time.Now().UTC().AddDate(0, 0, -days), branch, workflow, onPage)
+	runs, err := listCompletedRuns(ctx, client, owner, repo, days, branch, workflow, reporter)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch workflow runs: %w", err)
+		return nil, err
 	}
 
-	if len(runs) == 0 {
-		return nil, fmt.Errorf("no workflow runs found for %s/%s in the last %d days", owner, repo, days)
-	}
-
-	// Keep only completed runs. Queued/in-progress runs have no conclusion
-	// (dragging down success rates) and only partial durations, and because
-	// they always cluster at the recent end of the window they would
-	// systematically bias the first-half/second-half trend comparison.
-	completed := runs[:0]
-	for _, run := range runs {
-		if run.Status == "completed" {
-			completed = append(completed, run)
-		}
-	}
-	runs = completed
-
-	if len(runs) == 0 {
-		return nil, fmt.Errorf("no completed workflow runs found for %s/%s in the last %d days", owner, repo, days)
-	}
-
-	// Convert all runs to RunData (no job fetching yet)
-	runData := ConvertRuns(runs)
-
-	// Determine job-level sampling. Allocation is per workflow rather than
-	// global: a global sample spreads observations so thinly across jobs
-	// that per-job percentiles (especially tails) become noise. Targets are
-	// derived from the margin knob and calibrated with cmd/sample-eval
-	// against full-scan ground truth.
-	totalRuns := len(runData)
-	sampling.TotalRuns = totalRuns
-	majorTarget, minorTarget := JobSampleTargets(marginOfError)
-	sampleIndices := SelectSampleIndices(runs, majorTarget, minorTarget)
-	sampling.WorkflowCount = countWorkflows(runs)
-	sampling.MajorTarget = majorTarget
-	sampling.MinorTarget = minorTarget
-
-	// Only sample when it saves ≥25% of API calls; otherwise the marginal
-	// savings aren't worth the per-job accuracy loss on borderline trends.
-	if !opts.NoSample && len(sampleIndices) < totalRuns*3/4 {
-		sampling.Enabled = true
-		sampling.SampleSize = len(sampleIndices)
-	} else {
-		sampling.SampleSize = totalRuns
-		sampleIndices = make([]int, totalRuns)
-		for i := range sampleIndices {
-			sampleIndices[i] = i
-		}
-	}
-
-	// Generate rationale
-	sampling.Rationale = generateRationale(sampling)
-
-	if reporter != nil {
-		reporter.SetURLRuns(sampling.SampleSize)
-		reporter.SetPhase("Fetching job details")
-		if sampling.Enabled {
-			reporter.SetDetail(fmt.Sprintf("sampling %d/%d runs across %d workflows — %d/%d obs targets (±%.0f%% margin)",
-				sampling.SampleSize, sampling.TotalRuns, sampling.WorkflowCount,
-				majorTarget, minorTarget, sampling.MarginOfError*100))
-		} else {
-			reporter.SetDetail(fmt.Sprintf("%d runs", totalRuns))
-		}
-	}
-
-	// Fetch jobs for sampled runs
-	fetchedRuns, err := fetchJobsForRuns(ctx, client, runData, runs, sampleIndices, reporter)
+	runData, sampling, err := fetchSampledJobs(ctx, client, runs, opts, reporter)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch job data: %w", err)
-	}
-	// Record the achieved sample size so the output reflects reality when
-	// transient fetch errors dropped some sampled runs, and warn that the
-	// stated confidence/margin may no longer hold.
-	if fetchedRuns < sampling.SampleSize {
-		sampling.Rationale += fmt.Sprintf(" Warning: job details were fetched for only %d of %d sampled runs; job-level statistics may not meet the stated confidence/margin.",
-			fetchedRuns, sampling.SampleSize)
-		sampling.SampleSize = fetchedRuns
+		return nil, err
 	}
 
 	if reporter != nil {
 		reporter.SetPhase("Analyzing trends")
 	}
 
-	// Sort runs chronologically (oldest first) so first-half/second-half
-	// comparisons correctly treat early data as "before" and recent data as "after".
-	// The GitHub API returns runs newest-first by default.
-	sort.Slice(runData, func(i, j int) bool {
-		return runData[i].CreatedAt.Before(runData[j].CreatedAt)
-	})
-
+	sortRunsOldestFirst(runData)
 	if opts.DumpRunsPath != "" {
 		if err := dumpRuns(opts.DumpRunsPath, owner, repo, days, runData); err != nil {
 			return nil, fmt.Errorf("failed to dump runs: %w", err)
 		}
 	}
 
-	analysis := analyzeRunData(owner, repo, runData, sampling, TimeRange{Start: startTime, End: endTime, Days: days})
-	if len(opts.Facets) > 0 {
-		defaultBranch := ""
-		for _, d := range opts.Facets {
-			if d == FacetBranch {
-				// Branch classification needs the repo's trunk; one cheap call.
-				if meta, err := client.FetchRepository(ctx, fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo)); err == nil && meta != nil {
-					defaultBranch = meta.DefaultBranch
-				}
-				break
-			}
-		}
-		analysis.Facets = computeFacets(runData, opts.Facets, defaultBranch)
-	}
+	analysis := analyzeRunData(owner, repo, runData, sampling, window)
+	analysis.Facets = facetsFor(ctx, client, owner, repo, runData, opts.Facets)
 	return analysis, nil
+}
+
+func trendWindow(days int) TimeRange {
+	end := time.Now().UTC()
+	return TimeRange{
+		Start: end.Add(-time.Duration(days) * 24 * time.Hour),
+		End:   end,
+		Days:  days,
+	}
+}
+
+// listCompletedRuns fetches the window and drops queued or in-progress runs.
+// They have no conclusion and only a partial duration, and they cluster at
+// the recent end, which would bias the half-window comparison.
+func listCompletedRuns(ctx context.Context, client githubapi.GitHubProvider, owner, repo string, days int, branch, workflow string, reporter ProgressReporter) ([]githubapi.WorkflowRun, error) {
+	detail := fmt.Sprintf("%s/%s, last %d days", owner, repo, days)
+	if branch != "" {
+		detail += fmt.Sprintf(", branch: %s", branch)
+	}
+	if workflow != "" {
+		detail += fmt.Sprintf(", workflow: %s", workflow)
+	}
+	report(reporter, "Fetching workflow runs", detail)
+
+	runs, err := client.FetchWorkflowRunsSince(ctx, owner, repo, time.Now().UTC().AddDate(0, 0, -days), branch, workflow, runPageProgress(reporter, detail))
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch workflow runs: %w", err)
+	}
+	if len(runs) == 0 {
+		return nil, fmt.Errorf("no workflow runs found for %s/%s in the last %d days", owner, repo, days)
+	}
+
+	runs = completedRuns(runs)
+	if len(runs) == 0 {
+		return nil, fmt.Errorf("no completed workflow runs found for %s/%s in the last %d days", owner, repo, days)
+	}
+	return runs, nil
+}
+
+func runPageProgress(reporter ProgressReporter, detail string) func(fetched, total int) {
+	if reporter == nil {
+		return nil
+	}
+	return func(fetched, total int) {
+		if total > 0 {
+			reporter.SetDetail(fmt.Sprintf("%s — %d/%d runs", detail, fetched, total))
+		} else {
+			reporter.SetDetail(fmt.Sprintf("%s — %d runs", detail, fetched))
+		}
+	}
+}
+
+func completedRuns(runs []githubapi.WorkflowRun) []githubapi.WorkflowRun {
+	completed := runs[:0]
+	for _, run := range runs {
+		if run.Status == "completed" {
+			completed = append(completed, run)
+		}
+	}
+	return completed
+}
+
+// fetchSampledJobs converts the listing and fills job detail for the sample.
+// A short fetch lowers SampleSize and warns: the stated margin may no longer hold.
+func fetchSampledJobs(ctx context.Context, client githubapi.GitHubProvider, runs []githubapi.WorkflowRun, opts TrendOptions, reporter ProgressReporter) ([]RunData, SamplingInfo, error) {
+	runData := ConvertRuns(runs)
+	sampling, indices := jobSample(runs, opts)
+
+	if reporter != nil {
+		reporter.SetURLRuns(sampling.SampleSize)
+	}
+	report(reporter, "Fetching job details", jobFetchDetail(sampling))
+
+	fetched, err := fetchJobsForRuns(ctx, client, runData, runs, indices, reporter)
+	if err != nil {
+		return nil, SamplingInfo{}, fmt.Errorf("failed to fetch job data: %w", err)
+	}
+	if fetched < sampling.SampleSize {
+		sampling.Rationale += fmt.Sprintf(" Warning: job details were fetched for only %d of %d sampled runs; job-level statistics may not meet the stated confidence/margin.",
+			fetched, sampling.SampleSize)
+		sampling.SampleSize = fetched
+	}
+	return runData, sampling, nil
+}
+
+func jobFetchDetail(s SamplingInfo) string {
+	if !s.Enabled {
+		return fmt.Sprintf("%d runs", s.TotalRuns)
+	}
+	return fmt.Sprintf("sampling %d/%d runs across %d workflows — %d/%d obs targets (±%.0f%% margin)",
+		s.SampleSize, s.TotalRuns, s.WorkflowCount,
+		s.MajorTarget, s.MinorTarget, s.MarginOfError*100)
+}
+
+// jobSample picks per-workflow job-detail fetches. A global sample spreads
+// observations so thinly that per-job percentiles (especially tails) become
+// noise. Targets come from the margin knob, calibrated with cmd/sample-eval
+// against full-scan ground truth. Sampling applies only when it saves at
+// least 25% of the fetches; otherwise the accuracy loss is not worth it.
+func jobSample(runs []githubapi.WorkflowRun, opts TrendOptions) (SamplingInfo, []int) {
+	margin := opts.MarginOfError
+	if margin <= 0 {
+		margin = 0.10
+	}
+
+	total := len(runs)
+	major, minor := JobSampleTargets(margin)
+	indices := SelectSampleIndices(runs, major, minor)
+	sampling := SamplingInfo{
+		MarginOfError: margin,
+		TotalRuns:     total,
+		WorkflowCount: countWorkflows(runs),
+		MajorTarget:   major,
+		MinorTarget:   minor,
+	}
+	if !opts.NoSample && len(indices) < total*3/4 {
+		sampling.Enabled = true
+		sampling.SampleSize = len(indices)
+	} else {
+		sampling.SampleSize = total
+		indices = make([]int, total)
+		for i := range indices {
+			indices[i] = i
+		}
+	}
+	sampling.Rationale = generateRationale(sampling)
+	return sampling, indices
+}
+
+// sortRunsOldestFirst puts early runs first so half-window trends treat the
+// first half as before. The GitHub API returns newest-first.
+func sortRunsOldestFirst(runs []RunData) {
+	sort.Slice(runs, func(i, j int) bool {
+		return runs[i].CreatedAt.Before(runs[j].CreatedAt)
+	})
+}
+
+// facetsFor slices runs when faceting was requested. Branch buckets need the
+// repo default branch; the lookup is one call and ignored on error.
+func facetsFor(ctx context.Context, client githubapi.GitHubProvider, owner, repo string, runs []RunData, dims []FacetDimension) *FacetComparison {
+	if len(dims) == 0 {
+		return nil
+	}
+	defaultBranch := ""
+	for _, d := range dims {
+		if d != FacetBranch {
+			continue
+		}
+		if meta, err := client.FetchRepository(ctx, fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo)); err == nil && meta != nil {
+			defaultBranch = meta.DefaultBranch
+		}
+		break
+	}
+	return computeFacets(runs, dims, defaultBranch)
 }
 
 // AnalyzeTrendsFromRuns runs the full trend analysis over locally stored
@@ -401,9 +430,7 @@ func AnalyzeTrendsFromRuns(owner, repo string, days int, runs []RunData) *TrendA
 			completed = append(completed, run)
 		}
 	}
-	sort.Slice(completed, func(i, j int) bool {
-		return completed[i].CreatedAt.Before(completed[j].CreatedAt)
-	})
+	sortRunsOldestFirst(completed)
 	withJobs := 0
 	for _, run := range completed {
 		if len(run.Jobs) > 0 {
