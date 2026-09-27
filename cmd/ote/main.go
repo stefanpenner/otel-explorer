@@ -488,243 +488,57 @@ func main() {
 		printErrorMsg(err.Error())
 		os.Exit(1)
 	}
-
 	if cfg.showVersion {
 		fmt.Println("ote", version)
 		os.Exit(0)
 	}
-
 	if cfg.showHelp {
 		printUsage()
 		os.Exit(0)
 	}
 
-	// Point Perfetto trace-opening at a self-hosted UI when configured.
 	perfetto.SetUIOrigin(resolvePerfettoUI(cfg.perfettoUI))
-
-	// Gate raw ANSI/OSC escape emission on the destination of human-readable
-	// output (stderr by default) being a terminal, honoring NO_COLOR.
 	utils.SetColorEnabled(colorsEnabledFor(os.Stderr))
 
-	// hadError tracks non-fatal failures (export/pipeline errors that are
-	// reported but don't stop the run) so the process can exit non-zero.
-	hadError := false
-
-	args := cfg.urls
-
-	// Handle --clear-cache flag
 	if cfg.clearCache {
-		cacheDir := githubapi.DefaultCacheDir()
-		if err := os.RemoveAll(cacheDir); err != nil {
-			printError(err, "failed to clear cache")
-			os.Exit(1)
-		}
-		fmt.Fprintf(os.Stderr, "Cache cleared: %s\n", cacheDir)
+		clearHTTPCache()
 		if !hasOtherWork(cfg) {
 			os.Exit(0)
 		}
 	}
 
-	// Handle sync mode: incrementally mirror run/job history into the
-	// local store so repeat analyses are nearly API-free.
-	if cfg.syncMode {
-		if cfg.trendsRepo == "" {
-			printErrorMsg("Sync requires a repository in format 'owner/repo'\n\n  Usage: ote sync owner/repo [--days=30]")
-			os.Exit(1)
-		}
-		owner, repo, err := parseTrendsRepo(cfg.trendsRepo)
-		if err != nil {
-			printErrorMsg(err.Error())
-			os.Exit(1)
-		}
-		token := resolveGitHubToken()
-		if token == "" {
-			printErrorMsg("GITHUB_TOKEN environment variable is required.\n  Tip: install the GitHub CLI (gh) and run `gh auth login` to authenticate automatically.")
-			os.Exit(1)
-		}
-		dbPath, err := store.DefaultPath()
-		if err != nil {
-			printError(err, "resolving store path")
-			os.Exit(1)
-		}
-		st, err := store.Open(dbPath)
-		if err != nil {
-			printError(err, "opening store")
-			os.Exit(1)
-		}
-		defer st.Close()
-
-		client := githubapi.NewClient(githubapi.NewContext(token))
-		stats, err := store.Sync(context.Background(), client, st, owner, repo, cfg.trendsDays,
-			func(msg string) { fmt.Fprintf(os.Stderr, "  %s\n", msg) })
-		if err != nil {
-			printError(err, "sync failed")
-			os.Exit(1)
-		}
-		fmt.Printf("Synced %s/%s: %d runs listed, job detail fetched for %d runs (%d already stored)\n",
-			owner, repo, stats.RunsFetched, stats.JobsFetched, stats.JobsSkipped)
-		fmt.Printf("Store: %s\n", dbPath)
-		return
+	switch {
+	case cfg.syncMode:
+		runSync(cfg)
+	case cfg.trendsMode:
+		runTrends(cfg)
+	case cfg.convertMode:
+		runConvert(cfg)
+	case cfg.diffMode:
+		runDiffCmd(cfg)
+	case cfg.listenAddr != "":
+		runReceiver(cfg)
+	default:
+		runAnalysis(cfg)
 	}
+}
 
-	// Handle trends mode
-	if cfg.trendsMode {
-		if cfg.trendsRepo == "" {
-			printErrorMsg("Trends mode requires a repository in format 'owner/repo'\n\n  Usage: ote trends owner/repo [--days=30] [--format=terminal|json|xlsx|doc|html]\n\n  Run 'ote --help' for more information.")
-			os.Exit(1)
-		}
+// signalContext cancels on SIGINT or SIGTERM.
+// Spinners also need SetInterruptHandler: raw mode turns ctrl+c into a key.
+func signalContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
 
-		// Parse owner/repo
-		owner, repo, err := parseTrendsRepo(cfg.trendsRepo)
-		if err != nil {
-			printErrorMsg(err.Error())
-			os.Exit(1)
-		}
-
-		token := resolveGitHubToken()
-		if token == "" {
-			printErrorMsg("GITHUB_TOKEN environment variable is required.\n  Tip: install the GitHub CLI (gh) and run `gh auth login` to authenticate automatically.")
-			os.Exit(1)
-		}
-
-		// Signal-aware context so ctrl+c (and SIGTERM) cancels in-flight
-		// fetches. The progress spinner runs the terminal in raw mode, so a
-		// keyboard ctrl+c arrives as a keystroke rather than a SIGINT — it is
-		// relayed to this context via progress.SetInterruptHandler below.
-		ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stopSignals()
-		client := githubapi.NewClient(githubapi.NewContext(token))
-
-		// Repos previously opted in via `ote sync` analyze from the local
-		// store: an incremental sync brings it current, then the analysis is
-		// exact (full job detail) with near-zero API cost. Branch/workflow
-		// filters and dump/no-sample knobs still use the API path.
-		facets, facetErr := analyzer.ParseFacets(cfg.trendsFacet)
-		if facetErr != nil {
-			printError(facetErr, "trend analysis failed")
-			os.Exit(1)
-		}
-
-		var analysis *analyzer.TrendAnalysis
-		// Faceting needs head_branch/event/labels on every fetched run, so it
-		// always uses the API path rather than the store.
-		if cfg.trendsBranch == "" && cfg.trendsWorkflow == "" && cfg.trendsDumpRuns == "" && !cfg.trendsNoSample && cfg.trendsFacet == "" {
-			analysis = trendsFromStore(ctx, client, owner, repo, cfg.trendsDays)
-		}
-
-		if analysis == nil {
-			// Setup progress spinner for trends mode
-			progress := tui.NewProgress(1, os.Stderr)
-			progress.Start()
-			progress.SetInterruptHandler(stopSignals)
-			wireAPIMeter(progress, client)
-			progress.StartURL(0, cfg.trendsRepo)
-
-			// Perform trend analysis
-			var err error
-			analysis, err = analyzer.AnalyzeTrends(ctx, client, owner, repo, cfg.trendsDays, cfg.trendsBranch, cfg.trendsWorkflow, analyzer.TrendOptions{
-				NoSample:      cfg.trendsNoSample,
-				MarginOfError: cfg.trendsMargin,
-				DumpRunsPath:  cfg.trendsDumpRuns,
-				Facets:        facets,
-			}, progress)
-
-			progress.Finish()
-			progress.Wait()
-
-			if err != nil {
-				if ctx.Err() != nil { // cancelled via ctrl+c / SIGTERM
-					fmt.Fprintln(os.Stderr, "Interrupted.")
-					os.Exit(130)
-				}
-				printError(err, "trend analysis failed")
-				os.Exit(1)
-			}
-		}
-
-		printAPIMeter(client)
-
-		// Output results go to stdout (the spinner above stays on stderr) so
-		// `ote trends owner/repo --format=json | jq .` and `> out.json` work.
-		utils.SetColorEnabled(colorsEnabledFor(os.Stdout))
-		if isExportFormat(cfg.trendsFormat) {
-			rep := export.BuildTrendReport(analysis, generatedAt())
-			if err := deliverReport(rep, cfg.trendsFormat, cfg.outFile, resolveSlackWebhook(cfg.slackWebhook)); err != nil {
-				printError(err, "output failed")
-				os.Exit(1)
-			}
-		} else if err := output.OutputTrends(os.Stdout, analysis, cfg.trendsFormat); err != nil {
-			printError(err, "output failed")
-			os.Exit(1)
-		}
-
-		return
+func clearHTTPCache() {
+	cacheDir := githubapi.DefaultCacheDir()
+	if err := os.RemoveAll(cacheDir); err != nil {
+		printError(err, "failed to clear cache")
+		os.Exit(1)
 	}
+	fmt.Fprintf(os.Stderr, "Cache cleared: %s\n", cacheDir)
+}
 
-	// Handle convert mode
-	if cfg.convertMode {
-		if cfg.showHelp {
-			printUsage()
-			os.Exit(0)
-		}
-
-		var allSpans []sdktrace.ReadOnlySpan
-
-		if len(cfg.convertFiles) == 0 {
-			// Read from stdin
-			spans, err := otlpfile.Parse(os.Stdin)
-			if err != nil {
-				printError(err, "parsing stdin")
-				os.Exit(1)
-			}
-			allSpans = append(allSpans, spans...)
-		} else {
-			for _, f := range cfg.convertFiles {
-				spans, err := otlpfile.ParseFile(f)
-				if err != nil {
-					printError(err, fmt.Sprintf("parsing %s", f))
-					os.Exit(1)
-				}
-				allSpans = append(allSpans, spans...)
-			}
-		}
-
-		if len(allSpans) == 0 {
-			fmt.Fprintln(os.Stderr, "No spans found in input.")
-			os.Exit(0)
-		}
-
-		exporter, err := otelexport.NewStdoutExporter(os.Stdout)
-		if err != nil {
-			printError(err, "creating stdout exporter")
-			os.Exit(1)
-		}
-
-		ctx := context.Background()
-		if err := exporter.Export(ctx, allSpans); err != nil {
-			printError(err, "exporting spans")
-			os.Exit(1)
-		}
-		if err := exporter.Finish(ctx); err != nil {
-			printError(err, "finishing export")
-			os.Exit(1)
-		}
-
-		return
-	}
-
-	hasTraceBackend := cfg.tempoURL != "" || cfg.jaegerURL != ""
-
-	// Signal-aware context so ctrl+c (and SIGTERM) cancels in-flight fetches
-	// on the URL-analysis, diff, and receiver paths — matching the trends
-	// path. The progress spinner runs the terminal in raw mode, so keyboard
-	// ctrl+c arrives as a keystroke, relayed via SetInterruptHandler below.
-	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stopSignals()
-
-	// Setup enricher chain (needed by both receiver and normal modes). The
-	// production chain is DefaultEnricher — the same one the tests exercise;
-	// user rule files slot in as extras ahead of the generic catch-all.
+func loadEnricher(cfg config) enrichment.Enricher {
 	var extras []enrichment.Enricher
 	if cfg.enrichmentFile != "" {
 		ruleEnricher, err := enrichment.LoadRules(cfg.enrichmentFile)
@@ -735,140 +549,328 @@ func main() {
 		extras = append(extras, ruleEnricher)
 		fmt.Fprintf(os.Stderr, "Loaded %d enrichment rules from %s\n", len(ruleEnricher.Rules), cfg.enrichmentFile)
 	}
-	var enricher enrichment.Enricher = enrichment.DefaultEnricher(extras...)
+	return enrichment.DefaultEnricher(extras...)
+}
 
-	// Trace diff mode: semantically compare two traces (e.g. two back-to-back
-	// commits' CI runs) the way `git diff` compares two trees.
-	if cfg.diffMode {
-		if err := runDiff(ctx, cfg, enricher); err != nil {
+func mustSpanFilter(cfg config) *filter.Filter {
+	if cfg.errorsOnly {
+		return filter.ErrorsOnly()
+	}
+	if cfg.filterExpr == "" {
+		return nil
+	}
+	spanFilter, err := filter.Parse(cfg.filterExpr)
+	if err != nil {
+		printError(err, "invalid filter expression")
+		os.Exit(1)
+	}
+	return spanFilter
+}
+
+func runSync(cfg config) {
+	if cfg.trendsRepo == "" {
+		printErrorMsg("Sync requires a repository in format 'owner/repo'\n\n  Usage: ote sync owner/repo [--days=30]")
+		os.Exit(1)
+	}
+	owner, repo, err := parseTrendsRepo(cfg.trendsRepo)
+	if err != nil {
+		printErrorMsg(err.Error())
+		os.Exit(1)
+	}
+	token := resolveGitHubToken()
+	if token == "" {
+		printErrorMsg("GITHUB_TOKEN environment variable is required.\n  Tip: install the GitHub CLI (gh) and run `gh auth login` to authenticate automatically.")
+		os.Exit(1)
+	}
+	dbPath, err := store.DefaultPath()
+	if err != nil {
+		printError(err, "resolving store path")
+		os.Exit(1)
+	}
+	st, err := store.Open(dbPath)
+	if err != nil {
+		printError(err, "opening store")
+		os.Exit(1)
+	}
+	defer st.Close()
+
+	client := githubapi.NewClient(githubapi.NewContext(token))
+	stats, err := store.Sync(context.Background(), client, st, owner, repo, cfg.trendsDays,
+		func(msg string) { fmt.Fprintf(os.Stderr, "  %s\n", msg) })
+	if err != nil {
+		printError(err, "sync failed")
+		os.Exit(1)
+	}
+	fmt.Printf("Synced %s/%s: %d runs listed, job detail fetched for %d runs (%d already stored)\n",
+		owner, repo, stats.RunsFetched, stats.JobsFetched, stats.JobsSkipped)
+	fmt.Printf("Store: %s\n", dbPath)
+}
+
+func runTrends(cfg config) {
+	if cfg.trendsRepo == "" {
+		printErrorMsg("Trends mode requires a repository in format 'owner/repo'\n\n  Usage: ote trends owner/repo [--days=30] [--format=terminal|json|xlsx|doc|html]\n\n  Run 'ote --help' for more information.")
+		os.Exit(1)
+	}
+
+	owner, repo, err := parseTrendsRepo(cfg.trendsRepo)
+	if err != nil {
+		printErrorMsg(err.Error())
+		os.Exit(1)
+	}
+
+	token := resolveGitHubToken()
+	if token == "" {
+		printErrorMsg("GITHUB_TOKEN environment variable is required.\n  Tip: install the GitHub CLI (gh) and run `gh auth login` to authenticate automatically.")
+		os.Exit(1)
+	}
+
+	ctx, stopSignals := signalContext()
+	defer stopSignals()
+	client := githubapi.NewClient(githubapi.NewContext(token))
+
+	// Repos previously opted in via `ote sync` analyze from the local
+	// store: an incremental sync brings it current, then the analysis is
+	// exact (full job detail) with near-zero API cost. Branch/workflow
+	// filters and dump/no-sample knobs still use the API path.
+	facets, facetErr := analyzer.ParseFacets(cfg.trendsFacet)
+	if facetErr != nil {
+		printError(facetErr, "trend analysis failed")
+		os.Exit(1)
+	}
+
+	var analysis *analyzer.TrendAnalysis
+	// Faceting needs head_branch/event/labels on every fetched run, so it
+	// always uses the API path rather than the store.
+	if cfg.trendsBranch == "" && cfg.trendsWorkflow == "" && cfg.trendsDumpRuns == "" && !cfg.trendsNoSample && cfg.trendsFacet == "" {
+		analysis = trendsFromStore(ctx, client, owner, repo, cfg.trendsDays)
+	}
+
+	if analysis == nil {
+		progress := tui.NewProgress(1, os.Stderr)
+		progress.Start()
+		progress.SetInterruptHandler(stopSignals)
+		wireAPIMeter(progress, client)
+		progress.StartURL(0, cfg.trendsRepo)
+
+		var err error
+		analysis, err = analyzer.AnalyzeTrends(ctx, client, owner, repo, cfg.trendsDays, cfg.trendsBranch, cfg.trendsWorkflow, analyzer.TrendOptions{
+			NoSample:      cfg.trendsNoSample,
+			MarginOfError: cfg.trendsMargin,
+			DumpRunsPath:  cfg.trendsDumpRuns,
+			Facets:        facets,
+		}, progress)
+
+		progress.Finish()
+		progress.Wait()
+
+		if err != nil {
 			if ctx.Err() != nil { // cancelled via ctrl+c / SIGTERM
 				fmt.Fprintln(os.Stderr, "Interrupted.")
 				os.Exit(130)
 			}
-			printError(err, "diff failed")
+			printError(err, "trend analysis failed")
 			os.Exit(1)
 		}
-		return
 	}
 
-	// Setup span filter (needed by both receiver and normal modes)
-	var spanFilter *filter.Filter
-	if cfg.errorsOnly {
-		spanFilter = filter.ErrorsOnly()
-	} else if cfg.filterExpr != "" {
-		var err error
-		spanFilter, err = filter.Parse(cfg.filterExpr)
+	printAPIMeter(client)
+
+	// Output results go to stdout (the spinner above stays on stderr) so
+	// `ote trends owner/repo --format=json | jq .` and `> out.json` work.
+	utils.SetColorEnabled(colorsEnabledFor(os.Stdout))
+	if isExportFormat(cfg.trendsFormat) {
+		rep := export.BuildTrendReport(analysis, generatedAt())
+		if err := deliverReport(rep, cfg.trendsFormat, cfg.outFile, resolveSlackWebhook(cfg.slackWebhook)); err != nil {
+			printError(err, "output failed")
+			os.Exit(1)
+		}
+	} else if err := output.OutputTrends(os.Stdout, analysis, cfg.trendsFormat); err != nil {
+		printError(err, "output failed")
+		os.Exit(1)
+	}
+}
+
+func runConvert(cfg config) {
+	if cfg.showHelp {
+		printUsage()
+		os.Exit(0)
+	}
+
+	var allSpans []sdktrace.ReadOnlySpan
+
+	if len(cfg.convertFiles) == 0 {
+		spans, err := otlpfile.Parse(os.Stdin)
 		if err != nil {
-			printError(err, "invalid filter expression")
+			printError(err, "parsing stdin")
 			os.Exit(1)
 		}
-	}
-
-	// Handle OTLP receiver mode
-	if cfg.listenAddr != "" {
-		displayAddr := cfg.listenAddr
-		if strings.HasPrefix(displayAddr, ":") {
-			displayAddr = "localhost" + displayAddr
-		}
-		fmt.Fprintf(os.Stderr, "Starting OTLP/HTTP receiver on %s...\n", cfg.listenAddr)
-		fmt.Fprintf(os.Stderr, "  POST traces to http://%s/v1/traces\n", displayAddr)
-		fmt.Fprintf(os.Stderr, "  Set OTEL_EXPORTER_OTLP_ENDPOINT=http://%s in your app\n", displayAddr)
-		fmt.Fprintf(os.Stderr, "  Press Ctrl+C to stop and analyze collected spans\n")
-
-		recv := receiver.New(cfg.listenAddr)
-		ctx, cancel := context.WithCancel(ctx)
-		defer cancel()
-
-		errCh := make(chan error, 1)
-		go func() {
-			errCh <- recv.Start(ctx)
-		}()
-
-		// Wait for user input, a signal, or a receiver failure to stop.
-		fmt.Fprintf(os.Stderr, "  Waiting for traces... (press Enter or Ctrl+C to stop)\n")
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-		stdinCh := make(chan struct{})
-		go func() {
-			buf := make([]byte, 1)
-			for {
-				n, err := os.Stdin.Read(buf)
-				if n > 0 {
-					close(stdinCh)
-					return
-				}
-				if err != nil {
-					// Stdin is closed or redirected (e.g. </dev/null,
-					// nohup, CI): an immediate EOF must not shut the
-					// receiver down — rely on SIGINT/SIGTERM instead.
-					return
-				}
-			}
-		}()
-		var recvErr error
-		select {
-		case <-stdinCh:
-		case <-sigCh:
-		case recvErr = <-errCh:
-			errCh = nil // already drained; don't read it again below
-		}
-		signal.Stop(sigCh)
-
-		cancel()
-		if errCh != nil {
-			recvErr = <-errCh
-		}
-		// A receiver that failed to start (e.g. port already bound) must exit
-		// non-zero instead of reporting "Received 0 spans".
-		if recvErr != nil {
-			fmt.Fprintf(os.Stderr, "Receiver error: %v\n", recvErr)
-			os.Exit(1)
-		}
-
-		receivedSpans := recv.Spans()
-		fmt.Fprintf(os.Stderr, "Received %d spans\n", len(receivedSpans))
-
-		if spanFilter != nil {
-			receivedSpans = spanFilter.Apply(receivedSpans)
-			fmt.Fprintf(os.Stderr, "After filtering: %d spans\n", len(receivedSpans))
-		}
-
-		if cfg.lintMode {
-			lintData := buildLintData(receivedSpans)
-			results := enrichment.LintSpans(lintData)
-			fmt.Fprint(os.Stderr, enrichment.FormatLintResults(results))
-		}
-
-		spans := receivedSpans
-		globalEarliest, globalLatest := computeTimeBounds(spans)
-
-		if cfg.tuiMode {
-			globalStartTime := time.UnixMilli(globalEarliest)
-			globalEndTime := time.UnixMilli(globalLatest)
-			if err := tuiresults.Run(spans, globalStartTime, globalEndTime, []string{"receiver"}, nil, nil, enricher); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError: TUI failed: %v%s\n", colorRed, err, colorReset)
+		allSpans = append(allSpans, spans...)
+	} else {
+		for _, f := range cfg.convertFiles {
+			spans, err := otlpfile.ParseFile(f)
+			if err != nil {
+				printError(err, fmt.Sprintf("parsing %s", f))
 				os.Exit(1)
 			}
-		} else if len(spans) > 0 {
-			// Render the same styled report as trace-file input — the
-			// banner promises "stop and analyze collected spans".
-			combined := analyzer.CombinedMetricsFromSpans(spans, enricher)
-			colorsEnabled := colorsEnabledFor(os.Stderr)
-			utils.SetColorEnabled(colorsEnabled)
-			var styledW io.Writer = os.Stderr
-			if !colorsEnabled {
-				styledW = utils.NewStripANSIWriter(os.Stderr)
+			allSpans = append(allSpans, spans...)
+		}
+	}
+
+	if len(allSpans) == 0 {
+		fmt.Fprintln(os.Stderr, "No spans found in input.")
+		os.Exit(0)
+	}
+
+	exporter, err := otelexport.NewStdoutExporter(os.Stdout)
+	if err != nil {
+		printError(err, "creating stdout exporter")
+		os.Exit(1)
+	}
+
+	ctx := context.Background()
+	if err := exporter.Export(ctx, allSpans); err != nil {
+		printError(err, "exporting spans")
+		os.Exit(1)
+	}
+	if err := exporter.Finish(ctx); err != nil {
+		printError(err, "finishing export")
+		os.Exit(1)
+	}
+}
+
+func runDiffCmd(cfg config) {
+	ctx, stopSignals := signalContext()
+	defer stopSignals()
+	enricher := loadEnricher(cfg)
+	if err := runDiff(ctx, cfg, enricher); err != nil {
+		if ctx.Err() != nil { // cancelled via ctrl+c / SIGTERM
+			fmt.Fprintln(os.Stderr, "Interrupted.")
+			os.Exit(130)
+		}
+		printError(err, "diff failed")
+		os.Exit(1)
+	}
+}
+
+func runReceiver(cfg config) {
+	ctx, stopSignals := signalContext()
+	defer stopSignals()
+	enricher := loadEnricher(cfg)
+	spanFilter := mustSpanFilter(cfg)
+	hadError := false
+
+	displayAddr := cfg.listenAddr
+	if strings.HasPrefix(displayAddr, ":") {
+		displayAddr = "localhost" + displayAddr
+	}
+	fmt.Fprintf(os.Stderr, "Starting OTLP/HTTP receiver on %s...\n", cfg.listenAddr)
+	fmt.Fprintf(os.Stderr, "  POST traces to http://%s/v1/traces\n", displayAddr)
+	fmt.Fprintf(os.Stderr, "  Set OTEL_EXPORTER_OTLP_ENDPOINT=http://%s in your app\n", displayAddr)
+	fmt.Fprintf(os.Stderr, "  Press Ctrl+C to stop and analyze collected spans\n")
+
+	recv := receiver.New(cfg.listenAddr)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- recv.Start(ctx)
+	}()
+
+	// Wait for user input, a signal, or a receiver failure to stop.
+	fmt.Fprintf(os.Stderr, "  Waiting for traces... (press Enter or Ctrl+C to stop)\n")
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	stdinCh := make(chan struct{})
+	go func() {
+		buf := make([]byte, 1)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if n > 0 {
+				close(stdinCh)
+				return
 			}
-			if err := output.OutputStyledResults(styledW, nil, combined, nil, globalEarliest, globalLatest, spans, enricher); err != nil {
-				printError(err, "styled output failed")
-				hadError = true
+			if err != nil {
+				// Stdin is closed or redirected (e.g. </dev/null,
+				// nohup, CI): an immediate EOF must not shut the
+				// receiver down — rely on SIGINT/SIGTERM instead.
+				return
 			}
 		}
-		if hadError {
+	}()
+	var recvErr error
+	select {
+	case <-stdinCh:
+	case <-sigCh:
+	case recvErr = <-errCh:
+		errCh = nil // already drained; don't read it again below
+	}
+	signal.Stop(sigCh)
+
+	cancel()
+	if errCh != nil {
+		recvErr = <-errCh
+	}
+	// A receiver that failed to start (e.g. port already bound) must exit
+	// non-zero instead of reporting "Received 0 spans".
+	if recvErr != nil {
+		fmt.Fprintf(os.Stderr, "Receiver error: %v\n", recvErr)
+		os.Exit(1)
+	}
+
+	receivedSpans := recv.Spans()
+	fmt.Fprintf(os.Stderr, "Received %d spans\n", len(receivedSpans))
+
+	if spanFilter != nil {
+		receivedSpans = spanFilter.Apply(receivedSpans)
+		fmt.Fprintf(os.Stderr, "After filtering: %d spans\n", len(receivedSpans))
+	}
+
+	if cfg.lintMode {
+		lintData := buildLintData(receivedSpans)
+		results := enrichment.LintSpans(lintData)
+		fmt.Fprint(os.Stderr, enrichment.FormatLintResults(results))
+	}
+
+	spans := receivedSpans
+	globalEarliest, globalLatest := computeTimeBounds(spans)
+
+	if cfg.tuiMode {
+		globalStartTime := time.UnixMilli(globalEarliest)
+		globalEndTime := time.UnixMilli(globalLatest)
+		if err := tuiresults.Run(spans, globalStartTime, globalEndTime, []string{"receiver"}, nil, nil, enricher); err != nil {
+			fmt.Fprintf(os.Stderr, "%sError: TUI failed: %v%s\n", colorRed, err, colorReset)
 			os.Exit(1)
 		}
-		return
+	} else if len(spans) > 0 {
+		// Render the same styled report as trace-file input — the
+		// banner promises "stop and analyze collected spans".
+		combined := analyzer.CombinedMetricsFromSpans(spans, enricher)
+		colorsEnabled := colorsEnabledFor(os.Stderr)
+		utils.SetColorEnabled(colorsEnabled)
+		var styledW io.Writer = os.Stderr
+		if !colorsEnabled {
+			styledW = utils.NewStripANSIWriter(os.Stderr)
+		}
+		if err := output.OutputStyledResults(styledW, nil, combined, nil, globalEarliest, globalLatest, spans, enricher); err != nil {
+			printError(err, "styled output failed")
+			hadError = true
+		}
 	}
+	if hadError {
+		os.Exit(1)
+	}
+}
+
+func runAnalysis(cfg config) {
+	ctx, stopSignals := signalContext()
+	defer stopSignals()
+	enricher := loadEnricher(cfg)
+	spanFilter := mustSpanFilter(cfg)
+
+	hadError := false
+	args := cfg.urls
+	hasTraceBackend := cfg.tempoURL != "" || cfg.jaegerURL != ""
 
 	// If no URL args, no trace files, no trace backend, and stdin is piped, read webhook from stdin
 	if len(args) == 0 && len(cfg.traceFiles) == 0 && !hasTraceBackend && !isStdinTerminal() {
@@ -906,7 +908,6 @@ func main() {
 		defer os.Remove(perfettoFile)
 	}
 
-	// Setup GitHub Token (only required when GHA URLs are provided)
 	var token string
 	if len(args) > 0 {
 		// A positional arg shaped like a GitHub token (legacy usage:
@@ -947,7 +948,6 @@ func main() {
 		}
 	}
 
-	// 3. Setup Exporters
 	var exporters []core.Exporter
 
 	if cfg.otelStdout {
@@ -979,94 +979,26 @@ func main() {
 
 	pipeline := core.NewPipeline(exporters...)
 
-	// 4. Load trace files if provided
-	// Each trace file gets its own url_index (offset after GitHub URLs)
-	// so the TUI can group and label them separately.
-	var traceSpans []sdktrace.ReadOnlySpan
-	for i, tf := range cfg.traceFiles {
-		fileSpans, err := otlpfile.ParseFile(tf)
-		if err != nil {
-			printError(err, fmt.Sprintf("failed to load trace file %s", tf))
-			os.Exit(1)
-		}
-		urlIndex := len(args) + i
-		taggedSpans := tagSpansWithIndex(fileSpans, urlIndex)
-		traceSpans = append(traceSpans, taggedSpans...)
-		fmt.Fprintf(os.Stderr, "Loaded %d spans from %s\n", len(fileSpans), tf)
+	traceSpans, results, globalEarliest, globalLatest, ghaSpans, client, err := fill(ctx, cfg, args, token, fillOpts{
+		backends: true,
+		announce: true,
+		spinner:  true,
+		stop:     stopSignals,
+	})
+	if err != nil {
+		exitFillErr(ctx, err)
 	}
 
-	// 4. Fetch traces from backends (Tempo/Jaeger)
-	if hasTraceBackend && len(cfg.traceIDs) > 0 {
-		var backendURL string
-		var backendName string
-		if cfg.tempoURL != "" {
-			backendURL = cfg.tempoURL
-			backendName = "Tempo"
-		} else {
-			backendURL = cfg.jaegerURL
-			backendName = "Jaeger"
-		}
-		client := traceapi.New(backendURL)
-		for _, traceID := range cfg.traceIDs {
-			fmt.Fprintf(os.Stderr, "Fetching trace %s from %s (%s)...\n", traceID, backendName, backendURL)
-			fetchedSpans, err := client.FetchTrace(traceID)
-			if err != nil {
-				printError(err, fmt.Sprintf("failed to fetch trace %s from %s", traceID, backendName))
-				os.Exit(1)
-			}
-			traceSpans = append(traceSpans, fetchedSpans...)
-			fmt.Fprintf(os.Stderr, "Fetched %d spans for trace %s\n", len(fetchedSpans), traceID)
-		}
-	}
-
-	// 5. Run GHA Ingestor (only when URLs are provided)
-	var results []analyzer.URLResult
-	var globalEarliest, globalLatest int64
-	var ghaSpans []sdktrace.ReadOnlySpan
-	var ghClient githubapi.GitHubProvider
-	if len(args) > 0 {
-		client := githubapi.NewClient(githubapi.NewContext(token))
-		ghClient = client
-		progress := tui.NewProgress(len(args), os.Stderr)
-		progress.Start()
-		progress.SetInterruptHandler(stopSignals)
-		wireAPIMeter(progress, client)
-
-		ingestor := polling.NewPollingIngestor(client, args, progress, analyzer.AnalyzeOptions{
-			Window:      cfg.window,
-			NoArtifacts: cfg.noArtifacts,
-			FetchLogs:   cfg.fetchLogs,
-		})
-		var err error
-		results, globalEarliest, globalLatest, ghaSpans, err = ingestor.Ingest(ctx)
-
-		progress.Finish()
-		progress.Wait()
-		printAPIMeter(client)
-
-		if err != nil {
-			if ctx.Err() != nil { // cancelled via ctrl+c / SIGTERM
-				fmt.Fprintln(os.Stderr, "Interrupted.")
-				os.Exit(130)
-			}
-			printError(err, "ingestion failed")
-			os.Exit(1)
-		}
-	}
-
-	// 6. Combine all spans, collapsing API/runner duplicates (runner wins)
+	// GitHub first, then trace files. Dedupe drops the API twin; survivors keep arrival order.
 	spans := analyzer.DedupeRunnerSpans(append(ghaSpans, traceSpans...))
-	// Extend global time bounds (from Ingest) with trace spans
 	globalEarliest, globalLatest = extendTimeBounds(globalEarliest, globalLatest, traceSpans)
 
-	// Apply span filter
 	if spanFilter != nil {
 		before := len(spans)
 		spans = spanFilter.Apply(spans)
 		fmt.Fprintf(os.Stderr, "Filter: %d → %d spans\n", before, len(spans))
 	}
 
-	// Lint mode: analyze spans for semconv compliance
 	if cfg.lintMode {
 		lintData := buildLintData(spans)
 		lintResults := enrichment.LintSpans(lintData)
@@ -1078,9 +1010,7 @@ func main() {
 		hadError = true
 	}
 
-	// If TUI mode is enabled, launch interactive TUI
 	if cfg.tuiMode {
-		// Handle perfetto export before TUI starts (so it opens immediately)
 		if perfettoFile != "" {
 			combined := analyzer.CalculateCombinedMetrics(results, sumRuns(results), collectStarts(results), collectEnds(results))
 			if combined.TotalRuns == 0 && len(spans) > 0 {
@@ -1099,54 +1029,20 @@ func main() {
 		globalStartTime := time.UnixMilli(globalEarliest)
 		globalEndTime := time.UnixMilli(globalLatest)
 
-		// Create reload function that clears cache and refetches data
 		reloadFunc := func(reporter tuiresults.LoadingReporter) ([]sdktrace.ReadOnlySpan, time.Time, time.Time, error) {
-			var allSpans []sdktrace.ReadOnlySpan
-		var reloadEarliest, reloadLatest int64
-
-		// Re-read trace files
-		if len(cfg.traceFiles) > 0 {
-			if reporter != nil {
-				reporter.SetPhase("Loading trace files")
-			}
-			for i, tf := range cfg.traceFiles {
-				fileSpans, err := otlpfile.ParseFile(tf)
-				if err != nil {
-					return nil, time.Time{}, time.Time{}, fmt.Errorf("failed to load trace file %s: %w", tf, err)
+			reloaded, _, ghaEarliest, ghaLatest, ghSpans, _, err := fill(ctx, cfg, args, token, fillOpts{
+				clearCache: true,
+				loading:    reporter,
+			})
+			if err != nil {
+				if ing, ok := err.(ingestError); ok {
+					err = ing.err
 				}
-				urlIdx := len(args) + i
-				allSpans = append(allSpans, tagSpansWithIndex(fileSpans, urlIdx)...)
+				return nil, time.Time{}, time.Time{}, err
 			}
-			reloadEarliest, reloadLatest = computeTimeBounds(allSpans)
-		}
 
-			// Re-fetch from GitHub if URLs were provided
+			reloadEarliest, reloadLatest := computeTimeBounds(reloaded)
 			if len(args) > 0 {
-				if reporter != nil {
-					reporter.SetPhase("Clearing cache")
-				}
-
-				if err := os.RemoveAll(githubapi.DefaultCacheDir()); err != nil {
-					return nil, time.Time{}, time.Time{}, fmt.Errorf("failed to clear cache: %w", err)
-				}
-
-				var progressReporter analyzer.ProgressReporter
-				if reporter != nil {
-					progressReporter = &reloadProgressAdapter{reporter: reporter}
-				}
-
-				reloadClient := githubapi.NewClient(githubapi.NewContext(token))
-				reloadIngestor := polling.NewPollingIngestor(reloadClient, args, progressReporter, analyzer.AnalyzeOptions{
-					Window:      cfg.window,
-					NoArtifacts: cfg.noArtifacts,
-					FetchLogs:   cfg.fetchLogs,
-				})
-				_, ghaEarliest, ghaLatest, reloadGHASpans, err := reloadIngestor.Ingest(ctx)
-				if err != nil {
-					return nil, time.Time{}, time.Time{}, err
-				}
-
-				allSpans = append(allSpans, reloadGHASpans...)
 				if reloadEarliest == 0 || ghaEarliest < reloadEarliest {
 					reloadEarliest = ghaEarliest
 				}
@@ -1154,15 +1050,13 @@ func main() {
 					reloadLatest = ghaLatest
 				}
 			}
-
 			// Collapse API/runner duplicates, same as the initial combine — otherwise
 			// a reload shows the API job and the runner job as two separate sections.
-			return analyzer.DedupeRunnerSpans(allSpans), time.UnixMilli(reloadEarliest), time.UnixMilli(reloadLatest), nil
+			// Files then GitHub: that is the reload arrival order.
+			return analyzer.DedupeRunnerSpans(append(reloaded, ghSpans...)), time.UnixMilli(reloadEarliest), time.UnixMilli(reloadLatest), nil
 		}
 
-		// Create function to open in Perfetto from TUI
 		openPerfettoFunc := func(visibleSpans []sdktrace.ReadOnlySpan, activityHidden bool) {
-			// Create temp file for perfetto trace
 			tmpFile, err := os.CreateTemp("", "gha-trace-*.pftrace")
 			if err != nil {
 				return
@@ -1193,7 +1087,6 @@ func main() {
 			}
 		}
 
-		// Build input sources: GitHub URLs + trace file basenames
 		inputSources := make([]string, 0, len(args)+len(cfg.traceFiles))
 		inputSources = append(inputSources, args...)
 		for _, tf := range cfg.traceFiles {
@@ -1218,7 +1111,6 @@ func main() {
 		return
 	}
 
-	// Non-TUI output
 	combined := analyzer.CalculateCombinedMetrics(results, sumRuns(results), collectStarts(results), collectEnds(results))
 	if combined.TotalRuns == 0 && len(spans) > 0 {
 		combined = analyzer.CombinedMetricsFromSpans(spans, enricher)
@@ -1277,7 +1169,6 @@ func main() {
 			hadError = true
 		}
 		renderRunVsTypicalFromStore(styledW, results)
-		// Handle perfetto export for styled output
 		if perfettoFile != "" {
 			if err := perfetto.WriteTrace(os.Stderr, results, combined, allTraceEvents, globalEarliest, perfettoFile, cfg.openInPerfetto, spans); err != nil {
 				printError(err, "writing perfetto trace failed")
@@ -1290,8 +1181,8 @@ func main() {
 	// typical-run baseline builds passively from ordinary usage. Runs after
 	// rendering so the run-vs-typical comparison above reads a baseline that
 	// excludes the current run.
-	if ghClient != nil {
-		persistRunsToStore(ctx, ghClient, results)
+	if client != nil {
+		persistRunsToStore(ctx, client, results)
 	}
 
 	if err := pipeline.Finish(ctx); err != nil {
@@ -1307,6 +1198,126 @@ func main() {
 	if hadError {
 		os.Exit(1)
 	}
+}
+
+// fillOpts is how the first load and a TUI reload differ.
+// The zero value is a quiet refill: no backends, no spinner, no cache clear.
+type fillOpts struct {
+	backends   bool
+	announce   bool
+	clearCache bool
+	spinner    bool
+	stop       func()
+	loading    tuiresults.LoadingReporter
+}
+
+// ingestError is a GitHub ingest failure whose text stays raw.
+// The first load adds "ingestion failed"; a TUI reload returns it as-is.
+type ingestError struct{ err error }
+
+func (e ingestError) Error() string { return e.err.Error() }
+func (e ingestError) Unwrap() error { return e.err }
+
+func exitFillErr(ctx context.Context, err error) {
+	if ing, ok := err.(ingestError); ok {
+		if ctx.Err() != nil { // cancelled via ctrl+c / SIGTERM
+			fmt.Fprintln(os.Stderr, "Interrupted.")
+			os.Exit(130)
+		}
+		printError(ing.err, "ingestion failed")
+		os.Exit(1)
+	}
+	printErrorMsg(err.Error())
+	os.Exit(1)
+}
+
+// fill loads trace files and GitHub runs.
+// Spans stay split: the first load dedupes GitHub then files, a reload the reverse,
+// and each merges time bounds its own way. opts.backends fetches --trace-id.
+// opts.spinner is the CLI meter around GitHub only. opts.clearCache drops the
+// HTTP cache before GitHub (TUI reload).
+func fill(ctx context.Context, cfg config, urls []string, token string, opts fillOpts) (
+	traceSpans []sdktrace.ReadOnlySpan,
+	results []analyzer.URLResult,
+	earliest, latest int64,
+	ghSpans []sdktrace.ReadOnlySpan,
+	client *githubapi.Client,
+	err error,
+) {
+	if opts.loading != nil && len(cfg.traceFiles) > 0 {
+		opts.loading.SetPhase("Loading trace files")
+	}
+	for i, tf := range cfg.traceFiles {
+		parsed, perr := otlpfile.ParseFile(tf)
+		if perr != nil {
+			return nil, nil, 0, 0, nil, nil, fmt.Errorf("failed to load trace file %s: %w", tf, perr)
+		}
+		traceSpans = append(traceSpans, tagSpansWithIndex(parsed, len(urls)+i)...)
+		if opts.announce {
+			fmt.Fprintf(os.Stderr, "Loaded %d spans from %s\n", len(parsed), tf)
+		}
+	}
+
+	if opts.backends && (cfg.tempoURL != "" || cfg.jaegerURL != "") && len(cfg.traceIDs) > 0 {
+		backendURL, backendName := cfg.jaegerURL, "Jaeger"
+		if cfg.tempoURL != "" {
+			backendURL, backendName = cfg.tempoURL, "Tempo"
+		}
+		api := traceapi.New(backendURL)
+		for _, traceID := range cfg.traceIDs {
+			fmt.Fprintf(os.Stderr, "Fetching trace %s from %s (%s)...\n", traceID, backendName, backendURL)
+			fetched, ferr := api.FetchTrace(traceID)
+			if ferr != nil {
+				return nil, nil, 0, 0, nil, nil, fmt.Errorf("failed to fetch trace %s from %s: %v", traceID, backendName, ferr)
+			}
+			traceSpans = append(traceSpans, fetched...)
+			fmt.Fprintf(os.Stderr, "Fetched %d spans for trace %s\n", len(fetched), traceID)
+		}
+	}
+
+	if len(urls) == 0 {
+		return traceSpans, nil, 0, 0, nil, nil, nil
+	}
+
+	if opts.clearCache {
+		if opts.loading != nil {
+			opts.loading.SetPhase("Clearing cache")
+		}
+		if rerr := os.RemoveAll(githubapi.DefaultCacheDir()); rerr != nil {
+			return nil, nil, 0, 0, nil, nil, fmt.Errorf("failed to clear cache: %w", rerr)
+		}
+	}
+
+	client = githubapi.NewClient(githubapi.NewContext(token))
+	var reporter analyzer.ProgressReporter
+	if opts.spinner {
+		progress := tui.NewProgress(len(urls), os.Stderr)
+		progress.Start()
+		if opts.stop != nil {
+			progress.SetInterruptHandler(opts.stop)
+		}
+		wireAPIMeter(progress, client)
+		reporter = progress
+		defer func() {
+			progress.Finish()
+			progress.Wait()
+			printAPIMeter(client)
+		}()
+	} else if opts.loading != nil {
+		reporter = &reloadProgressAdapter{reporter: opts.loading}
+	}
+
+	ingestor := polling.NewPollingIngestor(client, urls, reporter, analyzer.AnalyzeOptions{
+		Window:      cfg.window,
+		NoArtifacts: cfg.noArtifacts,
+		FetchLogs:   cfg.fetchLogs,
+	})
+	var ierr error
+	results, earliest, latest, ghSpans, ierr = ingestor.Ingest(ctx)
+	if ierr != nil {
+		return traceSpans, results, earliest, latest, ghSpans, client, ingestError{err: ierr}
+	}
+	return traceSpans, results, earliest, latest, ghSpans, client, nil
 }
 
 func sumRuns(results []analyzer.URLResult) int {
