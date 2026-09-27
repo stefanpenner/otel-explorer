@@ -5,9 +5,11 @@ go_library(
     srcs = [
         "cache.go",
         "client.go",
+        "fetch.go",
         "ids.go",
         "logs.go",
         "provider.go",
+        "types.go",
     ],
     importpath = "github.com/stefanpenner/otel-explorer/pkg/githubapi",
     visibility = ["//visibility:public"],
