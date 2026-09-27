@@ -14,388 +14,401 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace"
 )
 
-// OutputStyledResults renders a lipgloss-styled terminal report.
-// It writes to w (typically os.Stderr) and mirrors the sections of the TUI
-// header: summary box, pending jobs, run summary, slowest jobs, and timeline.
+// OutputStyledResults renders a lipgloss-styled terminal report to w
+// (typically os.Stderr): header, pending jobs, run summary, commit runs,
+// slowest jobs, resources, LLM usage, then the timeline.
 func OutputStyledResults(w io.Writer, urlResults []analyzer.URLResult, combined analyzer.CombinedMetrics, traceEvents []analyzer.TraceEvent, globalEarliestTime, globalLatestTime int64, spans []trace.ReadOnlySpan, enricher enrichment.Enricher) error {
-	width := 90
-	contentWidth := width - 4 // minus "│ " and " │"
+	writeStyledHeader(w, urlResults, combined, spans, enricher)
+	writePendingJobs(w, urlResults)
+	writeRunSummary(w, urlResults)
+	writeCommitRuns(w, urlResults)
+	writeSlowestJobs(w, urlResults, combined)
+	renderResourceSection(w, spans)
+	renderGenAIUsageSection(w, spans)
+	styledSection(w, "Pipeline Timelines")
+	RenderOTelTimeline(w, spans, time.UnixMilli(globalEarliestTime), time.UnixMilli(globalLatestTime), enricher)
+	return nil
+}
 
+func writeStyledHeader(w io.Writer, urlResults []analyzer.URLResult, combined analyzer.CombinedMetrics, spans []trace.ReadOnlySpan, enricher enrichment.Enricher) {
+	const width = 90
+	contentWidth := width - 4 // "│ " + content + " │"
+	top := borderStyle.Render("╭" + strings.Repeat("─", width-2) + "╮")
+	bot := borderStyle.Render("╰" + strings.Repeat("─", width-2) + "╯")
+
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, top)
+	fmt.Fprintln(w, boxLine(contentWidth, titleStyle.Render("Trace Analyzer")))
+	fmt.Fprintln(w, ratesLine(contentWidth, combined))
+	fmt.Fprintln(w, wallLine(contentWidth, urlResults, combined, spans, enricher))
+	writeQueueBillableRunners(w, contentWidth, urlResults)
+	if line := changedFilesLine(spans); line != "" {
+		fmt.Fprintln(w, boxLine(contentWidth, line))
+	}
+	if line := workflowFilesLine(spans); line != "" {
+		fmt.Fprintln(w, boxLine(contentWidth, line))
+	}
+	for _, result := range urlResults {
+		fmt.Fprintln(w, boxLine(contentWidth, fittedURL(result.DisplayURL, contentWidth)))
+	}
+	fmt.Fprintln(w, bot)
+}
+
+func boxLine(contentWidth int, content string) string {
+	pad := contentWidth - lipgloss.Width(content)
+	if pad < 0 {
+		pad = 0
+	}
+	return borderStyle.Render("│") + " " + content + strings.Repeat(" ", pad) + " " + borderStyle.Render("│")
+}
+
+func ratesLine(contentWidth int, combined analyzer.CombinedMetrics) string {
 	sep := labelStyle.Render(" • ")
-
-	// ── Header box ────────────────────────────────────────────────────
-	topBorder := borderStyle.Render("╭" + strings.Repeat("─", width-2) + "╮")
-	botBorder := borderStyle.Render("╰" + strings.Repeat("─", width-2) + "╯")
-
-	buildLeftLine := func(content string) string {
-		w := lipgloss.Width(content)
-		pad := contentWidth - w
-		if pad < 0 {
-			pad = 0
-		}
-		return borderStyle.Render("│") + " " + content + strings.Repeat(" ", pad) + " " + borderStyle.Render("│")
-	}
-
-	// Line 1: Title
-	line1 := buildLeftLine(titleStyle.Render("Trace Analyzer"))
-
-	successRate := float64(0)
-	jobSuccessRate := float64(0)
-	wfRateParsed := true
-	jobRateParsed := true
-	if combined.TotalRuns > 0 {
-		_, err := fmt.Sscanf(combined.SuccessRate, "%f", &successRate)
-		wfRateParsed = err == nil
-	}
-	if combined.TotalJobs > 0 {
-		_, err := fmt.Sscanf(combined.JobSuccessRate, "%f", &jobSuccessRate)
-		jobRateParsed = err == nil
-	}
-
-	// Line 2: Success rates (left) + Counts (right). Empty rate strings mean
-	// the input carried no outcome data — show "–" rather than a false 0%.
-	wfRate, jobRate := combined.SuccessRate+"%", combined.JobSuccessRate+"%"
-	wfRateStyled := colorForSuccessRate(successRate).Render(wfRate)
-	jobRateStyled := colorForSuccessRate(jobSuccessRate).Render(jobRate)
-	if combined.SuccessRate == "" || !wfRateParsed {
-		wfRate = "–"
-		wfRateStyled = dimStyle.Render(wfRate)
-	}
-	if combined.JobSuccessRate == "" || !jobRateParsed {
-		jobRate = "–"
-		jobRateStyled = dimStyle.Render(jobRate)
-	}
-	leftStyled := labelStyle.Render("Workflows: ") + wfRateStyled +
-		sep + labelStyle.Render("Jobs: ") + jobRateStyled
+	wfRate, wfStyled := shownRate(combined.TotalRuns, combined.SuccessRate)
+	jobRate, jobStyled := shownRate(combined.TotalJobs, combined.JobSuccessRate)
+	leftStyled := labelStyle.Render("Workflows: ") + wfStyled +
+		sep + labelStyle.Render("Jobs: ") + jobStyled
 	rightStyled := numStyle.Render(fmt.Sprintf("%d", combined.TotalRuns)) + labelStyle.Render(" runs") +
 		sep + numStyle.Render(fmt.Sprintf("%d", combined.TotalJobs)) + labelStyle.Render(" jobs") +
 		sep + numStyle.Render(fmt.Sprintf("%d", combined.TotalSteps)) + labelStyle.Render(" steps")
 	leftPlain := fmt.Sprintf("Workflows: %s • Jobs: %s", wfRate, jobRate)
 	rightPlain := fmt.Sprintf("%d runs • %d jobs • %d steps", combined.TotalRuns, combined.TotalJobs, combined.TotalSteps)
-	line2 := buildLineAligned(contentWidth, leftStyled, leftPlain, rightStyled, rightPlain)
+	return buildLineAligned(contentWidth, leftStyled, leftPlain, rightStyled, rightPlain)
+}
 
-	// Line 3: Wall time + Compute time
+// shownRate paints a success percentage.
+// Empty or unparsable input is "–", not a false 0%.
+// A zero total is not parsed: a non-empty raw rate is still shown, colored as 0.
+func shownRate(total int, raw string) (plain, styled string) {
+	rate := 0.0
+	parsed := true
+	if total > 0 {
+		_, err := fmt.Sscanf(raw, "%f", &rate)
+		parsed = err == nil
+	}
+	plain = raw + "%"
+	styled = colorForSuccessRate(rate).Render(plain)
+	if raw == "" || !parsed {
+		plain = "–"
+		styled = dimStyle.Render(plain)
+	}
+	return plain, styled
+}
+
+func wallLine(contentWidth int, urlResults []analyzer.URLResult, combined analyzer.CombinedMetrics, spans []trace.ReadOnlySpan, enricher enrichment.Enricher) string {
+	sep := labelStyle.Render(" • ")
 	wallMs, computeMs := combinedWallCompute(urlResults)
 	if wallMs == 0 && len(spans) > 0 {
-		// Pure span input: derive wall/compute from the spans themselves.
+		// Pure span input: derive wall and compute from the spans themselves.
 		wallMs, computeMs = analyzer.SpansWallCompute(spans, enricher)
 	}
 	wallTime := utils.HumanizeTime(float64(wallMs) / 1000)
 	computeTime := utils.HumanizeTime(float64(computeMs) / 1000)
-	leftStyled3 := labelStyle.Render("Wall: ") + numStyle.Render(wallTime) +
+	leftStyled := labelStyle.Render("Wall: ") + numStyle.Render(wallTime) +
 		sep + labelStyle.Render("Compute: ") + numStyle.Render(computeTime)
-	rightStyled3 := labelStyle.Render("Concurrency: ") + numStyle.Render(fmt.Sprintf("%d", combined.MaxConcurrency))
-	leftPlain3 := fmt.Sprintf("Wall: %s • Compute: %s", wallTime, computeTime)
-	rightPlain3 := fmt.Sprintf("Concurrency: %d", combined.MaxConcurrency)
-	line3 := buildLineAligned(contentWidth, leftStyled3, leftPlain3, rightStyled3, rightPlain3)
+	rightStyled := labelStyle.Render("Concurrency: ") + numStyle.Render(fmt.Sprintf("%d", combined.MaxConcurrency))
+	leftPlain := fmt.Sprintf("Wall: %s • Compute: %s", wallTime, computeTime)
+	rightPlain := fmt.Sprintf("Concurrency: %d", combined.MaxConcurrency)
+	return buildLineAligned(contentWidth, leftStyled, leftPlain, rightStyled, rightPlain)
+}
 
-	// Aggregate enrichment metrics across URL results
-	var totalQueueTimes []float64
-	var totalRetriedRuns, totalRunCount int
-	totalBillable := map[string]int64{}
-	totalRunnerJobs := map[string]int{}
-	totalRunnerDur := map[string]float64{}
+func writeQueueBillableRunners(w io.Writer, contentWidth int, urlResults []analyzer.URLResult) {
+	var queueTimes []float64
+	var retried, runs int
+	billable := map[string]int64{}
+	runnerJobs := map[string]int{}
+	runnerDur := map[string]float64{}
 	for _, result := range urlResults {
-		totalQueueTimes = append(totalQueueTimes, result.Metrics.QueueTimes...)
-		totalRetriedRuns += result.Metrics.RetriedRuns
-		totalRunCount += result.Metrics.TotalRuns
-		for os, ms := range result.Metrics.BillableMs {
-			totalBillable[os] += ms
+		queueTimes = append(queueTimes, result.Metrics.QueueTimes...)
+		retried += result.Metrics.RetriedRuns
+		runs += result.Metrics.TotalRuns
+		for osName, ms := range result.Metrics.BillableMs {
+			billable[osName] += ms
 		}
 		for runner, count := range result.Metrics.RunnerJobCounts {
-			totalRunnerJobs[runner] += count
+			runnerJobs[runner] += count
 		}
 		for runner, dur := range result.Metrics.RunnerDurations {
-			totalRunnerDur[runner] += dur
+			runnerDur[runner] += dur
 		}
 	}
+	if line := queueRetryLine(queueTimes, retried, runs); line != "" {
+		fmt.Fprintln(w, boxLine(contentWidth, line))
+	}
+	if line := billableLine(billable); line != "" {
+		fmt.Fprintln(w, boxLine(contentWidth, line))
+	}
+	if line := runnersLine(runnerJobs, runnerDur); line != "" {
+		fmt.Fprintln(w, boxLine(contentWidth, line))
+	}
+}
 
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, topBorder)
-	fmt.Fprintln(w, line1)
-	fmt.Fprintln(w, line2)
-	fmt.Fprintln(w, line3)
-
-	// Line 4: Queue time + Retry rate (conditional)
-	hasQueueData := len(totalQueueTimes) > 0
-	hasRetryData := totalRetriedRuns > 0
-	if hasQueueData || hasRetryData {
-		var parts4 []string
-		if hasQueueData {
-			avgQ := 0.0
-			maxQ := 0.0
-			for _, qt := range totalQueueTimes {
-				avgQ += qt
-				if qt > maxQ {
-					maxQ = qt
-				}
+func queueRetryLine(queueTimes []float64, retried, runs int) string {
+	sep := labelStyle.Render(" • ")
+	var parts []string
+	if len(queueTimes) > 0 {
+		avgQ := 0.0
+		maxQ := 0.0
+		for _, qt := range queueTimes {
+			avgQ += qt
+			if qt > maxQ {
+				maxQ = qt
 			}
-			avgQ /= float64(len(totalQueueTimes))
-			avgQStr := utils.HumanizeTime(avgQ / 1000)
-			maxQStr := utils.HumanizeTime(maxQ / 1000)
-			parts4 = append(parts4, labelStyle.Render("Queue: avg ")+numStyle.Render(avgQStr)+labelStyle.Render(" / max ")+numStyle.Render(maxQStr))
 		}
-		if hasRetryData {
-			retryPct := fmt.Sprintf("%.0f%%", float64(totalRetriedRuns)/float64(totalRunCount)*100)
-			retryDetail := fmt.Sprintf("(%d/%d runs)", totalRetriedRuns, totalRunCount)
-			parts4 = append(parts4, labelStyle.Render("Retries: ")+numStyle.Render(retryPct)+" "+labelStyle.Render(retryDetail))
-		}
-		fmt.Fprintln(w, buildLeftLine(strings.Join(parts4, sep)))
+		avgQ /= float64(len(queueTimes))
+		avgQStr := utils.HumanizeTime(avgQ / 1000)
+		maxQStr := utils.HumanizeTime(maxQ / 1000)
+		parts = append(parts, labelStyle.Render("Queue: avg ")+numStyle.Render(avgQStr)+labelStyle.Render(" / max ")+numStyle.Render(maxQStr))
 	}
-
-	// Line 5: Billable timing (conditional)
-	if len(totalBillable) > 0 {
-		osNames := map[string]string{"UBUNTU": "Ubuntu", "MACOS": "macOS", "WINDOWS": "Windows"}
-		var billParts []string
-		for _, osKey := range []string{"UBUNTU", "MACOS", "WINDOWS"} {
-			ms := totalBillable[osKey]
-			durStr := utils.HumanizeTime(float64(ms) / 1000)
-			billParts = append(billParts, labelStyle.Render(osNames[osKey]+" ")+numStyle.Render(durStr))
-		}
-		fmt.Fprintln(w, buildLeftLine(labelStyle.Render("Billable: ")+strings.Join(billParts, "  ")))
+	if retried > 0 {
+		retryPct := fmt.Sprintf("%.0f%%", float64(retried)/float64(runs)*100)
+		retryDetail := fmt.Sprintf("(%d/%d runs)", retried, runs)
+		parts = append(parts, labelStyle.Render("Retries: ")+numStyle.Render(retryPct)+" "+labelStyle.Render(retryDetail))
 	}
+	return strings.Join(parts, sep)
+}
 
-	// Line 6: Runner distribution (conditional)
-	if len(totalRunnerJobs) > 0 {
-		var runnerParts []string
-		for runner, count := range totalRunnerJobs {
-			dur := totalRunnerDur[runner]
-			durStr := utils.HumanizeTime(dur / 1000)
-			runnerParts = append(runnerParts, numStyle.Render(runner)+labelStyle.Render(fmt.Sprintf(" ×%d ", count))+dimStyle.Render("("+durStr+")"))
-		}
-		fmt.Fprintln(w, buildLeftLine(labelStyle.Render("Runners: ")+strings.Join(runnerParts, "  ")))
+func billableLine(billable map[string]int64) string {
+	if len(billable) == 0 {
+		return ""
 	}
+	osNames := map[string]string{"UBUNTU": "Ubuntu", "MACOS": "macOS", "WINDOWS": "Windows"}
+	var parts []string
+	for _, osKey := range []string{"UBUNTU", "MACOS", "WINDOWS"} {
+		dur := utils.HumanizeTime(float64(billable[osKey]) / 1000)
+		parts = append(parts, labelStyle.Render(osNames[osKey]+" ")+numStyle.Render(dur))
+	}
+	return labelStyle.Render("Billable: ") + strings.Join(parts, "  ")
+}
 
-	// Changed files + artifacts line (extracted from workflow span attributes)
-	{
+func runnersLine(counts map[string]int, durs map[string]float64) string {
+	if len(counts) == 0 {
+		return ""
+	}
+	var parts []string
+	for runner, count := range counts {
+		durStr := utils.HumanizeTime(durs[runner] / 1000)
+		parts = append(parts, numStyle.Render(runner)+labelStyle.Render(fmt.Sprintf(" ×%d ", count))+dimStyle.Render("("+durStr+")"))
+	}
+	return labelStyle.Render("Runners: ") + strings.Join(parts, "  ")
+}
+
+// changedFilesLine is files and artifacts from the first span that has either.
+// An empty artifact-names value wins over a later one on that same span.
+func changedFilesLine(spans []trace.ReadOnlySpan) string {
+	sep := labelStyle.Render(" • ")
+	for _, s := range spans {
+		var filesCount, filesAdd, filesDel, artCount, artSize string
+		for _, a := range s.Attributes() {
+			switch string(a.Key) {
+			case "vcs.changes.count":
+				filesCount = a.Value.AsString()
+			case "vcs.changes.additions":
+				filesAdd = a.Value.AsString()
+			case "vcs.changes.deletions":
+				filesDel = a.Value.AsString()
+			case "cicd.pipeline.artifacts.count":
+				artCount = a.Value.AsString()
+			case "cicd.pipeline.artifacts.size":
+				artSize = a.Value.AsString()
+			}
+		}
 		var parts []string
-		for _, s := range spans {
-			var filesCount, filesAdd, filesDel, artCount, artSize string
+		if filesCount != "" && filesCount != "0" {
+			parts = append(parts,
+				labelStyle.Render("Files: ")+numStyle.Render(filesCount)+labelStyle.Render(" changed")+
+					labelStyle.Render(" (")+
+					lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render("+"+filesAdd)+
+					labelStyle.Render(" / ")+
+					lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render("-"+filesDel)+
+					labelStyle.Render(")"))
+		}
+		if artCount != "" && artCount != "0" {
+			artPart := labelStyle.Render("Artifacts: ") + numStyle.Render(artCount) +
+				labelStyle.Render(" (") + numStyle.Render(artSize) + labelStyle.Render(")")
 			for _, a := range s.Attributes() {
-				switch string(a.Key) {
-				case "vcs.changes.count":
-					filesCount = a.Value.AsString()
-				case "vcs.changes.additions":
-					filesAdd = a.Value.AsString()
-				case "vcs.changes.deletions":
-					filesDel = a.Value.AsString()
-				case "cicd.pipeline.artifacts.count":
-					artCount = a.Value.AsString()
-				case "cicd.pipeline.artifacts.size":
-					artSize = a.Value.AsString()
-				}
-			}
-			if filesCount != "" && filesCount != "0" {
-				parts = append(parts,
-					labelStyle.Render("Files: ")+numStyle.Render(filesCount)+labelStyle.Render(" changed")+
-						labelStyle.Render(" (")+
-						lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render("+"+filesAdd)+
-						labelStyle.Render(" / ")+
-						lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render("-"+filesDel)+
-						labelStyle.Render(")"))
-			}
-			if artCount != "" && artCount != "0" {
-				artPart := labelStyle.Render("Artifacts: ") + numStyle.Render(artCount) +
-					labelStyle.Render(" (") + numStyle.Render(artSize) + labelStyle.Render(")")
-				// Include artifact names
-				for _, a := range s.Attributes() {
-					if string(a.Key) == "cicd.pipeline.artifacts.names" {
-						names := a.Value.AsString()
-						if names != "" {
-							artPart += labelStyle.Render(" — ") + numStyle.Render(names)
-						}
-						break
+				if string(a.Key) == "cicd.pipeline.artifacts.names" {
+					names := a.Value.AsString()
+					if names != "" {
+						artPart += labelStyle.Render(" — ") + numStyle.Render(names)
 					}
+					break
 				}
-				parts = append(parts, artPart)
 			}
-			if len(parts) > 0 {
-				break
-			}
+			parts = append(parts, artPart)
 		}
 		if len(parts) > 0 {
-			fmt.Fprintln(w, buildLeftLine(strings.Join(parts, sep)))
+			return strings.Join(parts, sep)
 		}
 	}
+	return ""
+}
 
-	// Workflow files line (extracted from workflow span attributes)
-	{
-		seen := make(map[string]bool)
-		var wfPaths []string
-		for _, s := range spans {
-			for _, a := range s.Attributes() {
-				if string(a.Key) == "cicd.pipeline.definition" {
-					p := a.Value.AsString()
-					if p != "" && !seen[p] {
-						seen[p] = true
-						wfPaths = append(wfPaths, p)
-					}
-				}
+func workflowFilesLine(spans []trace.ReadOnlySpan) string {
+	seen := make(map[string]bool)
+	var paths []string
+	for _, s := range spans {
+		for _, a := range s.Attributes() {
+			if string(a.Key) != "cicd.pipeline.definition" {
+				continue
 			}
-		}
-		if len(wfPaths) > 0 {
-			fmt.Fprintln(w, buildLeftLine(labelStyle.Render("Workflows: ")+numStyle.Render(strings.Join(wfPaths, ", "))))
-		}
-	}
-
-	// URL lines inside header box
-	for _, result := range urlResults {
-		urlText := result.DisplayURL
-		maxW := contentWidth
-		if lipgloss.Width(urlText) > maxW {
-			runes := []rune(urlText)
-			for len(runes) > 3 && lipgloss.Width(string(runes))+3 > maxW {
-				runes = runes[:len(runes)-1]
+			p := a.Value.AsString()
+			if p == "" || seen[p] {
+				continue
 			}
-			urlText = string(runes) + "..."
+			seen[p] = true
+			paths = append(paths, p)
 		}
-		linked := utils.MakeClickableLink(utils.ExpandGitHubURL(result.DisplayURL), urlText)
-		fmt.Fprintln(w, buildLeftLine(linked))
 	}
-	fmt.Fprintln(w, botBorder)
+	if len(paths) == 0 {
+		return ""
+	}
+	return labelStyle.Render("Workflows: ") + numStyle.Render(strings.Join(paths, ", "))
+}
 
-	// ── Pending Jobs ──────────────────────────────────────────────────
+func fittedURL(displayURL string, maxW int) string {
+	urlText := displayURL
+	if lipgloss.Width(urlText) > maxW {
+		runes := []rune(urlText)
+		for len(runes) > 3 && lipgloss.Width(string(runes))+3 > maxW {
+			runes = runes[:len(runes)-1]
+		}
+		urlText = string(runes) + "..."
+	}
+	return utils.MakeClickableLink(utils.ExpandGitHubURL(displayURL), urlText)
+}
+
+func writePendingJobs(w io.Writer, urlResults []analyzer.URLResult) {
 	allPending := collectPending(urlResults)
-	if len(allPending) > 0 {
-		styledSection(w, "Pending Jobs")
-		fmt.Fprintf(w, "  %s %d jobs still running\n",
-			warningStyle.Render("WARNING:"), len(allPending))
-		for i, job := range allPending {
-			jobLink := utils.MakeClickableLink(job.URL, job.Name+requiredEmoji(job.IsRequired))
-			fmt.Fprintf(w, "  %s  %s %s %s\n",
-				dimStyle.Render(fmt.Sprintf("%d.", i+1)),
-				subheaderStyle.Render(jobLink),
-				dimStyle.Render("("+job.Status+")"),
-				labelStyle.Render("← "+job.SourceName))
-		}
+	if len(allPending) == 0 {
+		return
 	}
-
-	// ── Run Summary ───────────────────────────────────────────────────
-	sortedResults := sortByEarliest(urlResults)
-	if len(urlResults) > 0 {
-		styledSection(w, "Run Summary")
-		// Table header
-		hdr := fmt.Sprintf("  %-40s %6s %10s %10s %9s %7s",
-			labelStyle.Render("URL"),
-			labelStyle.Render("Runs"),
-			labelStyle.Render("Wall"),
-			labelStyle.Render("Compute"),
-			labelStyle.Render("Approvals"),
-			labelStyle.Render("Merged"))
-		fmt.Fprintln(w, hdr)
-		fmt.Fprintf(w, "  %s\n", dimStyle.Render(strings.Repeat("─", 86)))
-
-		for _, result := range urlResults {
-			wMs, cMs := computeTimelineDurations(result.Metrics.JobTimeline)
-			approvals := countReviewEvents(result.ReviewEvents, "shippit") + countReviewEvents(result.ReviewEvents, "merged")
-			merged := countReviewEvents(result.ReviewEvents, "merged") > 0
-			name := result.DisplayName
-			if runes := []rune(name); len(runes) > 38 {
-				name = string(runes[:35]) + "..."
-			}
-			nameLinked := utils.MakeClickableLink(result.DisplayURL, name)
-			mergedText := dimStyle.Render("no")
-			if merged {
-				mergedText = successStyle.Render("yes")
-			}
-			fmt.Fprintf(w, "  %-40s %s %10s %10s %9d %7s\n",
-				nameLinked,
-				numStyle.Render(fmt.Sprintf("%6d", result.Metrics.TotalRuns)),
-				numStyle.Render(utils.HumanizeTime(float64(wMs)/1000)),
-				numStyle.Render(utils.HumanizeTime(float64(cMs)/1000)),
-				approvals,
-				mergedText)
-		}
+	styledSection(w, "Pending Jobs")
+	fmt.Fprintf(w, "  %s %d jobs still running\n",
+		warningStyle.Render("WARNING:"), len(allPending))
+	for i, job := range allPending {
+		jobLink := utils.MakeClickableLink(job.URL, job.Name+requiredEmoji(job.IsRequired))
+		fmt.Fprintf(w, "  %s  %s %s %s\n",
+			dimStyle.Render(fmt.Sprintf("%d.", i+1)),
+			subheaderStyle.Render(jobLink),
+			dimStyle.Render("("+job.Status+")"),
+			labelStyle.Render("← "+job.SourceName))
 	}
+}
 
-	// ── Commit Aggregates ─────────────────────────────────────────────
-	commitAggregates := []CommitAggregate{}
+func writeRunSummary(w io.Writer, urlResults []analyzer.URLResult) {
+	if len(urlResults) == 0 {
+		return
+	}
+	styledSection(w, "Run Summary")
+	hdr := fmt.Sprintf("  %-40s %6s %10s %10s %9s %7s",
+		labelStyle.Render("URL"),
+		labelStyle.Render("Runs"),
+		labelStyle.Render("Wall"),
+		labelStyle.Render("Compute"),
+		labelStyle.Render("Approvals"),
+		labelStyle.Render("Merged"))
+	fmt.Fprintln(w, hdr)
+	fmt.Fprintf(w, "  %s\n", dimStyle.Render(strings.Repeat("─", 86)))
+
+	for _, result := range urlResults {
+		wMs, cMs := computeTimelineDurations(result.Metrics.JobTimeline)
+		approvals := countReviewEvents(result.ReviewEvents, "shippit") + countReviewEvents(result.ReviewEvents, "merged")
+		merged := countReviewEvents(result.ReviewEvents, "merged") > 0
+		name := result.DisplayName
+		if runes := []rune(name); len(runes) > 38 {
+			name = string(runes[:35]) + "..."
+		}
+		nameLinked := utils.MakeClickableLink(result.DisplayURL, name)
+		mergedText := dimStyle.Render("no")
+		if merged {
+			mergedText = successStyle.Render("yes")
+		}
+		fmt.Fprintf(w, "  %-40s %s %10s %10s %9d %7s\n",
+			nameLinked,
+			numStyle.Render(fmt.Sprintf("%6d", result.Metrics.TotalRuns)),
+			numStyle.Render(utils.HumanizeTime(float64(wMs)/1000)),
+			numStyle.Render(utils.HumanizeTime(float64(cMs)/1000)),
+			approvals,
+			mergedText)
+	}
+}
+
+func writeCommitRuns(w io.Writer, urlResults []analyzer.URLResult) {
+	var commits []analyzer.URLResult
 	for _, result := range urlResults {
 		if result.Type == "commit" {
-			commitAggregates = append(commitAggregates, CommitAggregate{
-				Name:                    result.DisplayName,
-				URLIndex:                result.URLIndex,
-				TotalRunsForCommit:      result.AllCommitRunsCount,
-				TotalComputeMsForCommit: result.AllCommitRunsComputeMs,
-			})
+			commits = append(commits, result)
 		}
 	}
-	if len(commitAggregates) > 0 {
-		styledSection(w, "Commit Runs (All Runs for Commit SHA)")
-		for _, agg := range commitAggregates {
-			computeDisplay := utils.HumanizeTime(float64(agg.TotalComputeMsForCommit) / 1000)
-			fmt.Fprintf(w, "  %s %s  runs=%s  compute=%s\n",
-				dimStyle.Render(fmt.Sprintf("[%d]", agg.URLIndex+1)),
-				valueStyle.Render(agg.Name),
-				numStyle.Render(fmt.Sprintf("%d", agg.TotalRunsForCommit)),
-				numStyle.Render(computeDisplay))
-		}
+	if len(commits) == 0 {
+		return
 	}
+	styledSection(w, "Commit Runs (All Runs for Commit SHA)")
+	for _, result := range commits {
+		computeDisplay := utils.HumanizeTime(float64(result.AllCommitRunsComputeMs) / 1000)
+		fmt.Fprintf(w, "  %s %s  runs=%s  compute=%s\n",
+			dimStyle.Render(fmt.Sprintf("[%d]", result.URLIndex+1)),
+			valueStyle.Render(result.DisplayName),
+			numStyle.Render(fmt.Sprintf("%d", result.AllCommitRunsCount)),
+			numStyle.Render(computeDisplay))
+	}
+}
 
-	// ── Slowest Jobs ──────────────────────────────────────────────────
+func writeSlowestJobs(w io.Writer, urlResults []analyzer.URLResult, combined analyzer.CombinedMetrics) {
 	allJobs := append([]analyzer.CombinedTimelineJob{}, combined.JobTimeline...)
 	analyzer.SortCombinedJobsByDuration(allJobs)
 	slowJobs := allJobs
 	if len(slowJobs) > 10 {
 		slowJobs = slowJobs[:10]
 	}
-	if len(slowJobs) > 0 {
-		styledSection(w, "Slowest Jobs")
-		bottleneckKeys := map[string]struct{}{}
-		for _, result := range sortedResults {
-			for _, job := range analyzer.FindBottleneckJobs(result.Metrics.JobTimeline) {
-				key := fmt.Sprintf("%s-%d-%d", job.Name, job.StartTime, job.EndTime)
-				bottleneckKeys[key] = struct{}{}
-			}
-		}
-
-		grouped := map[string][]analyzer.CombinedTimelineJob{}
-		for _, job := range slowJobs {
-			grouped[job.SourceURL] = append(grouped[job.SourceURL], job)
-		}
-
-		for _, result := range sortedResults {
-			jobs := grouped[result.DisplayURL]
-			if len(jobs) == 0 {
-				continue
-			}
-			headerText := fmt.Sprintf("[%d] %s", result.URLIndex+1, result.DisplayName)
-			fmt.Fprintf(w, "\n  %s\n", subheaderStyle.Render(utils.MakeClickableLink(result.DisplayURL, headerText)))
-			analyzer.SortCombinedJobsByDuration(jobs)
-			for i, job := range jobs {
-				duration := float64(job.EndTime-job.StartTime) / 1000
-				key := fmt.Sprintf("%s-%d-%d", job.Name, job.StartTime, job.EndTime)
-				bottleneck := ""
-				if _, ok := bottleneckKeys[key]; ok {
-					bottleneck = " 🔥"
-				}
-				durationStr := utils.HumanizeTime(duration)
-				jobText := fmt.Sprintf("%s %s%s%s",
-					numStyle.Render(durationStr),
-					valueStyle.Render(job.Name),
-					bottleneck,
-					requiredEmoji(job.IsRequired))
-				if job.URL != "" {
-					jobText = utils.MakeClickableLink(job.URL, fmt.Sprintf("%s — %s%s%s", durationStr, job.Name, bottleneck, requiredEmoji(job.IsRequired)))
-				}
-				fmt.Fprintf(w, "    %s  %s\n",
-					dimStyle.Render(fmt.Sprintf("%d.", i+1)),
-					jobText)
-			}
+	if len(slowJobs) == 0 {
+		return
+	}
+	styledSection(w, "Slowest Jobs")
+	sortedResults := sortByEarliest(urlResults)
+	bottleneckKeys := map[string]struct{}{}
+	for _, result := range sortedResults {
+		for _, job := range analyzer.FindBottleneckJobs(result.Metrics.JobTimeline) {
+			key := fmt.Sprintf("%s-%d-%d", job.Name, job.StartTime, job.EndTime)
+			bottleneckKeys[key] = struct{}{}
 		}
 	}
 
-	// ── Resources ─────────────────────────────────────────────────────
-	renderResourceSection(w, spans)
+	grouped := map[string][]analyzer.CombinedTimelineJob{}
+	for _, job := range slowJobs {
+		grouped[job.SourceURL] = append(grouped[job.SourceURL], job)
+	}
 
-	// ── LLM Usage ─────────────────────────────────────────────────────
-	renderGenAIUsageSection(w, spans)
-
-	// ── Pipeline Timelines ────────────────────────────────────────────
-	styledSection(w, "Pipeline Timelines")
-	RenderOTelTimeline(w, spans, time.UnixMilli(globalEarliestTime), time.UnixMilli(globalLatestTime), enricher)
-
-	return nil
+	for _, result := range sortedResults {
+		jobs := grouped[result.DisplayURL]
+		if len(jobs) == 0 {
+			continue
+		}
+		headerText := fmt.Sprintf("[%d] %s", result.URLIndex+1, result.DisplayName)
+		fmt.Fprintf(w, "\n  %s\n", subheaderStyle.Render(utils.MakeClickableLink(result.DisplayURL, headerText)))
+		analyzer.SortCombinedJobsByDuration(jobs)
+		for i, job := range jobs {
+			duration := float64(job.EndTime-job.StartTime) / 1000
+			key := fmt.Sprintf("%s-%d-%d", job.Name, job.StartTime, job.EndTime)
+			bottleneck := ""
+			if _, ok := bottleneckKeys[key]; ok {
+				bottleneck = " 🔥"
+			}
+			durationStr := utils.HumanizeTime(duration)
+			jobText := fmt.Sprintf("%s %s%s%s",
+				numStyle.Render(durationStr),
+				valueStyle.Render(job.Name),
+				bottleneck,
+				requiredEmoji(job.IsRequired))
+			if job.URL != "" {
+				jobText = utils.MakeClickableLink(job.URL, fmt.Sprintf("%s — %s%s%s", durationStr, job.Name, bottleneck, requiredEmoji(job.IsRequired)))
+			}
+			fmt.Fprintf(w, "    %s  %s\n",
+				dimStyle.Render(fmt.Sprintf("%d.", i+1)),
+				jobText)
+		}
+	}
 }
 
 // renderResourceSection prints a per-service deployment/infrastructure context
