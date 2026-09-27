@@ -162,7 +162,7 @@ func TestMaxConcurrencyAtTimesBackToBack(t *testing.T) {
 
 	starts := []JobEvent{{Ts: 0, Type: "start"}, {Ts: 1000, Type: "start"}}
 	ends := []JobEvent{{Ts: 1000, Type: "end"}, {Ts: 2000, Type: "end"}}
-	assert.Equal(t, 1, maxConcurrencyAtTimes(starts, ends))
+	assert.Equal(t, 1, CalculateMaxConcurrency(starts, ends))
 }
 
 func TestCalculateCombinedSuccessRates(t *testing.T) {

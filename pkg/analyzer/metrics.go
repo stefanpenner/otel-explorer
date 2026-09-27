@@ -3,7 +3,6 @@ package analyzer
 import (
 	"fmt"
 	"math"
-	"sort"
 	"strconv"
 
 	"github.com/stefanpenner/otel-explorer/pkg/githubapi"
@@ -57,28 +56,13 @@ func FindLatestTimestamp(runs []githubapi.WorkflowRun) int64 {
 	return latest
 }
 
-// sortJobEventsEndFirst orders events by timestamp, processing "end" events
-// before "start" events at equal timestamps. This keeps back-to-back jobs
-// (one ending exactly when the next starts, common with second-granularity
-// GitHub timestamps and `needs:` chains) from being counted as concurrent,
-// consistent with FindOverlappingJobs treating touching intervals as
-// non-overlapping.
-func sortJobEventsEndFirst(events []JobEvent) {
-	sort.Slice(events, func(i, j int) bool {
-		if events[i].Ts == events[j].Ts {
-			return events[i].Type == "end" && events[j].Type == "start"
-		}
-		return events[i].Ts < events[j].Ts
-	})
-}
-
 func CalculateMaxConcurrency(jobStartTimes, jobEndTimes []JobEvent) int {
 	if len(jobStartTimes) == 0 {
 		return 0
 	}
 	all := append([]JobEvent{}, jobStartTimes...)
 	all = append(all, jobEndTimes...)
-	sortJobEventsEndFirst(all)
+	SortJobEvents(all)
 
 	current := 0
 	maxConcurrency := 0
@@ -280,7 +264,7 @@ func CalculateCombinedMetrics(urlResults []URLResult, totalRuns int, allJobStart
 		TotalSteps:     totalSteps,
 		SuccessRate:    CalculateCombinedSuccessRate(urlResults),
 		JobSuccessRate: CalculateCombinedJobSuccessRate(urlResults),
-		MaxConcurrency: maxConcurrencyAtTimes(allJobStartTimes, allJobEndTimes),
+		MaxConcurrency: CalculateMaxConcurrency(allJobStartTimes, allJobEndTimes),
 		JobTimeline:    jobTimeline,
 	}
 }
@@ -309,29 +293,6 @@ func CalculateCombinedJobSuccessRate(urlResults []URLResult) string {
 		return "0.0"
 	}
 	return formatPercent(float64(totalSuccessful) / float64(totalJobs) * 100)
-}
-
-func maxConcurrencyAtTimes(startEvents, endEvents []JobEvent) int {
-	if len(startEvents) == 0 {
-		return 0
-	}
-	all := append([]JobEvent{}, startEvents...)
-	all = append(all, endEvents...)
-	sortJobEventsEndFirst(all)
-
-	current := 0
-	max := 0
-	for _, event := range all {
-		if event.Type == "start" {
-			current++
-			if current > max {
-				max = current
-			}
-		} else {
-			current--
-		}
-	}
-	return max
 }
 
 func formatPercent(value float64) string {
