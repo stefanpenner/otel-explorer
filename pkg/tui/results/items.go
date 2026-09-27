@@ -102,18 +102,14 @@ type TreeItem struct {
 // BuildTreeItems converts TreeNodes into TreeItems for the TUI.
 // Each input URL becomes a top-level URL group node containing its workflows.
 func BuildTreeItems(roots []*analyzer.TreeNode, expandedState map[string]bool, inputURLs []string) []*TreeItem {
-	// Ensure expandedState is non-nil
 	if expandedState == nil {
 		expandedState = make(map[string]bool)
 	}
 
-	// Group roots by URLIndex
 	grouped := make(map[int][]*analyzer.TreeNode)
 	for _, root := range roots {
 		grouped[root.URLIndex] = append(grouped[root.URLIndex], root)
 	}
-
-	// If no inputURLs provided, synthesize one group for all roots
 	if len(inputURLs) == 0 {
 		inputURLs = []string{""}
 	}
@@ -121,46 +117,11 @@ func BuildTreeItems(roots []*analyzer.TreeNode, expandedState map[string]bool, i
 	var items []*TreeItem
 	for urlIdx, inputURL := range inputURLs {
 		children := grouped[urlIdx]
-
-		// Build display name from parsed URL or file path
-		displayName := inputURL
-		if parsed, err := utils.ParseGitHubURL(inputURL); err == nil {
-			if parsed.Type == "pr" {
-				displayName = fmt.Sprintf("PR #%s (%s/%s)", parsed.Identifier, parsed.Owner, parsed.Repo)
-			} else {
-				id := parsed.Identifier
-				if len(id) > 8 {
-					id = id[:8]
-				}
-				displayName = fmt.Sprintf("commit %s (%s/%s)", id, parsed.Owner, parsed.Repo)
-			}
-		} else if !strings.HasPrefix(inputURL, "http") && inputURL != "" {
-			// Not a URL — treat as a trace file name
-			displayName = fmt.Sprintf("◇ %s", inputURL)
-		}
-
+		name := urlGroupName(inputURL)
 		groupID := fmt.Sprintf("url-group/%d", urlIdx)
-
-		// Calculate time bounds from non-marker children only.
-		// Activity markers (review/merge events) can happen hours after CI,
-		// so including them would inflate the parent's duration.
-		var earliest, latest time.Time
-		for _, child := range children {
-			if child.Hints.IsMarker || child.Hints.GroupKey == "activity" {
-				continue
-			}
-			if !child.StartTime.IsZero() && (earliest.IsZero() || child.StartTime.Before(earliest)) {
-				earliest = child.StartTime
-			}
-			if !child.EndTime.IsZero() && (latest.IsZero() || child.EndTime.After(latest)) {
-				latest = child.EndTime
-			}
-		}
-
-		// Compute aggregate outcome
+		earliest, latest := markerFreeBounds(children)
 		outcome := aggregateOutcome(children)
 
-		// Default to expanded for single-URL case
 		if len(inputURLs) == 1 {
 			if _, explicit := expandedState[groupID]; !explicit {
 				expandedState[groupID] = true
@@ -169,8 +130,8 @@ func BuildTreeItems(roots []*analyzer.TreeNode, expandedState map[string]bool, i
 
 		groupItem := &TreeItem{
 			ID:          groupID,
-			Name:        displayName,
-			DisplayName: displayName,
+			Name:        name,
+			DisplayName: name,
 			StartTime:   earliest,
 			EndTime:     latest,
 			Depth:       0,
@@ -183,21 +144,51 @@ func BuildTreeItems(roots []*analyzer.TreeNode, expandedState map[string]bool, i
 				Outcome: outcome,
 			},
 		}
-
-		// Add VCS changed files info from the first workflow root (shared across all workflows)
 		groupItem.Children = append(groupItem.Children, buildURLGroupInfoItems(children, groupID, 1)...)
-
 		groupItem.Children = append(groupItem.Children, partitionAndGroup(children, groupID, 1, expandedState)...)
-
 		items = append(items, groupItem)
 	}
 
-	// Sort URL groups by start time
 	sort.Slice(items, func(i, j int) bool {
 		return items[i].StartTime.Before(items[j].StartTime)
 	})
-
 	return items
+}
+
+// urlGroupName labels a URL group: a PR, a short commit (runs share that label), or a local trace file.
+func urlGroupName(inputURL string) string {
+	parsed, err := utils.ParseGitHubURL(inputURL)
+	if err != nil {
+		if inputURL != "" && !strings.HasPrefix(inputURL, "http") {
+			return fmt.Sprintf("◇ %s", inputURL)
+		}
+		return inputURL
+	}
+	if parsed.Type == "pr" {
+		return fmt.Sprintf("PR #%s (%s/%s)", parsed.Identifier, parsed.Owner, parsed.Repo)
+	}
+	id := parsed.Identifier
+	if len(id) > 8 {
+		id = id[:8]
+	}
+	return fmt.Sprintf("commit %s (%s/%s)", id, parsed.Owner, parsed.Repo)
+}
+
+// markerFreeBounds is the time span of non-marker children.
+// Activity markers (review/merge) can land hours after CI and would inflate the group.
+func markerFreeBounds(nodes []*analyzer.TreeNode) (earliest, latest time.Time) {
+	for _, n := range nodes {
+		if n.Hints.IsMarker || n.Hints.GroupKey == "activity" {
+			continue
+		}
+		if !n.StartTime.IsZero() && (earliest.IsZero() || n.StartTime.Before(earliest)) {
+			earliest = n.StartTime
+		}
+		if !n.EndTime.IsZero() && (latest.IsZero() || n.EndTime.After(latest)) {
+			latest = n.EndTime
+		}
+	}
+	return earliest, latest
 }
 
 // buildURLGroupInfoItems creates info items that belong at the URL group level
