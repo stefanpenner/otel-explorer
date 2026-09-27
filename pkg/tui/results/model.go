@@ -444,174 +444,54 @@ func (m Model) handleLogFetchResult(msg LogFetchResultMsg) (tea.Model, tea.Cmd) 
 	return m, nil
 }
 
-
 // View implements tea.Model
 func (m Model) View() string {
-	// Enforce minimum dimensions to prevent crashes
-	width := m.width
-	height := m.height
-	if width < 40 {
-		width = 40
-	}
-	if height < 10 {
-		height = 10
-	}
-
-	// Show loading overlay if reloading
+	width, height := m.viewSize()
 	if m.isLoading {
-		loadingText := m.renderLoadingView()
-		return placeModalCentered(ModalStyle.Render(loadingText), width, height)
+		return placeModalCentered(ModalStyle.Render(m.renderLoadingView()), width, height)
 	}
 
 	var b strings.Builder
+	inner := borderedInner(width)
 
-	// Calculate available height for items
-	// Header: topBorder + statsLine1 + statsLine2 + timeAxis + blankLine = 5
-	// (plus optional enrichment/search/error lines)
-	// Footer: breadcrumb + statusLine + bottomBorder = 3
-	searchActive := m.isSearching || m.searchQuery != ""
-	availableHeight := m.contentHeight()
-
-	// Determine if scrolling is needed
-	totalItems := len(m.visibleItems)
-	needsScroll := totalItems > availableHeight
-
-	// Header (includes time range info)
 	b.WriteString(m.renderHeader())
 	b.WriteString("\n")
-
-	// Time axis row (shows start time, duration, end time aligned with timeline)
 	b.WriteString(m.renderTimeAxis())
 	b.WriteString("\n")
-
-	// Blank line between time axis and content (just outer borders, no middle separator)
-	totalWidth := width - horizontalPad*2
-	if totalWidth < 1 {
-		totalWidth = 80
-	}
-	contentWidth := totalWidth - 2 // space between left and right borders
-	blankLine := BorderStyle.Render("│") + strings.Repeat(" ", contentWidth) + BorderStyle.Render("│")
-	b.WriteString(blankLine)
+	b.WriteString(headerGap(inner))
 	b.WriteString("\n")
 
-	// Search bar (between blank line and content)
-	if searchActive {
-		b.WriteString(m.renderSearchBar(contentWidth))
+	if m.isSearching || m.searchQuery != "" {
+		b.WriteString(m.renderSearchBar(inner))
 		b.WriteString("\n")
 	}
-
-	// Error bar (shown after reload failure)
 	if m.reloadError != "" {
-		b.WriteString(m.renderErrorBar(contentWidth))
+		b.WriteString(m.renderErrorBar(inner))
 		b.WriteString("\n")
 	}
 
-	// Determine scroll window (centered on cursor)
-	startIdx := 0
-	endIdx := totalItems
+	rows := m.contentHeight()
+	start, end := m.itemWindow(rows)
+	bar := m.scrollbar(rows, start)
 
-	if needsScroll {
-		startIdx = m.scrollWindowStart(availableHeight)
-		endIdx = startIdx + availableHeight
-		if endIdx > totalItems {
-			endIdx = totalItems
-		}
-	}
-
-	// Calculate scrollbar dimensions (80% height, centered)
-	trackHeight := availableHeight * 80 / 100
-	if trackHeight < 3 {
-		trackHeight = min(3, availableHeight)
-	}
-	trackTopPad := (availableHeight - trackHeight) / 2
-	trackBottomPad := availableHeight - trackHeight - trackTopPad
-
-	// Calculate thumb position within track
-	thumbSize := 1
-	thumbStart := 0
-	if needsScroll && trackHeight > 0 {
-		thumbSize = max(1, trackHeight*availableHeight/totalItems)
-		if thumbSize > trackHeight {
-			thumbSize = trackHeight
-		}
-		maxScroll := totalItems - availableHeight
-		if maxScroll > 0 {
-			thumbStart = startIdx * (trackHeight - thumbSize) / maxScroll
-		}
-	}
-	thumbEnd := thumbStart + thumbSize
-
-	// Scrollbar characters (use subtle separator color)
-	scrollThumb := SeparatorStyle.Render("┃")
-	scrollTrack := SeparatorStyle.Render("│")
-
-	// Render visible items with scrollbar
-	rowIdx := 0
-	for i := startIdx; i < endIdx; i++ {
-		item := m.visibleItems[i]
-		isSelected := m.isInSelection(i)
-		b.WriteString(m.renderItem(item, isSelected, i))
-
-		// Add scrollbar character
-		if needsScroll {
-			trackIdx := rowIdx - trackTopPad
-			if rowIdx < trackTopPad || rowIdx >= availableHeight-trackBottomPad {
-				b.WriteString(" ")
-			} else if trackIdx >= thumbStart && trackIdx < thumbEnd {
-				b.WriteString(scrollThumb)
-			} else {
-				b.WriteString(scrollTrack)
-			}
-		}
+	row := 0
+	for i := start; i < end; i++ {
+		b.WriteString(m.renderItem(m.visibleItems[i], m.isInSelection(i), i))
+		b.WriteString(bar.glyph(row))
 		b.WriteString("\n")
-		rowIdx++
+		row++
 	}
-
-	// Pad if needed (with separator matching item rows)
-	renderedItems := endIdx - startIdx
-	for i := renderedItems; i < availableHeight; i++ {
-		padTotalWidth := width - horizontalPad*2 // account for left/right padding
-		if padTotalWidth < 1 {
-			padTotalWidth = 80
-		}
-		// Match the structure: │ space tree │ timeline │
-		treeW := m.treeWidth
-		availableW := padTotalWidth - 4 // 3 border chars + 1 left padding
-		timelineW := availableW - treeW
-		if timelineW < 10 {
-			timelineW = 10
-		}
-		timelinePad := strings.Repeat(" ", timelineW)
-		endCol := m.logicalEndCol(timelineW)
-		if endCol >= 0 {
-			timelinePad = overlayLogicalEndLine(timelinePad, endCol, timelineW, false)
-		}
-		b.WriteString(BorderStyle.Render("│") + " " + strings.Repeat(" ", treeW) + SeparatorStyle.Render("│") + timelinePad + BorderStyle.Render("│"))
-
-		// Add scrollbar character for empty rows
-		if needsScroll {
-			trackIdx := rowIdx - trackTopPad
-			if rowIdx < trackTopPad || rowIdx >= availableHeight-trackBottomPad {
-				b.WriteString(" ")
-			} else if trackIdx >= thumbStart && trackIdx < thumbEnd {
-				b.WriteString(scrollThumb)
-			} else {
-				b.WriteString(scrollTrack)
-			}
-		}
+	for ; row < rows; row++ {
+		b.WriteString(m.emptyItemRow(width))
+		b.WriteString(bar.glyph(row))
 		b.WriteString("\n")
-		rowIdx++
 	}
 
-	// Footer
 	b.WriteString(m.renderFooter())
 
-	// Overlay modal if showing
 	if m.showHelpModal {
-		modal := m.renderHelpModal()
-		return placeModalCentered(modal, width, height)
+		return placeModalCentered(m.renderHelpModal(), width, height)
 	}
-
 	if m.showDetailModal {
 		// renderDetailModal clamps the scroll it uses internally; Update is
 		// responsible for clamping the persisted m.modalScroll (View has a
@@ -619,9 +499,131 @@ func (m Model) View() string {
 		modal, _ := m.renderDetailModal(height-4, width-10)
 		return placeModalCentered(modal, width, height)
 	}
-
-	// Add horizontal padding to each line
 	return addHorizontalPadding(b.String(), horizontalPad)
+}
+
+// viewSize clamps the terminal so borders and modals have room to draw.
+func (m Model) viewSize() (width, height int) {
+	width, height = m.width, m.height
+	if width < 40 {
+		width = 40
+	}
+	if height < 10 {
+		height = 10
+	}
+	return width, height
+}
+
+// paddedFrame is the view width inside the horizontal padding.
+// A collapsed terminal still draws an 80-column frame.
+func paddedFrame(width int) int {
+	total := width - horizontalPad*2
+	if total < 1 {
+		return 80
+	}
+	return total
+}
+
+// borderedInner is the space between the left and right border runes.
+func borderedInner(width int) int {
+	return paddedFrame(width) - 2
+}
+
+// headerGap is the blank row between the time axis and the item rows.
+// Outer borders only — no tree/timeline separator.
+func headerGap(inner int) string {
+	return BorderStyle.Render("│") + strings.Repeat(" ", inner) + BorderStyle.Render("│")
+}
+
+// itemWindow is the [start, end) slice of visibleItems drawn in this viewport.
+func (m Model) itemWindow(rows int) (start, end int) {
+	total := len(m.visibleItems)
+	start = m.scrollWindowStart(rows)
+	end = start + rows
+	if end > total {
+		end = total
+	}
+	return start, end
+}
+
+// scrollbar is the one-column track beside the item rows.
+// The track is 80% of the viewport and centered; the thumb marks the window.
+type scrollbar struct {
+	show       bool
+	rows       int
+	topPad     int
+	bottomPad  int
+	thumbStart int
+	thumbEnd   int
+	thumb      string
+	track      string
+}
+
+func (m Model) scrollbar(rows, windowStart int) scrollbar {
+	total := len(m.visibleItems)
+	show := total > rows
+
+	trackHeight := rows * 80 / 100
+	if trackHeight < 3 {
+		trackHeight = min(3, rows)
+	}
+	topPad := (rows - trackHeight) / 2
+	bottomPad := rows - trackHeight - topPad
+
+	thumbSize := 1
+	thumbStart := 0
+	if show && trackHeight > 0 {
+		thumbSize = max(1, trackHeight*rows/total)
+		if thumbSize > trackHeight {
+			thumbSize = trackHeight
+		}
+		maxScroll := total - rows
+		if maxScroll > 0 {
+			thumbStart = windowStart * (trackHeight - thumbSize) / maxScroll
+		}
+	}
+
+	return scrollbar{
+		show:       show,
+		rows:       rows,
+		topPad:     topPad,
+		bottomPad:  bottomPad,
+		thumbStart: thumbStart,
+		thumbEnd:   thumbStart + thumbSize,
+		thumb:      SeparatorStyle.Render("┃"),
+		track:      SeparatorStyle.Render("│"),
+	}
+}
+
+// glyph is "", a pad space, the thumb, or the track for this viewport row.
+func (s scrollbar) glyph(row int) string {
+	if !s.show {
+		return ""
+	}
+	trackIdx := row - s.topPad
+	if row < s.topPad || row >= s.rows-s.bottomPad {
+		return " "
+	}
+	if trackIdx >= s.thumbStart && trackIdx < s.thumbEnd {
+		return s.thumb
+	}
+	return s.track
+}
+
+// emptyItemRow fills one unused viewport row: │ tree │ timeline │.
+// The 4 is three border runes plus the left pad before the tree.
+func (m Model) emptyItemRow(width int) string {
+	frame := paddedFrame(width)
+	treeW := m.treeWidth
+	timelineW := frame - 4 - treeW
+	if timelineW < 10 {
+		timelineW = 10
+	}
+	timeline := strings.Repeat(" ", timelineW)
+	if endCol := m.logicalEndCol(timelineW); endCol >= 0 {
+		timeline = overlayLogicalEndLine(timeline, endCol, timelineW, false)
+	}
+	return BorderStyle.Render("│") + " " + strings.Repeat(" ", treeW) + SeparatorStyle.Render("│") + timeline + BorderStyle.Render("│")
 }
 
 // addHorizontalPadding adds left padding to each line
@@ -759,12 +761,9 @@ func (m Model) headerLineCount() int {
 }
 
 // contentHeight returns the number of item rows between the header and footer,
-// matching View()'s layout. It never exceeds the space actually available.
+// matching View()'s layout. It never exceeds the space viewSize leaves.
 func (m Model) contentHeight() int {
-	height := m.height
-	if height < 10 {
-		height = 10 // View() enforces the same minimum
-	}
+	_, height := m.viewSize()
 	footerLines := 3 // breadcrumb + statusLine + bottomBorder
 	available := height - m.headerLineCount() - footerLines
 	if available < 1 {
